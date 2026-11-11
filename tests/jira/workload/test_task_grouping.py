@@ -70,16 +70,29 @@ def test_parent_query_membership_survives_build_and_child_snapshot(monkeypatch, 
     peer = raw(peer_key, parent=parent_key, assignee="test.ui02")
     rows = {row["key"]: row for row in (parent, child, peer)}
 
+    def publish(found):
+        # These fake read boundaries must publish the same dated canonical
+        # projections as real search/key reads; supplied dictionaries alone
+        # cannot establish parent membership provenance.
+        client.cache.set_many_if_fence(
+            ((f"issueL:{client.env}:{row['key']}", row) for row in found),
+            client.s.cache_ttl_seconds, client.cache.fence())
+        return found
+
     def search(jql, **_kwargs):
         assert "resolved >= -7d" in jql
-        return [child, parent] if parent_matched else [child]
+        return publish([child, parent] if parent_matched else [child])
 
     def details(keys, **_kwargs):
-        return {"issues": [rows[key] for key in keys], "missing": [], "complete": True}
+        return {"issues": publish([rows[key] for key in keys]), "missing": [], "complete": True}
+
+    def unexpected_provider_read(path, **_kwargs):
+        pytest.fail(f"Grouping fixture unexpectedly fell back to provider: {path}")
 
     monkeypatch.setattr(client, "current_user", lambda: {"id": me, "name": "Me"})
     monkeypatch.setattr(client, "search_issues", search)
     monkeypatch.setattr(client, "issues_by_keys_result", details)
+    monkeypatch.setattr(client.provider, "get_json", unexpected_provider_read)
     model = build_my_tasks(client, scope="assignee", done_filter="1w", defer_children=True)
     group = model["groups"][0]
     assert group["key"] == parent_key and group["mine"] is True

@@ -17,7 +17,7 @@
 - `get_evidence_page`는 `data.nextCall.arguments` 전체를 다음 호출에 복사한다. 긴 레코드의 내부 위치와 묶음 크기까지 포함하므로 `nextStartAt` 하나만 따라가지 않는다. 이전 서버에 nextCall이 없으면 마지막 item의 `nextRecordOffset`이 null이 아닐 때 `start_at=item.sourceIndex`, `record_offset=item.nextRecordOffset`으로 이어 읽는다. 이전 서버의 `max_results=1` 요구를 따른다.
 - 새 서버의 nextCall은 레코드 조각 뒤에도 요청한 묶음 크기를 유지한다. 이전 서버에서 조각이 끝난 뒤 `hasMore=true`이면 `start_at=nextStartAt`, `record_offset=0`과 원래 묶음 크기로 다음 페이지를 읽는다. nextCall이 null이어도 sourceComplete/partial을 확인한다. `hasMore=false`이고 미완료 조각이 없을 때 수집을 마치며, recordJson의 연속 offset·ID·SHA-256을 검증한다.
 - 위치는 서버가 반환한 값을 그대로 쓴다. JavaScript의 UTF-16 length나 UTF-8 byte 수로 record_offset을 다시 계산하지 않는다.
-- ID·digest가 같고 이미 검증한 전체 레코드가 저장돼 있으면 그 원문을 재사용할 수 있다. 위치가 달라져도 ID로 대조한다. ID·digest가 바뀌면 예전 조각과 섞지 않고 해당 레코드를 다시 읽는다.
+- ID·recordFormat·digest가 같고 이미 검증한 전체 레코드가 저장돼 있으면 재사용할 수 있다. 위치가 달라져도 ID로 대조한다. 지원하는 무표기/v1↔v2 사이 형식 변경이나 같은 지원 형식의 digest 변경은 조각을 섞지 않고 해당 레코드만 다시 읽는다. v2는 본문·이력·비행위자 메타데이터와 제공된 actor 식별값을 보존하고 avatar·email·active 등 프로필 속성은 제외한다. 알 수 없는 format은 수집을 중단하고 미지원 형식을 진단한다. 그 기록 하나의 재조회로 미지원 수집을 정상화하거나 복원 완료로 처리하지 않는다.
 - `sourceComplete=false`, `partial`, 권한·인증·timeout·실패 목록은 전체 없음이나 0건이 아니다. 마지막 페이지를 읽었다고 원본의 숨겨진 이력까지 완전하다고 말하지 않는다.
 - live offset은 불변 snapshot이 아니다. total·ID·수정값이 바뀌면 중복을 제거하고 누락 가능 범위를 재검토한다.
 

@@ -20,11 +20,13 @@ import json
 import re
 import secrets
 import threading
+import time
 from datetime import date, datetime, timezone
 
 from app.domain.names import real_name
 from app.domain.progress import norm_cat
 from app.domain.task_grouping import task_grouping_meta
+from app.infra.cache_policy import CacheMode, current_read_policy, observed_reads
 
 # 우선순위 정규화 — 인스턴스마다 이름이 다를 수 있어 이름을 소문자로 맞춰 본다.
 # 못 알아보면 중간(2)으로 둔다: 모르는 값이 맨 위나 맨 아래로 튀는 게 제일 나쁘다.
@@ -560,46 +562,52 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
 
     for query_index, (cache_key, jql, max_results) in enumerate(calls):
         cached_batch = []
+        query_fence = client.cache.fence()
+        request_policy = current_read_policy()
         # Freeze relative date/user functions at planning time, even if earlier groups are slow.
-        for chunk in client.iter_search_issue_chunks(execution_queries[query_index], light=True):
-            # Context lookup may have failed during planning and recovered before execution.
-            # In that case the real compiled count replaces the provisional legacy chunk count.
-            actual_total = chunk.get("leafTotal")
-            if type(actual_total) is int and actual_total > 0:
-                leaf_total += actual_total - query_leaf_counts[query_index]
-                query_leaf_counts[query_index] = actual_total
-            # A physical Jira response may finish several logical memberships. Count and
-            # label each logical leaf without rebuilding the same model for every one.
-            leaves = chunk.get("completedLeaves") or [chunk.get("leaf")]
-            leaf_done += len(leaves)
-            completed_batch = []
-            chunk_error = chunk.get("error")
-            if chunk_error:
-                query_failed[query_index] = True
-            else:
-                combined = list(chunk.get("combined") or ())
-                query_results[query_index] = (
-                    combined if max_results is None else combined[:max(0, int(max_results))]
-                )
-            for leaf in leaves:
-                completed = {
-                    "leaf": leaf, "axis": _leaf_status_axis(leaf),
-                    "status": "error" if chunk_error else "success",
-                    "leafIndex": query_leaf_indexes[query_index].get(leaf, chunk.get("leafIndex")),
-                    "queryIndex": query_index, "queryTotal": query_total,
-                }
+        with observed_reads(client.iter_search_issue_chunks, execution_queries[query_index], light=True) as (chunks, query_sources):
+            for chunk in chunks:
+                # Context lookup may have failed during planning and recovered before execution.
+                # In that case the real compiled count replaces the provisional legacy chunk count.
+                actual_total = chunk.get("leafTotal")
+                if type(actual_total) is int and actual_total > 0:
+                    leaf_total += actual_total - query_leaf_counts[query_index]
+                    query_leaf_counts[query_index] = actual_total
+                # A physical Jira response may finish several logical memberships. Count and
+                # label each logical leaf without rebuilding the same model for every one.
+                leaves = chunk.get("completedLeaves") or [chunk.get("leaf")]
+                leaf_done += len(leaves)
+                completed_batch = []
+                chunk_error = chunk.get("error")
                 if chunk_error:
-                    error = {**chunk_error, "leaf": leaf}
-                    errors.append(error)
-                    completed["error"] = error
-                completed_batch.append(completed)
-            if chunk.get("coalesceCached"):
-                cached_batch.extend(completed_batch)
-            else:
-                yield event(
-                    cumulative_model(), errors=errors, leaf_done=leaf_done,
-                    leaf_total=leaf_total, completed_leaf=completed_batch[-1],
-                    completed_leaves=completed_batch)
+                    query_failed[query_index] = True
+                else:
+                    combined = list(chunk.get("combined") or ())
+                    query_results[query_index] = (
+                        combined if max_results is None else combined[:max(0, int(max_results))]
+                    )
+                    if chunk.get("partial") or chunk.get("complete") is False:
+                        query_failed[query_index] = True
+                        chunk_error = {"kind": "partial", "message": "검색 결과 일부를 확인하지 못했습니다."}
+                for leaf in leaves:
+                    completed = {
+                        "leaf": leaf, "axis": _leaf_status_axis(leaf),
+                        "status": "error" if chunk_error else "success",
+                        "leafIndex": query_leaf_indexes[query_index].get(leaf, chunk.get("leafIndex")),
+                        "queryIndex": query_index, "queryTotal": query_total,
+                    }
+                    if chunk_error:
+                        error = {**chunk_error, "leaf": leaf}
+                        errors.append(error)
+                        completed["error"] = error
+                    completed_batch.append(completed)
+                if chunk.get("coalesceCached"):
+                    cached_batch.extend(completed_batch)
+                else:
+                    yield event(
+                        cumulative_model(), errors=errors, leaf_done=leaf_done,
+                        leaf_total=leaf_total, completed_leaf=completed_batch[-1],
+                        completed_leaves=completed_batch)
         if cached_batch:
             # A fully warm subquery completes without upstream waiting.  Emit one cumulative
             # snapshot instead of N near-identical payloads; cold leaves remain one-by-one.
@@ -609,9 +617,22 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
                 completed_leaves=cached_batch)
         # Preserve the historical mt:* aggregate cache only after this subquery is complete.  A
         # disconnected stream never publishes a partial list as a complete API-cache hit.
-        if cache_key is not None and not query_failed[query_index]:
-            client.cache.set(cache_key + ":light", query_results[query_index],
-                             client.s.cache_ttl_seconds)
+        if not query_failed[query_index]:
+            source_time = min((source["fetchedAt"] for source in query_sources), default=None)
+            validated = bool(query_sources) and all(source.get("upstreamValidated", False) for source in query_sources)
+            compliant = not any(source.get("invalidated") or source.get("compliant") is False for source in query_sources)
+            if request_policy.explicit and source_time is not None:
+                compliant = compliant and (validated if request_policy.mode == CacheMode.LIVE else
+                                           time.time() - source_time <= request_policy.max_age_seconds)
+            current = client.cache.fence() == query_fence and compliant
+            if current and cache_key is not None and source_time is not None:
+                current = client.cache.set_if_fence(
+                    cache_key + ":light", query_results[query_index], client.s.cache_ttl_seconds,
+                    query_fence, fetched_at=source_time, upstream_validated=validated)
+            if not current:
+                query_failed[query_index] = True
+                errors.append({"kind": "changed", "phase": "query", "queryIndex": query_index,
+                               "message": "조회 중 데이터가 변경되거나 요청한 신선도 기간이 지났습니다. 다시 조회해 주세요."})
 
     complete = cumulative_model(create_sync=True)
     yield event(complete, done=True, errors=errors,
@@ -811,7 +832,7 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
     def sub_keys(raw):
         parent_key = str((raw or {}).get("key") or "").strip().upper()
         try:
-            return client.direct_child_keys(parent_key, parent_issue=raw)
+            return read_child_keys(parent_key, parent_issue=raw)
         except Exception as exc:
             client.miss_add()
             # Unknown membership is not an empty child list.  Carry the exact Parent and failure
@@ -837,8 +858,11 @@ def build_my_tasks(client, user=None, include_done=False, limit=None, scope="ass
     parents = {k: _node(r, today, ef) for k, r in parent_raw.items()}
 
     # 하위를 알아야 하는 이슈 = 내 Task 들 + 위에서 가져온 부모들
+    membership_rows = list(mine_raw) + list(parent_raw.values())
+    read_child_keys = client._direct_child_keys_reader(
+        row.get("key") for row in membership_rows if row.get("key"))
     expected_kids = {}
-    for r in list(mine_raw) + list(parent_raw.values()):
+    for r in membership_rows:
         key = r.get("key")
         keys = sub_keys(r)
         if key and keys is not None:

@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .common import JsonValue, OpenModel
 
@@ -17,6 +17,16 @@ class RawIssue(OpenModel):
     url: str | None = None
 
 
+class QueryExecution(OpenModel):
+    requestedStrategy: Literal["auto", "off", "people", "full"]
+    effectiveStrategy: Literal["auto", "off", "people", "full"]
+    maxParts: int
+    logicalLeafCount: int | None = None
+    physicalGroupCount: int | None = None
+    physicalQueryCount: int = Field(description="Distinct dispatched JQL, excluding repeated pages/retries; not a REST-attempt counter.")
+    fallbackReason: str | None = None
+
+
 class SearchPage(OpenModel):
     issues: list[RawIssue]
     startAt: int
@@ -26,7 +36,11 @@ class SearchPage(OpenModel):
     hasMore: bool
     nextStartAt: int | None
     snapshotId: str | None = None
+    snapshotCreatedAt: float | None = None
+    snapshotSourceFetchedAt: float | None = None
+    snapshotFrozen: bool | None = Field(default=None, description="A continuation reads the frozen result; it does not perform a new live validation.")
     canonicalJql: str | None = None
+    execution: QueryExecution | None = None
     descriptionRequested: bool | None = Field(default=None, description="True when raw descriptions were explicitly requested in the batched search.")
     descriptionMissingKeys: list[str] | None = Field(default=None, description="Issues whose requested description was not returned. A returned null/empty description is a known empty body.")
 
@@ -39,6 +53,7 @@ class TicketBatch(OpenModel):
     complete: bool = Field(description="All requested tickets were returned. Description completeness is separate.")
     descriptionRequested: bool | None = None
     descriptionMissingKeys: list[str] | None = None
+    execution: QueryExecution | None = None
 
 
 class TicketBadge(OpenModel):
@@ -404,11 +419,23 @@ class Documents(OpenModel):
     documents: list[DocumentLink]
 
 
+class EvidenceActor(BaseModel):
+    """Supplied identity fields, excluding avatar/email/active/arbitrary profile extras."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    accountId: str | None = None
+    name: str | None = None
+    key: str | None = None
+    displayName: str | None = None
+    self: str | None = None
+    timeZone: str | None = None
+
+
 class EvidenceRecord(OpenModel):
     id: str | int
     authorId: str | None
     authorDisplayName: str | None
-    author: dict[str, JsonValue] | None = None
+    author: EvidenceActor | None = None
+    updateAuthor: EvidenceActor | None = None
     created: str | None = None
     updated: str | None = None
     body: str | None = None
@@ -417,6 +444,7 @@ class EvidenceRecord(OpenModel):
 
 
 class EvidenceChunk(OpenModel):
+    recordFormat: Literal["jira-evidence-v2"]
     id: str | int
     sourceIndex: int
     recordJson: str
@@ -432,6 +460,7 @@ class EvidenceArguments(OpenModel):
     start_at: int = Field(ge=0)
     max_results: int = Field(ge=1, le=100)
     record_offset: int = Field(ge=0)
+    cache_mode: Literal["live", "hot", "warm", "cool", "cold"] | None = None
 
 
 class EvidenceCall(OpenModel):
@@ -440,6 +469,7 @@ class EvidenceCall(OpenModel):
 
 
 class EvidencePage(OpenModel):
+    recordFormat: Literal["jira-evidence-v2"] = Field(description="Exact source content/non-actor metadata with normalized actor identity; recordJson/hash use this format, not full actor profiles.")
     key: str
     kind: Literal["comments", "history"]
     items: list[EvidenceRecord | EvidenceChunk]

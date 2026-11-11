@@ -65,7 +65,7 @@ description: LakeTaskManager의 app/agent, Agent용 domain rule, prompt, role, t
 7. 자동 통과와 별개로 Codex 또는 Claude 작업 에이전트가 raw output을 직접 읽고 인간 관점에서
    사실성·완결성·안전성·가독성을 평가한다. LTM runtime LLM·내부 Role·동일 production endpoint를
    evaluator나 LLM-as-judge로 사용하지 않는다.
-8. 결과는 `research/agent-improvement/` 아래에만 저장한다.
+8. 결과는 `.research/agent-improvement/` 아래에만 저장한다.
 9. 모든 비교는 `app/agent/EVALUATION.md`와 `evaluation_protocol.json`의 versioned 계약을 사용한다.
 10. raw 결과의 `protocolVersion`, `rubricVersion`, `batteryVersion`, manifest, run group, commit,
     model routing, 반복·선택 정책을 확인한다. 누락된 실행은 qualification 결과로 보고하지 않는다.

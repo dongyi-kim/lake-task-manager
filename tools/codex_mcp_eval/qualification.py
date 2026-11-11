@@ -21,7 +21,8 @@ def case_record_sha256(record):
 
 
 def audit_cohort(runs, reviews, *, evaluator, expected_case_ids, source_snapshot_hashes,
-                 expected_order_by_repeat, expected_commit, expected_runtime, planned_repetitions=5):
+                 expected_order_by_repeat, expected_commit, expected_runtime, planned_repetitions=5,
+                 comparison_order_indices=(1, 2)):
     """Audit a complete cohort; baseline design validity is separate from quality."""
     design, quality = set(), set()
     expected = set(expected_case_ids)
@@ -34,7 +35,9 @@ def audit_cohort(runs, reviews, *, evaluator, expected_case_ids, source_snapshot
                 'humanMean': None, 'failures': ['invalid_preregistered_design']}
     repetitions = set(range(1, planned_repetitions + 1))
     balance = Counter(expected_order_by_repeat.values())
-    if (set(expected_order_by_repeat) != repetitions or set(balance) != {1, 2}
+    if (not comparison_order_indices or len(set(comparison_order_indices)) != len(comparison_order_indices)
+            or any(type(index) is not int or index < 1 for index in comparison_order_indices)
+            or set(expected_order_by_repeat) != repetitions or set(balance) != set(comparison_order_indices)
             or max(balance.values()) - min(balance.values()) > 1):
         design.add('invalid_preregistered_order')
     if len(runs) != planned_repetitions:

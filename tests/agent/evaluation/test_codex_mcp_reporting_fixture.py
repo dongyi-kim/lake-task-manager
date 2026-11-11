@@ -79,9 +79,18 @@ def test_reporting_fixture_validates_rest_boundaries_and_sdk_cache_without_write
                     assert not first.is_error, first.structured_content
                     page = first.structured_content["data"]
                     assert page["total"] == 5 and len(page["issues"]) == 2
+                    assert page["execution"]["physicalQueryCount"] == 1
                     before = len(fixture.upstream_calls)
                     again = await mcp.call_tool("search_issues", {"jql": query, "start_at": 0, "max_results": 2})
-                    assert not again.is_error and again.structured_content["data"] == page
+                    assert not again.is_error
+                    cached_page = again.structured_content["data"]
+                    assert cached_page["execution"]["physicalQueryCount"] == 0
+                    assert cached_page != page
+                    # Compare every business/snapshot field and all planning diagnostics;
+                    # only the actual dispatch count belongs to this invocation.
+                    assert {**cached_page, "execution": {
+                        **cached_page["execution"], "physicalQueryCount": 1,
+                    }} == page
                     assert len(fixture.upstream_calls) == before
                     child = await mcp.call_tool("get_ticket", {"key": DENIED_CHILD})
                     assert not child.is_error and child.structured_content["data"]["key"] == DENIED_CHILD

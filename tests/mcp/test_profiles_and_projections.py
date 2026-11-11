@@ -80,5 +80,12 @@ def test_compact_responses_keep_complete_bodies_and_do_not_pollute_caches(build_
             assert len(env.calls) == before
             assert [row['key'] for row in compact['issues']] == [row['key'] for row in original['issues']]
             assert compact['total'] == original['total'] and compact['snapshotId'] == original['snapshotId']
-            assert await read('search_issues', args) == original
+            assert original['execution']['physicalQueryCount'] == 1
+            assert compact['execution']['physicalQueryCount'] == 0
+            repeated = await read('search_issues', args)
+            assert repeated['execution'] == {**original['execution'], 'physicalQueryCount': 0}
+            # Response projection preserves the cached data and plan. Dispatch accounting
+            # describes this call, so a cache hit must not repeat the cold request's cost.
+            assert {key: value for key, value in repeated.items() if key != 'execution'} == {
+                key: value for key, value in original.items() if key != 'execution'}
     anyio.run(scenario)

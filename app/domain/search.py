@@ -132,21 +132,24 @@ def _search_jira(client, s, q, scope, limit):
     enf = s.epic_link_field_id
     fields = "summary,status,issuetype,assignee,updated,project," + enf   # 소속 Epic 뱃지용
     exact = []
-    for key in _exact_keys(s, q):
+    exact_keys = list(dict.fromkeys(_exact_keys(s, q)))
+    for offset in range(0, len(exact_keys), 100):
+        chunk = exact_keys[offset:offset + 100]
         try:
-            raw = client.provider.get_json("/rest/api/2/issue/" + key, params={"fields": fields})
+            page = client.search_issues_page(
+                "key in (%s) ORDER BY key ASC" % ",".join(chunk),
+                max_results=len(chunk), fields=fields, light=True)
         except Exception:
-            continue                                  # 없는 키 — 조용히 건너뛴다
-        if raw and raw.get("key"):
-            exact.append(raw)
+            continue                                  # 직접 후보 실패는 본문 검색과 독립
+        by_key = {row["key"]: row for row in page.get("issues", []) if row.get("key")}
+        exact.extend(by_key[key] for key in chunk if key in by_key)
 
     jql = 'text ~ "%s"' % _q_escape(q)
     # scope 인자와 무관하게 agent/UI 검색은 search config 밖으로 나가지 않는다.
     # project_key는 쓰기 대상이지 검색 범위 fallback이 아니다.
     jql = "project in (%s) AND %s" % (", ".join(projects), jql)
-    jql += " ORDER BY updated DESC"
-    data = client.search_issues_page(
-        jql, start_at=0, max_results=limit, fields=fields, light=True)
+    jql += " ORDER BY updated DESC, key ASC"
+    data = client.search_issues_preview(jql, limit=limit, fields=fields, light=True)
     base = (s.jira_base or "").rstrip("/")
     allowed = {p.upper() for p in projects}
     items = [dict(_jira_item(it, base, enf), exact=True) for it in exact

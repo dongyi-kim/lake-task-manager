@@ -15,6 +15,7 @@ import threading
 import tempfile
 import time
 from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
+from contextvars import ContextVar
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from unittest.mock import patch
 import anyio
 import uvicorn
 from fastapi import FastAPI
+from starlette.requests import Request
 from starlette.routing import Route
 
 from app.auth.base import PermissionDenied, SessionExpired
@@ -65,7 +67,8 @@ class EvaluationFixture:
     known DL-9095 child unavailable through the same path as a permission failure.
     """
     def __init__(self, run_dir: str | Path, port: int = 4457, *, fault: str | None = None,
-                 today: str | None = None):
+                 today: str | None = None, files_root: str | Path | None = None,
+                 files_after_write=None):
         self.run_dir = Path(run_dir).resolve()
         if (not self.run_dir.is_relative_to(Path(tempfile.gettempdir()).resolve())
                 and not any(part in {".cache", ".tmp", ".test"} for part in self.run_dir.parts)):
@@ -76,7 +79,14 @@ class EvaluationFixture:
         self.today = date.fromisoformat(today) if today else date.today()
         self.tool_calls: list[dict[str, Any]] = []
         self.upstream_calls: list[dict[str, Any]] = []
+        self.protocol_calls: list[dict[str, Any]] = []
+        self.transport_calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._observer_condition = threading.Condition(self._lock)
+        self._observer_order = 0
+        self._active_observers = {"provider": 0, "transport": 0, "tool": 0, "file": 0, "protocol": 0}
+        self._observer_last_activity = time.monotonic()
+        self._transport_scope = ContextVar("evaluation_transport_scope", default=False)
         self._thread = self._server = self._listener = None
         self._owns_case = False
         self._before: dict[str, Any] | None = None
@@ -84,6 +94,20 @@ class EvaluationFixture:
         self._token = ""
         self._secret_owned = False
         self._patches = ExitStack()
+        self.files = None
+        if files_root is not None:
+            from tools.codex_mcp_eval.research_files import ResearchFiles
+            self.files = ResearchFiles(Path(files_root), after_write=files_after_write)
+            original_file_call = self.files.server.call_tool
+            async def observed_file_call(name, arguments, context=None):
+                self._begin_observer("file")
+                try:
+                    return await original_file_call(name, arguments, context)
+                finally:
+                    self._finish_observer("file")
+            self.files.server.call_tool = observed_file_call
+            self.files_http = self.files.server.streamable_http_app(streamable_http_path="/research-files",
+                stateless_http=True, json_response=True)
 
     @property
     def url(self) -> str:
@@ -92,6 +116,10 @@ class EvaluationFixture:
     @property
     def token(self) -> str:
         return self._token
+
+    @property
+    def files_url(self) -> str | None:
+        return f"http://127.0.0.1:{self.port}/research-files" if self.files is not None else None
 
     def _safe(self, value):
         value = _canonical(value)
@@ -110,7 +138,110 @@ class EvaluationFixture:
         return {}
 
     def extra_http_apps(self):
-        return []
+        return [("/research-files", self.files_http)] if self.files is not None else []
+
+    def _begin_observer(self, kind, collection=None, record=None):
+        with self._observer_condition:
+            self._observer_order += 1
+            self._active_observers[kind] += 1
+            self._observer_last_activity = time.monotonic()
+            if collection is not None:
+                record.update(complete=False, sequence=len(collection), startOrder=self._observer_order)
+                collection.append(record)
+            self._observer_condition.notify_all()
+
+    def _finish_observer(self, kind, record=None, **updates):
+        with self._observer_condition:
+            self._observer_order += 1
+            if record is not None:
+                record.update(updates, complete=True, endOrder=self._observer_order)
+            self._active_observers[kind] -= 1
+            self._observer_last_activity = time.monotonic()
+            self._observer_condition.notify_all()
+
+    def settle_observers(self, timeout_seconds=5.0):
+        """Wait for admitted provider/handler/wire work and a short quiet interval."""
+        started = time.monotonic()
+        deadline, quiet_seconds = started + max(0, timeout_seconds), 0.02
+        with self._observer_condition:
+            while True:
+                active = dict(self._active_observers)
+                now = time.monotonic()
+                quiet_remaining = quiet_seconds - (now - self._observer_last_activity)
+                if not any(active.values()) and quiet_remaining <= 0:
+                    return {"complete": True, "timedOut": False, "active": active,
+                            "waitSeconds": round(now - started, 6)}
+                remaining = deadline - now
+                if remaining <= 0:
+                    return {"complete": False, "timedOut": True, "active": active,
+                            "waitSeconds": round(now - started, 6)}
+                self._observer_condition.wait(min(remaining, max(0.001, quiet_remaining))
+                                              if not any(active.values()) else remaining)
+
+    def _observe_protocol(self, app, server):
+        """Observe guarded HTTP JSON-RPC attempts, never persist their arguments.
+
+        Separate wire dispatches from handler invocations: SDK validation can reject
+        a tools/call before a tool implementation runs. This observer handles the
+        fixture's JSON response transport; no SSE payload inference is attempted.
+        """
+        async def observed(scope, receive, send):
+            if scope.get("type") != "http" or scope.get("method") != "POST":
+                return await app(scope, receive, send)
+            started = time.perf_counter()
+            request_body, response_body = b"", bytearray()
+            replayed = False
+            record = {"server": server, "method": None, "id": None,
+                      "httpStatus": None, "isError": None}
+            self._begin_observer("protocol", self.protocol_calls, record)
+            completion = {}
+            limit = 4 * 1024 * 1024
+            async def receiving():
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": request_body, "more_body": False}
+                return await receive()
+            async def sending(message):
+                if message["type"] == "http.response.start":
+                    record["httpStatus"] = message["status"]
+                elif message["type"] == "http.response.body":
+                    response_body.extend(message.get("body", b"")[:max(0, limit + 1 - len(response_body))])
+                await send(message)
+            try:
+                # Read before dispatch so capacity/restart rejections, which need
+                # not consume the body, still retain their JSON-RPC correlation.
+                request_body = await Request(scope, receive).body()
+                if len(request_body) <= limit:
+                    try:
+                        request = json.loads(request_body)
+                        if isinstance(request, dict):
+                            method, request_id = request.get("method"), request.get("id")
+                            record["method"] = self._safe(method) if isinstance(method, str) else None
+                            record["id"] = self._safe(request_id) if type(request_id) in (int, str) else None
+                    except (ValueError, UnicodeError):
+                        pass
+                await app(scope, receiving, sending)
+                if record["httpStatus"] is not None and record["httpStatus"] >= 400:
+                    record["isError"] = True
+                elif not response_body:
+                    record["isError"] = False
+                elif len(response_body) <= limit:
+                    try:
+                        response = json.loads(response_body)
+                        if isinstance(response, dict):
+                            result = response.get("result")
+                            record["isError"] = bool(response.get("error") or
+                                isinstance(result, dict) and result.get("isError"))
+                    except (ValueError, UnicodeError):
+                        pass
+            except BaseException as exc:
+                completion.update(isError=True, errorType=type(exc).__name__)
+                raise
+            finally:
+                completion["durationSeconds"] = round(time.perf_counter() - started, 6)
+                self._finish_observer("protocol", record, **completion)
+        return observed
 
     def __enter__(self):
         if not _ACTIVE_CASE.acquire(blocking=False):
@@ -162,7 +293,6 @@ class EvaluationFixture:
             self.cache.always_revalidate = ()
             self.cache.revalidator = None
             self.client._refresh_bg = lambda *_args, **_kwargs: None
-            self.client._warm_jql_leaves_bg = lambda *_args, **_kwargs: None
             self._observe_provider()
 
             def require_manager():
@@ -199,16 +329,19 @@ class EvaluationFixture:
                     finally:
                         self.runtime.started = False
             self.app = FastAPI(lifespan=lifespan)
+            self.app.add_middleware(LocalGuard, credentials=self.runtime.credentials, port=self.port)
             # Real UI GET route for cache-sharing checks; omit every mutation route.
             reads = build_ticket_router(get_client=lambda: self.client)
             reads.routes[:] = [route for route in reads.routes if "GET" in (getattr(route, "methods", None) or ())]
             self.app.include_router(reads)
             def current_mcp():
-                return LocalGuard(self.runtime.http_app, credentials=self.runtime.credentials, port=self.port)
-            self.app.router.routes.append(Route("/mcp", self.runtime.transport_host.wrap(current_mcp, dynamic=True),
+                return self.runtime.http_app
+            mcp_http = self.runtime.transport_host.wrap(current_mcp, dynamic=True)
+            self.app.router.routes.append(Route("/mcp", LocalGuard(self._observe_protocol(mcp_http, "ltm"),
+                credentials=self.runtime.credentials, port=self.port),
                 methods=["GET", "POST", "DELETE", "OPTIONS"]))
             for path, http_app in extra_apps:
-                self.app.router.routes.append(Route(path, LocalGuard(http_app,
+                self.app.router.routes.append(Route(path, LocalGuard(self._observe_protocol(http_app, "research_files"),
                     credentials=self.runtime.credentials, port=self.port),
                     methods=["GET", "POST", "DELETE", "OPTIONS"]))
             self._server = uvicorn.Server(uvicorn.Config(self.app, log_level="error", access_log=False,
@@ -227,37 +360,66 @@ class EvaluationFixture:
             raise
 
     def _observe_provider(self):
-        original = self.provider._get
-        def observed(path, params, priority=None):
+        original_request = self.provider._client.request
+        def dispatched(method, url, *args, **kwargs):
+            # Fixture seeding/conformance uses raw TestClient access outside the
+            # provider scope. Actual provider dispatches include direct identity
+            # probes and repeated requests inside get/web_form implementations.
+            if not self._transport_scope.get():
+                return original_request(method, url, *args, **kwargs)
             started = time.perf_counter()
-            route = urlsplit(str(path)).path
+            route = urlsplit(str(url)).path
             service = ("jira" if re.search(r"/rest/(?:api/(?:2|latest)|agile/[^/]+|auth/[^/]+)/", route)
                        else "confluence" if re.search(r"/rest/api/(?:content|search|space|user)(?:/|$)", route)
                        else None)
-            record = {"method": "GET", "service": service, "path": str(path),
-                      "params": self._safe(params or {}), "responseBytes": None}
+            record = {"method": str(method).upper(), "service": service, "path": route,
+                      "params": self._safe(kwargs.get("params") or {}), "responseBytes": None,
+                      "durationSeconds": None, "dispatchAttempt": True, "serverReceived": None,
+                      "status": None}
+            self._begin_observer("transport", self.transport_calls, record)
+            if service is not None:
+                with self._lock:
+                    self.upstream_calls.append(record)
+            completion = {}
             try:
-                result = original(path, params, priority)
-                record["status"] = result.status_code
-                record["responseBytes"] = len(result.content)
+                result = original_request(method, url, *args, **kwargs)
+                completion.update(status=result.status_code, responseBytes=len(result.content), serverReceived=True)
                 return result
+            except BaseException as exc:
+                completion["errorType"] = type(exc).__name__
+                raise
+            finally:
+                completion["durationSeconds"] = round(time.perf_counter() - started, 6)
+                self._finish_observer("transport", record, **completion)
+        self.provider._client.request = dispatched
+        original = self.provider._get
+        def observed(path, params, priority=None):
+            self._begin_observer("provider")
+            token = self._transport_scope.set(True)
+            try:
+                return original(path, params, priority)
             except Exception as exc:
-                # The shared mock provider conflates 403 with session expiry. Keep
-                # the actual HTTP request, but classify this explicit fixture denial
-                # like the production permission error, never as lost authentication.
+                # The shared mock provider conflates 403 with session expiry.
                 prefix = "/rest/api/2/issue/"
                 denied = (str(path).startswith(prefix) and
                           str(path)[len(prefix):].split("/", 1)[0] in self.store.denied_issue_keys)
                 if isinstance(exc, SessionExpired) and denied:
-                    record.update(status=403, errorType="PermissionDenied")
                     raise PermissionDenied("The evaluation fixture denies access to this issue") from exc
-                record["errorType"] = type(exc).__name__
                 raise
             finally:
-                record["durationSeconds"] = round(time.perf_counter() - started, 6)
-                with self._lock:
-                    self.upstream_calls.append(record)
+                self._transport_scope.reset(token)
+                self._finish_observer("provider")
         self.provider._get = observed
+        original_web_form = self.provider.web_form
+        def observed_web_form(*args, **kwargs):
+            self._begin_observer("provider")
+            token = self._transport_scope.set(True)
+            try:
+                return original_web_form(*args, **kwargs)
+            finally:
+                self._transport_scope.reset(token)
+                self._finish_observer("provider")
+        self.provider.web_form = observed_web_form
         def reject_write(*_args, **_kwargs):
             raise PermissionDenied("Read-only evaluation fixture rejects all Jira mutations")
         self.provider._write = self.provider.post_multipart = reject_write
@@ -266,19 +428,20 @@ class EvaluationFixture:
         original = self.runtime.server.call_tool
         async def observed(name, arguments, context=None):
             started = time.perf_counter()
-            record = {"name": name, "arguments": self._safe(arguments)}
+            record = {"name": name, "arguments": self._safe(arguments), "isError": None}
+            self._begin_observer("tool", self.tool_calls, record)
+            completion = {}
             try:
                 result = await original(name, arguments, context)
-                record.update(isError=result.is_error, result=self._safe(result.structured_content),
-                              content=self._safe([item.model_dump(mode="json") for item in result.content]))
+                completion.update(isError=result.is_error, result=self._safe(result.structured_content),
+                                  content=self._safe([item.model_dump(mode="json") for item in result.content]))
                 return result
-            except Exception as exc:
-                record.update(isError=True, errorType=type(exc).__name__)
+            except BaseException as exc:
+                completion.update(isError=True, errorType=type(exc).__name__)
                 raise
             finally:
-                record["durationSeconds"] = round(time.perf_counter() - started, 6)
-                with self._lock:
-                    self.tool_calls.append(record)
+                completion["durationSeconds"] = round(time.perf_counter() - started, 6)
+                self._finish_observer("tool", record, **completion)
         self.runtime.server.call_tool = observed
 
     def assert_conformance(self) -> dict[str, Any]:
@@ -344,10 +507,16 @@ class EvaluationFixture:
                 "worldUnchanged": before["worldSha256"] == after["worldSha256"],
                 "providerStoreUnchanged": before["providerStoreSha256"] == after["providerStoreSha256"],
                 "providerIssueCount": after["providerIssueCount"], "toolCatalogSha256": self.catalog_sha256,
-                "toolCalls": len(self.tool_calls), "toolErrors": sum(row.get("isError", False) for row in self.tool_calls),
+                "toolCalls": len(self.tool_calls), "toolErrors": sum(bool(row.get("isError")) for row in self.tool_calls),
                 "upstreamRequests": len(self.upstream_calls),
-                "upstreamDurationSeconds": round(sum(row["durationSeconds"] for row in self.upstream_calls), 6),
+                "upstreamDurationSeconds": (round(sum(row["durationSeconds"] for row in self.upstream_calls), 6)
+                    if all(row.get("durationSeconds") is not None for row in self.upstream_calls) else None),
                 "cachePolicy": "fresh-client-and-private-cache-each-case", "backgroundRevalidation": False,
+                "fixtureTransport": "inprocess-jira820",
+                "observerCoverage": {"upstream": "provider-scoped TestClient.request dispatches",
+                    "authProbes": "provider direct TestClient requests included; no SSO provider instantiated",
+                    "transportRetries": "repeated TestClient.request dispatches; internal redirect hops not observed",
+                    "discoveryProtocol": "guarded-http-json-rpc", "backgroundWork": "disabled"},
                 "fault": self.fault, "latencyMs": 0, "worldDate": self.today.isoformat()}
 
     def close(self):

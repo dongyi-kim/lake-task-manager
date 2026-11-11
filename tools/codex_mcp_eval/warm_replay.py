@@ -10,6 +10,17 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 
+def _business_data(name, data):
+    """Ignore only the search invocation's dispatched-query count, retaining its plan."""
+    if name != "search_issues" or not isinstance(data, dict):
+        return data
+    execution = data.get("execution")
+    if not isinstance(execution, dict):
+        return data
+    return {**data, "execution": {key: value for key, value in execution.items()
+                                  if key != "physicalQueryCount"}}
+
+
 def replay(fixture, calls, repetitions=3):
     allowed = {tool["name"] for tool in fixture.tool_catalog
                if (tool.get("annotations") or {}).get("readOnlyHint") is True}
@@ -33,13 +44,21 @@ def replay(fixture, calls, repetitions=3):
                         duration = time.perf_counter() - started
                         payload = result.structured_content or {}
                         upstream = fixture.upstream_calls[before:]
+                        original_data = call["result"].get("data")
+                        replay_data = payload.get("data")
                         rows.append({"name": call["name"], "arguments": call.get("arguments") or {},
                             "repeat": repeat + 1, "durationSeconds": duration,
                             "ok": not result.is_error and bool(payload.get("ok")),
                             "upstreamRequests": len(upstream),
                             "upstreamDurationSeconds": sum(row["durationSeconds"] for row in upstream),
                             "cache": payload.get("cache"),
-                            "dataByteIdentical": payload.get("data") == call["result"].get("data")})
+                            "dataByteIdentical": replay_data == original_data,
+                            "businessDataIdentical": (_business_data(call["name"], replay_data)
+                                                      == _business_data(call["name"], original_data)),
+                            **({"executionDiagnostics": {
+                                "original": (original_data or {}).get("execution"),
+                                "replay": (replay_data or {}).get("execution"),
+                            }} if call["name"] == "search_issues" else {})})
         return {"measuredAfterAnswer": True, "repetitions": repetitions,
                 "uniqueCalls": len(unique), "reads": rows}
     return anyio.run(run)

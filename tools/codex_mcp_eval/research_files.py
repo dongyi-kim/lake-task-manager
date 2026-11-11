@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import hmac
 import os
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
+import secrets
 import tempfile
 from threading import RLock
 from time import perf_counter
@@ -14,10 +16,16 @@ from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 
+def _tool_result(data):
+    return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))],
+                          structured_content=data)
+
+
 class ResearchFiles:
     MAX_FILE_BYTES = 1024 * 1024
     MAX_TOTAL_BYTES = 32 * 1024 * 1024
     MAX_FILES = 512
+    MANIFEST_RESPONSE_BYTES = 8192
 
     def __init__(self, root: Path, *, after_write=None):
         self.root = Path(root).absolute()
@@ -25,6 +33,7 @@ class ResearchFiles:
             raise ValueError("Research root must be an existing, non-linked private directory")
         self.root = self.root.resolve()
         self.calls, self.after_write, self._lock = [], after_write, RLock()
+        self._manifest_key = secrets.token_bytes(32)
         self.server = MCPServer("research-files", log_level="WARNING", instructions=(
             "Evaluation-only investigation files. Paths are relative to one private directory. "
             "No access to host files, oracle, credentials or parent directories. "
@@ -54,6 +63,7 @@ class ResearchFiles:
         return target
 
     def list_files(self):
+        """Complete private inventory for quota checks and recovery evidence scanners."""
         with self._lock:
             result = []
             for directory, dirs, files in os.walk(self.root, followlinks=False):
@@ -66,6 +76,42 @@ class ResearchFiles:
                     if len(result) > self.MAX_FILES:
                         raise ValueError("Investigation file count limit exceeded")
             return {"files": sorted(result, key=lambda row: row["path"])}
+
+    def _manifest_cursor(self, digest, offset):
+        payload = f"v1.{digest}.{offset}"
+        signature = hmac.new(self._manifest_key, payload.encode("ascii"), sha256).hexdigest()
+        return payload + "." + signature
+
+    def _manifest_page(self, cursor=None):
+        """Bound only the public response; internal consumers retain the full inventory."""
+        with self._lock:
+            rows = self.list_files()["files"]
+            digest = sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+            start = 0
+            if cursor is not None:
+                if not isinstance(cursor, str) or len(cursor) > 200:
+                    raise ValueError("Invalid manifest cursor; restart list_files without a cursor")
+                parts = cursor.split(".")
+                if len(parts) != 4 or parts[0] != "v1" or not parts[2].isascii() or not parts[2].isdigit():
+                    raise ValueError("Invalid manifest cursor; restart list_files without a cursor")
+                start = int(parts[2])
+                expected = self._manifest_cursor(parts[1], start)
+                if not hmac.compare_digest(cursor, expected) or parts[1] != digest or not 0 < start < len(rows):
+                    raise ValueError("Invalid or changed manifest cursor; restart list_files without a cursor")
+            page = {"files": [], "hasMore": False, "nextCursor": None}
+            for end in range(start + 1, len(rows) + 1):
+                more = end < len(rows)
+                candidate = {"files": rows[start:end], "hasMore": more,
+                             "nextCursor": self._manifest_cursor(digest, end) if more else None}
+                # Include both SDK payload representations, then reserve space
+                # for the surrounding JSON-RPC envelope instead of counting text alone.
+                encoded = _tool_result(candidate).model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")
+                if len(encoded) > self.MANIFEST_RESPONSE_BYTES - 256:
+                    break
+                page = candidate
+            if rows and not page["files"]:
+                raise ValueError("Manifest entry exceeds the response byte limit")
+            return page
 
     def read_file(self, path: str, offset: int = 0, max_chars: int = 2000):
         if type(offset) is not int or offset < 0 or type(max_chars) is not int or not 1 <= max_chars <= 2000:
@@ -121,15 +167,17 @@ class ResearchFiles:
             try:
                 result = fn(**arguments)
                 record.update(ok=True, result=result)
-                return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False))],
-                                      structured_content=result)
+                return _tool_result(result)
             finally:
                 record["durationSeconds"] = perf_counter() - started
                 self.calls.append(record)
 
-        def list_files() -> CallToolResult:
-            """List saved investigation files; never lists host or parent directories."""
-            return observed("list_files", self.list_files, {})
+        def list_files(cursor: str | None = None) -> CallToolResult:
+            """List a bounded page of saved investigation files in path order.
+            Follow nextCursor while hasMore is true. Invalid or changed cursors are errors;
+            restart without a cursor after changing files. Never lists host or parent directories.
+            """
+            return observed("list_files", self._manifest_page, {"cursor": cursor})
 
         def read_file(path: str, offset: int = 0, max_chars: int = 2000) -> CallToolResult:
             """Read UTF-8 investigation text, 1..2000 characters per page; follow nextOffset."""

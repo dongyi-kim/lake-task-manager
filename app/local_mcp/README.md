@@ -116,6 +116,14 @@ SDK 검증 과정에서 기본값을 추가하거나 Jira 확장 필드를 제�
 `include_description` 값은 유지한다. 검색/다건의 본문은 원래 Jira markup이다. 한 티켓의 렌더링·
 편집 원문이 필요하면 `get_ticket(detail="read"/"edit")`을 사용하고 이미 받은 상태·본문은 재사용한다.
 
+검색·다건 조회는 `strategy=auto|off|people|full`, `max_parts=1..64`를 받는다(기본 auto/64).
+off는 전체 JQL, people은 증명 가능한 사람 조건 묶음, full은 논리 조건별 조회이며 auto는 기존
+묶음 선택을 유지한다. 알려진 조회 비용이 상한을 넘으면 전체 JQL로 전환한다. 상한은 서로 다른
+물리 JQL 수이며 한 JQL의 여러 HTTP 페이지·재시도는 별도 REST 부하다. 실제 비용은 REST 시도
+계측으로 확인한다. `execution`은 요청/실행 전략, 전환 이유, 논리 조건·물리 조회 수를 반환한다.
+다음 페이지는 cache_mode·strategy·max_parts도 유지한다. snapshot의 30분 수명은 원본의 나이와
+별개이며 이어 읽기는 새 원본 검증이 아니다. 검증된 membership·필드는 분해 전략 간 공유한다.
+
 읽기 결과는 MCP structured content의 `{ok: true, data: ...}`에 있다. 제한이 있는 댓글/이력 조회는
 요청 limit을 응답에 명시한다. `get_history`만 `include_children=true`를 명시하면 직계 자식의
 상태 변경도 포함한다(기본 false). `get_evidence_page`는 항상 지정한 티켓 한 개의 선택한 종류만
@@ -127,6 +135,17 @@ null이어도 sourceComplete/partial을 확인하고, 미확인 원본을 전체
 읽기에는 `cache` 출처 정보와 `partial` 여부도 포함한다. 출처를 수집할 수 있으면 가장 오래된
 `fetchedAt`·`freshUntil`·`displayUntil`, stale 여부와 policy revision을 반환한다.
 관측 정보가 없으면 `available: false, state: unknown`으로 표시하며 최신 데이터라고 단정하지 않는다.
+
+Jira·Confluence·사람·계층 등 데이터 조회에는 선택 인자 `cache_mode`를 사용할 수 있다.
+`live`는 원본 검증, `hot`은 600초, `warm`은 86,400초, `cool`은 604,800초,
+`cold`는 2,592,000초까지 허용한다.
+생략하면 기존 리소스별 정책을 유지한다. `fresh=true`는 `live`와 같으며 다른 명시 모드와 함께
+사용하면 입력 오류다. 인증·상태·로컬 설정·LLM·가이드 조회와 쓰기 도구에는 이 인자가 없다.
+명시 모드는 `cache.requestedCacheMode`, `effectiveCacheMode`, `maxAgeSeconds`, `compliant`,
+`upstreamValidated`를 반환한다. 관측 출처가 있으면 `oldestComponentFetchedAt`도 반환한다.
+`partial` 또는 알 수 없는 출처를 완전하고 최신인 근거로 간주하지 않는다. 요청 정책을 충족할 수
+없는 원본 검증은 재시도 가능한 503 오류이며, 같은 인자로 다시 시도한다.
+근거 페이지의 `nextCall.arguments`는 명시한 모드를 유지하며 8KiB 제한에도 이 인자를 포함한다.
 
 `get_ticket`의 `descriptionHtml`은 열람용, `descriptionEditHtml`은
 수정용 본문이다. 생성 시 `body.descriptionHtml`, 이후 본문 수정은 `update_description(html, ...)`,
@@ -238,10 +257,20 @@ Jira 8.20의 expanded changelog가
 실시간 offset/계층 조회는 변경 중 불변 snapshot을 보장하지 않으므로 total·ID 변화를 확인한다.
 권한상 숨겨진 자손은 알 수 없으며 확인된 실패·누락은 별도로 반환한다. 미확인을 0건으로 집계하지 않는다.
 
+`get_evidence_page`의 `recordFormat="jira-evidence-v2"`는 본문·renderedBody·시각·history items와
+visibility 등 비행위자 필드를 그대로 보존한다. `author`와 `updateAuthor`는 각각 실제 제공된
+`accountId/name/key/displayName/self/timeZone`만 보존한다. avatarUrls·emailAddress·active·기타
+프로필 속성을 제외하므로 원래의 전체 Jira actor JSON과는 의미상 호환성 변경이다. 원본 source
+cache나 UI 렌더링은 바꾸지 않는다. 이 도구에는 전체 actor 프로필을 돌려주는 입력 모드가 없다.
+
 새 두 도구의 데이터 페이지는 최대 8KiB다. 댓글·이력 한 건이 너무 크면 `recordJson` 조각과
 `nextRecordOffset`을 반환한다. 같은 `sourceIndex`에서 `max_results=1`, `record_offset`으로 이어 읽고,
-같은 `recordSha256`인지 확인한 뒤 조각을 합쳐 JSON으로 해석한다. 원본 변경으로 hash가 달라지면
-해당 기록을 처음부터 다시 읽는다. 하위 계층의 누락 목록은 `nextMissingStartAt`을 별도로 따라간다.
+같은 `recordFormat`과 `recordSha256`인지 확인한 뒤 조각을 합쳐 JSON으로 해석한다. hash는 선언된
+정규화 레코드의 정확한 JSON에 대한 값이며 제외된 프로필까지 복원한다는 뜻은 아니다. 구형 무표기/v1
+조각과 v2 조각을 섞지 않는다. 지원하는 무표기/v1↔v2 사이 형식 변경이나 같은 지원 형식의 hash
+변경은 해당 기록만 다시 읽고 다른 정상 기록은 보존한다. 알 수 없는 format은 중단하고 지원되지
+않는 수집 형식을 진단한다. 그 기록 하나만 다시 읽어 미지원 수집을 정상화하지 않는다. 하위 계층
+누락은 `nextMissingStartAt`을 따로 따라간다.
 하위 목록은 일반 갱신 간격을 사용하며 완료 티켓 원본의 긴 TTL 때문에 갱신이 지연되지 않는다.
 Epic 탐색은 설정 프로젝트로 제한한 JQL을 사용하며 범위 밖 티켓을 가져오는 Agile fallback은 하지 않는다.
 

@@ -55,7 +55,7 @@ EVALUATION_HARNESS_INPUTS = tuple(
     )
 )
 RAW_RESULT_ROOT = ROOT / ".cache" / "agent-evaluation"
-TRACKED_REPORT_ROOT = ROOT / "research" / "agent-improvement" / "evaluations"
+TRACKED_REPORT_ROOT = ROOT / ".research" / "agent-improvement" / "evaluations"
 
 
 @lru_cache(maxsize=1)

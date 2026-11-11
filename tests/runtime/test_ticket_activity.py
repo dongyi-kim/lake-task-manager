@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 
 from app.infra.cache import Cache
-from app.infra.cache_policy import CacheHeadersMiddleware, revalidating
+from app.infra.cache_policy import CacheHeadersMiddleware, CachePolicy, revalidating
 from app.jira.jira_client import JiraClient
 from app.routes.resources import build_resource_router
 from app.services.ticket_activity import RECENT_WINDOW_MS, mark_ticket_viewed, ticket_activity
@@ -53,6 +53,58 @@ def test_metadata_uses_all_known_projections_and_comment_edits_without_revalidat
         "DL-2": {"lastViewedAt": None, "latestRelevantAt": None, "latestCommentAt": None},
     }
     assert cache.get_stale_at("issue:prod:DL-1")[1] == before
+
+
+def test_full_activity_batch_durably_touches_once_instead_of_committing_per_ticket(context):
+    client, settings, cache = context
+    keys = [f"DL-{index}" for index in range(500)]
+    cache.set_many_if_fence([(f"issueL:prod:{key}", {"fields": {"updated": iso(NOW - 1000)}})
+                             for key in keys], 600, cache.fence())
+    statements = []
+    cache._conn.set_trace_callback(statements.append)
+    try:
+        result = ticket_activity(client, settings, cache, keys)
+    finally:
+        cache._conn.set_trace_callback(None)
+    assert list(result["tickets"]) == keys
+    assert all(row == {"lastViewedAt": None, "latestRelevantAt": NOW - 1000, "latestCommentAt": None}
+               for row in result["tickets"].values())
+    assert sum(sql == "COMMIT" for sql in statements) == 1
+    assert sum(sql.startswith("SELECT") for sql in statements) <= 15
+    assert cache._conn.in_transaction is False
+
+
+def test_batched_activity_keeps_mixed_sources_unknowns_display_retention_and_reply_order(context):
+    client, settings, cache = context
+    cache.configure(CachePolicy())
+    cache.set("issue:prod:DL-1", {"fields": {"updated": iso(NOW - 4000)}}, 600)
+    cache.set("issueL:prod:DL-1", {"fields": {"updated": iso(NOW - 3000),
+              "comment": {"comments": [{"created": iso(NOW - 3500), "updated": iso(NOW - 2000)}]}}}, 600)
+    cache.set("issueview:prod:DL-1", {"fields": {"updated": iso(NOW - 1000)}}, 600)
+    cache.set("comments:prod:DL-1", [{"date": iso(NOW - 500)}], 600)
+    cache.set("comments:prod:DL-1:full", {"complete": True, "comments": [{"updated": iso(NOW - 250)}]}, 600)
+    cache.set("issueL:prod:DL-2", {"fields": {"updated": iso(NOW + 1)}}, 600)
+    cache.set("comments:prod:DL-2", None, 600)
+    cache.set("comments:prod:DL-2:full", {"complete": False, "comments": [{"date": iso(NOW - 1)}]}, 600)
+    cache.set_if_fence("issueL:prod:DL-3", {"fields": {"updated": iso(NOW - 350)}},
+                       600, cache.fence(), fetched_at=NOW / 1000 - 1200)
+    cache.set("issueL:prod:DL-4", {"fields": {"updated": iso(NOW - 450)}}, 600)
+    cache.invalidate_keys(["issueL:prod:DL-4"])
+    cache.set_if_fence("issueL:prod:DL-5", {"fields": {"updated": iso(NOW - 550)}},
+                       600, cache.fence(), fetched_at=NOW / 1000 - cache.policy.displaySeconds - 1)
+    mark_ticket_viewed(client, settings, cache, "DL-2", NOW - 50)
+    before = cache._conn.execute("SELECT key,fetched_at FROM cache UNION ALL SELECT key,fetched_at FROM cache_display ORDER BY key").fetchall()
+    result = ticket_activity(client, settings, cache, ["dl-4", "DL-1", "DL-2", "DL-3", "DL-5", "DL-6", "dl-4"])
+    assert list(result["tickets"]) == ["DL-4", "DL-1", "DL-2", "DL-3", "DL-5", "DL-6"]
+    assert result["tickets"] == {
+        "DL-4": {"lastViewedAt": None, "latestRelevantAt": NOW - 450, "latestCommentAt": None},
+        "DL-1": {"lastViewedAt": None, "latestRelevantAt": NOW - 250, "latestCommentAt": NOW - 250},
+        "DL-2": {"lastViewedAt": NOW - 50, "latestRelevantAt": None, "latestCommentAt": None},
+        "DL-3": {"lastViewedAt": None, "latestRelevantAt": NOW - 350, "latestCommentAt": None},
+        "DL-5": {"lastViewedAt": None, "latestRelevantAt": None, "latestCommentAt": None},
+        "DL-6": {"lastViewedAt": None, "latestRelevantAt": None, "latestCommentAt": None},
+    }
+    assert cache._conn.execute("SELECT key,fetched_at FROM cache UNION ALL SELECT key,fetched_at FROM cache_display ORDER BY key").fetchall() == before
 
 
 @pytest.mark.parametrize("timestamp,expected", [
@@ -140,10 +192,13 @@ def test_comments_source_header_excludes_older_identity_and_preserves_strict_ref
     _, settings, cache = context
     cache.set("comments:prod:DL-1", [{"id": "1"}], 600)
     cache.set_if_fence("myself:prod", {"id": "me"}, 600, cache.fence(), fetched_at=NOW / 1000 - 300)
-    calls = []
+    calls, upstream = [], []
+    def produce_comments():
+        upstream.append(1)
+        return [{"id": "1"}]
     def comments(key, limit, **kwargs):
         calls.append((key, limit, kwargs, revalidating()))
-        rows = cache.get("comments:prod:DL-1")
+        rows = cache.get_or_set("comments:prod:DL-1", 600, produce_comments)[0]
         cache.get("myself:prod")
         return rows
     client = SimpleNamespace(issue_comments=comments,
@@ -155,13 +210,19 @@ def test_comments_source_header_excludes_older_identity_and_preserves_strict_ref
     async def scenario():
         async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app),
                                      base_url="http://127.0.0.1:4457") as http:
-            response = await http.get(f"/api/issue/DL-1/comments?freshAfter={NOW - 1000}&revalidate=1")
+            response = await http.get(f"/api/issue/DL-1/comments?freshAfter={NOW - 1000}")
             assert response.status_code == 200
             assert float(response.headers["X-LTM-Comments-Fetched-At"]) == NOW / 1000
             assert response.headers["X-LTM-Comments-Complete"] == "1"
             assert response.headers["X-LTM-Comments-Total"] == "1"
             assert float(response.headers["X-LTM-Fetched-At"]) == NOW / 1000 - 300
-            assert calls == [("DL-1", 100, {"fresh_after": NOW - 1000}, True)]
+            assert calls == [("DL-1", 100, {"fresh_after": NOW - 1000}, False)]
+            assert upstream == []
+            live = await http.get(f"/api/issue/DL-1/comments?freshAfter={NOW - 1000}&revalidate=1")
+            assert live.status_code == 200
+            assert float(live.headers["X-LTM-Comments-Fetched-At"]) == NOW / 1000
+            assert upstream == [1]
+            assert calls[-1] == ("DL-1", 100, {"fresh_after": NOW - 1000}, True)
             assert (await http.get(f"/api/issue/DL-1/comments?freshAfter={NOW + 1}")).status_code == 422
-            assert len(calls) == 1
+            assert len(calls) == 2
     anyio.run(scenario)

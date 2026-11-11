@@ -51,11 +51,14 @@ def ticket_activity(client, settings, cache, keys):
     scope = activity_scope(client, settings)
     keys = list(dict.fromkeys(key.upper() for key in keys))
     viewed = cache.ticket_read_states(scope, keys)
+    known = cache.get_alive_many((f"{kind}:{client.env}:{key}{suffix}" for key in keys
+                                 for kind, suffix in (("issue", ""), ("issueL", ""), ("issueview", ""),
+                                                      ("comments", ""), ("comments", ":full"))), record=False)
     tickets = {}
     for key in keys:
         updates, comments = [], []
         for kind in ("issue", "issueL", "issueview"):
-            hit = cache.get_alive(f"{kind}:{client.env}:{key}", record=False)
+            hit = known.get(f"{kind}:{client.env}:{key}")
             if not hit or not isinstance(hit[0], dict):
                 continue
             fields = hit[0].get("fields") or {}
@@ -67,10 +70,10 @@ def ticket_activity(client, settings, cache, keys):
             embedded = fields.get("comment") or {}
             if isinstance(embedded, dict):
                 comments.extend(_comment_timestamps(embedded.get("comments"), now_ms))
-        hit = cache.get_alive(f"comments:{client.env}:{key}", record=False)
+        hit = known.get(f"comments:{client.env}:{key}")
         if hit:
             comments.extend(_comment_timestamps(hit[0], now_ms))
-        full = cache.get_alive(f"comments:{client.env}:{key}:full", record=False)
+        full = known.get(f"comments:{client.env}:{key}:full")
         if full and isinstance(full[0], dict) and full[0].get("complete"):
             comments.extend(_comment_timestamps(full[0].get("comments"), now_ms))
         tickets[key] = {

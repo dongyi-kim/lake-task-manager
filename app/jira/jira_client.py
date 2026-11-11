@@ -10,7 +10,7 @@ import re
 import sys
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
 from datetime import date, timedelta
 from html import escape, unescape
@@ -20,14 +20,17 @@ from uuid import uuid4
 
 from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflightUnavailable, PermissionDenied, QueryStateChanged, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                            background_upstream, write_upstream)
-from app.infra.cache_policy import note_read, read_scope, revalidating
+from app.infra.cache_policy import (CacheMode, RequestReadPolicy, current_read_policy,
+                                   note_read, read_scope, reduce_read_metadata, revalidating,
+                                   observed_reads)
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
                        serialize_jira_html, shorten_mention_names, text_to_html, tidy_html, unproxy_media)
 from app.domain.names import real_name
 from app.content.sections import split_sections
-from app.jira.jql import (JqlUnsupported, compile_jql, fields_with_order,
+from app.jira.jql import (JqlExpansionLimit, JqlUnsupported, compile_jql, fields_with_order,
                           sort_issues)
+from app.jira.search_preview import search_prefix, search_preview
 from app.jira.jql_execution import (group_query, partition_fields, partition_rows, plan_groups,
                                     projection_scope, row_projection_complete, selector_fields)
 from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
@@ -40,6 +43,10 @@ from app.jira.mutation_recovery import (MutationReceiptStore,
                                         reconcile_created_issue,
                                         reconcile_transition)
 from app.jira.workload_service import JiraWorkloadMixin, workload_category
+from app.jira.jql_budget import claim_physical_query
+from app.jira.jql_scheduling import BoundedQueryScheduler
+from app.jira.jql_strategy import execution_plan, hydrate_pending
+from app.jira.jql_budget import budgeted_query, current_budget, validate_max_parts
 
 
 # 실 Jira DC statusCategory.key → 내부 vocab (new=todo, indeterminate=inprogress, done=done)
@@ -523,6 +530,11 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
     }
 
 
+class _CachedJqlLeafResult(NamedTuple):
+    issues: list
+    source: dict
+
+
 class _ProviderStartupFailure(NamedTuple):
     """Only immutable diagnostic values survive a launch attempt, never exception tracebacks."""
 
@@ -609,6 +621,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                                   "nextCheckAt": None, "failure": None}
         self._jql_lock_guard = threading.Lock()
         self._jql_locks = {}
+        # Preserve the established parallel limit until a four-worker candidate qualifies.
+        self._query_scheduler = BoundedQueryScheduler(capacity=8)
         self._jql_policy = JqlCachePolicy(self)
         self._mutation_receipts = MutationReceiptStore(self.cache, self.env, scope=self.mutation_scope())
         # 세션 사용자 캐시도 함께 버린다. 안 그러면 로그인 직후에도 옛 판정(빈 사용자)이
@@ -997,6 +1011,27 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         data, _ = getter(ck, self.s.cache_ttl_seconds, fetch)
         return data
 
+    def _cached_issues(self, keys, *, light=False):
+        """Read eligible issue projections together, preserving newest-source precedence."""
+        return {key: entry[0] for key, entry in self._cached_issue_entries(keys, light=light).items()}
+
+    def _cached_issue_entries(self, keys, *, light=False):
+        """Keep the selected payload together with its atomically captured source and key."""
+        keys = list(dict.fromkeys(key for key in keys if key))
+        prefixes = ("issue", "issueL") if light else ("issue",)
+        candidates = self.cache.get_many_with_metadata(
+            [f"{prefix}:{self.env}:{key}" for key in keys for prefix in prefixes])
+        found = {}
+        for key in keys:
+            full = candidates.get(f"issue:{self.env}:{key}")
+            small = candidates.get(f"issueL:{self.env}:{key}") if light else None
+            if (full is not None and (light or full[0] is not None)
+                    and (small is None or full[1]["fetchedAt"] >= small[1]["fetchedAt"])):
+                found[key] = (*full, f"issue:{self.env}:{key}")
+            elif small is not None:
+                found[key] = (*small, f"issueL:{self.env}:{key}")
+        return found
+
     def get_issue_light(self, key, *, strict=False):
         """단일 티켓 — **경량 필드만**(무거운 description·issuelinks·attachment 제외).
 
@@ -1004,16 +1039,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         전체(issue:)는 경량의 상위집합이라 내용은 늘 충분하므로, 전체·경량 중 **TTL 이내이면서 더
         최근에 받아온 쪽**을 쓴다(전체가 더 최신이면 전체, 경량이 더 최신이면 경량). 둘 다 만료/없으면
         경량으로 받아 issueL 에 담는다(전체 캐시와 분리 — 관련/첨부가 이걸 읽고 깨지지 않게)."""
-        ttl = self.s.cache_ttl_seconds
-        now = time.time()
-        fk, ck = f"issue:{self.env}:{key}", f"issueL:{self.env}:{key}"
-        full = self.cache.get_stale_at(fk)        # (값, 받아온 시각) | None
-        light = self.cache.get_stale_at(ck)
-        full_ok = full is not None and self.cache.get(fk) is not None
-        light_ok = light is not None and self.cache.get(ck) is not None
-        # 전체가 살아 있고(TTL내) 경량보다 더(또는 같이) 최신이면 전체를 쓴다 — 굳이 다시 안 받는다.
-        if full_ok and (not light_ok or full[1] >= light[1]):
-            return full[0]
+        ck = f"issueL:{self.env}:{key}"
+        cached = self._cached_issues([key], light=True)
+        if key in cached:
+            return cached[key]
         # 그 외(경량이 더 최신이거나 전체가 만료) → issueL 경유(SWR). 만료면 여기서 경량 조회.
 
         def fetch():
@@ -1121,7 +1150,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         그대로 재사용되므로 캐시 가치가 크다(담당/상태 변경 시 'mt:' 프리픽스째 무효화한다)."""
         return self._search(jql, cache_key=cache_key, max_results=max_results)
 
-    def iter_search_issue_chunks(self, jql, fields=None, light=True):
+    @budgeted_query
+    def iter_search_issue_chunks(self, jql, fields=None, light=True, *, strategy="auto", max_parts=64):
         """Yield cached logical memberships as bounded physical request groups complete.
 
         Switching filters keeps completed memberships and issue rows. Serial providers submit
@@ -1148,7 +1178,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return {"kind": kind, "message": message}
 
         try:
-            compiled = self._compile_jql(jql)
+            compiled = self._compile_jql(jql, strategy=strategy)
         except JqlUnsupported:
             try:
                 issues = self._legacy_search(
@@ -1174,32 +1204,42 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             }
             return
 
-        groups = plan_groups(compiled, self.s.epic_link_field_id)
-        execution_fields = partition_fields(fields_with_order(requested_fields, compiled.order), groups)
+        plan, execution_fields = execution_plan(
+            self, compiled, fields_with_order(requested_fields, compiled.order), light, strategy, max_parts)
+        groups = plan.groups
         generation = self._jql_generation()
         projection = self._projection_signature(execution_fields, light)
         combined = {}
+        fence, failed = self.cache.fence(), False
         coalesce_cached = all(self._jql_leaf_cache_ready(
             member.leaf, execution_fields, light, generation, projection, selector_fields(group))
             for group in groups for member in group)
-        for group, result, error in self._iter_jql_groups(
-                groups, execution_fields, light, generation, projection):
-            rows = [] if error else self._combine_jql_rows(
-                [part_rows for _members, part_rows in result], compiled.order)
-            for issue in rows:
-                if issue.get("key"):
-                    combined[issue["key"]] = issue
-            chunk = {
-                "leaf": group_query(group), "leafIndex": group[0].index,
-                "leafTotal": len(compiled.leaves), "issues": rows,
-                "combined": sort_issues(combined.values(), compiled.order),
-                "fallback": False, "coalesceCached": coalesce_cached,
-            }
-            if len(group) > 1:
-                chunk["completedLeaves"] = [member.leaf for member in group]
-            if error:
-                chunk["error"] = failure(error)
-            yield chunk
+        with observed_reads(self._iter_jql_groups, groups, execution_fields, light,
+                            generation, projection) as (results, sources):
+            for group, result, error in results:
+                failed = failed or bool(error)
+                rows = [] if error else self._combine_jql_rows(
+                    [part_rows for _members, part_rows in result], compiled.order)
+                for issue in rows:
+                    if issue.get("key"):
+                        combined[issue["key"]] = issue
+                chunk = {
+                    "leaf": group_query(group), "leafIndex": group[0].index,
+                    "leafTotal": len(compiled.leaves), "issues": rows,
+                    "combined": sort_issues(combined.values(), compiled.order),
+                    "fallback": False, "coalesceCached": coalesce_cached,
+                    "execution": {**plan.diagnostics(), **current_budget().diagnostics()},
+                }
+                if len(group) > 1:
+                    chunk["completedLeaves"] = [member.leaf for member in group]
+                elif group[0].whole:
+                    chunk["completedLeaves"] = list(compiled.leaves)
+                if error:
+                    chunk["error"] = failure(error)
+                yield chunk
+        if not failed:
+            metadata = reduce_read_metadata(sources, source_selection="all")
+            self._publish_jql_union(compiled, combined.values(), generation, metadata, fence)
 
     def _iter_jql_groups(self, groups, fields, light, generation, projection):
         def execute(group):
@@ -1217,19 +1257,21 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             remaining = tuple(member for member in group if member not in ready)
             if remaining:
                 pending.append(remaining)
-        if getattr(self.provider, "supports_parallel", False) and len(pending) > 1:
-            with ThreadPoolExecutor(max_workers=min(8, len(groups))) as pool:
-                for future in as_completed([pool.submit(execute, group) for group in pending]):
-                    yield future.result()
-        else:
+        try:
+            hydrate_pending(self, pending, fields, light, generation, projection)
+        except Exception as exc:
             for group in pending:
-                yield execute(group)
+                yield group, None, exc
+            return
+        yield from self._query_scheduler.run_bounded(
+            pending, execute, parallel_capable=getattr(self.provider, "supports_parallel", False))
 
     def _execute_jql_group(self, group, fields, light, generation, projection):
         if len(group) == 1:
             member = group[0]
             return [(group, self._cached_jql_leaf(member.leaf, member.fields, fields, light,
-                                                 generation, projection))]
+                                                 generation, projection, result_limit=(
+                    self.JQL_BOOTSTRAP_RESULT_LIMIT if member.whole else None)).issues)]
         opaque = any(not member.family for member in group)
         # Opaque ORs may reuse a fully warm set of existing logical memberships, but a cold
         # arbitrary query is never expanded into speculative requests.
@@ -1237,7 +1279,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             dependencies = tuple(sorted({field for member in group for field in member.fields}))
             return [(group, self._cached_jql_leaf(group_query(group), dependencies, fields, light,
                                                  generation, projection,
-                                                 result_limit=self.JQL_BOOTSTRAP_RESULT_LIMIT))]
+                                                 result_limit=self.JQL_BOOTSTRAP_RESULT_LIMIT).issues)]
         with ExitStack() as locks:
             for key in sorted({self._jql_leaf_key(member.leaf)[2] for member in group}):
                 locks.enter_context(self._jql_lock(key))
@@ -1246,10 +1288,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
             complete, missing = [], []
             for member in group:
-                keys = self.cache.get(self._jql_leaf_key(member.leaf)[2])
-                if isinstance(keys, list):
-                    complete.append(((member,), self._hydrate_jql_leaf_rows(
-                        keys, fields, light, generation, projection)))
+                _epoch, digest, member_key = self._jql_leaf_key(member.leaf)
+                entry = self.cache.get_with_metadata(member_key)
+                if entry is not None and isinstance(entry[0], list):
+                    keys, source = entry
+                    opaque_key = self._jql_opaque_key(generation, projection, digest, source)
+                    scoped = self.cache.get(opaque_key) if opaque_key else None
+                    rows = scoped if isinstance(scoped, list) else self._hydrate_jql_leaf_rows(
+                        keys, fields, light, generation, projection)
+                    complete.append(((member,), rows))
                 else:
                     missing.append(member)
             if not missing:
@@ -1258,12 +1305,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             query = group_query(missing)
             dependencies = tuple(sorted({field for member in missing for field in member.fields}))
             if len(missing) == 1:
-                rows = self._fetch_jql_leaf(query, fields, light)
                 fetched_at = time.time()
+                rows = self._fetch_jql_leaf(query, fields, light)
+                upstream_validated = True
             else:
-                rows = self._cached_jql_leaf(query, dependencies, fields, light, generation, projection,
+                captured = self._cached_jql_leaf(query, dependencies, fields, light, generation, projection,
                     result_limit=max(self.JQL_BOOTSTRAP_RESULT_LIMIT, len(missing) * self.JQL_LEAF_RESULT_LIMIT))
-                fetched_at = (self.cache.metadata(self._jql_leaf_key(query)[2]) or {}).get("fetchedAt")
+                rows, source = captured
+                fetched_at = source.get("fetchedAt")
+                upstream_validated = bool(source.get("upstreamValidated"))
             if self.cache.fence() != fence or generation != self._jql_generation():
                 raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
             verified = {badge.get("username") for member in missing
@@ -1272,7 +1322,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             partitions = partition_rows(missing, rows, verified)
             if partitions is None or fetched_at is None:
                 return complete + [(missing, rows)]
-            self._store_jql_rows(rows, generation, projection, fields)
+            if len(missing) == 1:
+                self._store_jql_rows(rows, generation, projection, fields,
+                                     fetched_at=fetched_at, fence=fence)
             unproven = []
             for member, subset in zip(missing, partitions):
                 if subset is None:
@@ -1282,7 +1334,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 keys = [row["key"] for row in subset if row.get("key")]
                 self._register_jql_leaf_indexes(key, digest, epoch, keys, member.fields)
                 if not self.cache.set_if_fence(key, keys, self.s.cache_ttl_seconds, fence,
-                                               fetched_at=fetched_at):
+                                               fetched_at=fetched_at, upstream_validated=upstream_validated):
                     raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
                 complete.append(((member,), subset))
             if unproven:
@@ -1291,9 +1343,6 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def _jql_epoch_namespace(self):
         return self._jql_policy.epoch_namespace()
-
-    def _jql_leaf_epoch_namespace(self):
-        return self._jql_policy.leaf_epoch_namespace()
 
     def _jql_generation(self):
         return self._jql_policy.generation()
@@ -1316,10 +1365,6 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _jql_changed_predicate_fields(events, epic_link_field_id=None):
         return changed_predicate_fields(events, epic_link_field_id)
 
-    def _affected_jql_leaf_keys(self, events):
-        """Resolve active leaf keys affected by successful mutations via persistent indexes."""
-        return self._jql_policy.affected_leaf_keys(events)
-
     def _apply_mutation_events(self, events):
         """Invalidate aggregates, affected JQL leaves, and one immutable snapshot generation."""
         return self._jql_policy.apply_mutation_events(events)
@@ -1330,19 +1375,21 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _mutation_batch_scope(self):
         return self._jql_policy.mutation_batch_scope()
 
-    def _compile_jql(self, jql, *, now=None):
+    def _compile_jql(self, jql, *, now=None, strategy="auto"):
+        if not isinstance(strategy, str) or strategy not in {"auto", "off", "people", "full"}:
+            raise ValueError("strategy must be auto, off, people or full")
         raw = str(jql or "")
         needs_user = bool(re.search(
             r"\bcurrentUser\s*\(|\b(?:start|end)Of(?:Day|Week|Month|Year)\s*\(|"
             r"(?<![A-Za-z0-9_])[+-]\d+[mhdw](?![A-Za-z0-9_])", raw, re.I))
         user = self.current_user() if needs_user else {}
-        return compile_jql(
-            raw,
-            user_id=(user or {}).get("id") or "",
-            timezone_name=(user or {}).get("timezone") or "Asia/Seoul",
-            ttl_seconds=self.s.cache_ttl_seconds,
-            now=now,
-        )
+        options = dict(user_id=(user or {}).get("id") or "",
+                       timezone_name=(user or {}).get("timezone") or "Asia/Seoul",
+                       ttl_seconds=self.s.cache_ttl_seconds, now=now)
+        try:
+            return compile_jql(raw, decompose=strategy != "off", **options)
+        except JqlExpansionLimit:
+            return compile_jql(raw, decompose=False, **options)
 
     def _projection_signature(self, fields, light):
         normalized = ",".join(sorted(
@@ -1383,6 +1430,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _fetch_exhaustive_jql(self, query, fields, light, result_limit):
         issues, start, expected_total = [], 0, None
         fence = self.cache.fence()
+        collected = time.time()
         while True:
             page = self._legacy_search_issues_page(
                 query, start_at=start, max_results=100, fields=fields, light=light,
@@ -1417,11 +1465,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # An incomplete response can still provide a usable query result, but it must not
             # replace a complete canonical ticket. Null identities are valid; omitted standard
             # fields are not. Optional instance-specific custom fields may legitimately be absent.
+            canonical = [(f"{pfx}:{self.env}:{issue['key']}", issue) for issue in issues
+                         if (issue or {}).get("key") and row_projection_complete(issue, fields)]
+            memberships = []
+            for _key, issue in canonical:
+                children = self._known_subtask_keys(issue)
+                if children is not None:
+                    memberships.append((self._direct_child_cache_key(issue["key"]), children))
+            # These rows came from this complete upstream result, not a cached projection copy.
+            # Publish their known memberships at the same original age/fence in one transaction.
             self.cache.set_many_if_fence(
-                ((f"{pfx}:{self.env}:{(issue or {}).get('key')}", issue)
-                 for issue in issues if (issue or {}).get("key")
-                 and row_projection_complete(issue, fields)),
-                self.s.cache_ttl_seconds, fence)
+                canonical + memberships, self.s.cache_ttl_seconds, fence, fetched_at=collected,
+                preserve_newer_keys={key for key, _children in memberships}, revalidate_equal_preserved=True)
         return issues
 
     def _fetch_jql_leaf(self, leaf, fields, light):
@@ -1433,14 +1488,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return (f"jqlrow:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
                 f"{projection}:{issue_key}")
 
-    def _store_jql_rows(self, issues, generation, projection, fields=None):
-        fence = self.cache.fence()
+    def _store_jql_rows(self, issues, generation, projection, fields=None, *, fetched_at=None,
+                        fence=None, upstream_validated=True):
+        fence = self.cache.fence() if fence is None else fence
         ttl = max(int(self.s.cache_ttl_seconds), self.JQL_SNAPSHOT_TTL)
         self.cache.set_many_if_fence(
             ((self._jql_row_key(generation, projection, (issue or {}).get("key")), issue)
              for issue in issues if (issue or {}).get("key")
              and row_projection_complete(issue, fields)),
-            ttl, fence)
+            ttl, fence, fetched_at=fetched_at, upstream_validated=upstream_validated)
 
     def _load_jql_rows(self, issue_keys, generation, projection):
         cache_keys = [self._jql_row_key(generation, projection, key) for key in issue_keys]
@@ -1478,46 +1534,80 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     "field", leaf_generation, field) + digest, key))
         self.cache.set_many_if_fence(rows, ttl, fence)
 
-    def _hydrate_jql_leaf_rows(self, issue_keys, fields, light, generation, projection):
-        """Hydrate stable leaf IDs from versioned rows/shared issue caches, batching misses."""
+    def _resolve_cached_jql_rows(self, issue_keys, fields, light, generation, projection,
+                                 required=()):
+        """Resolve rows and their atomic provenance without fetching or publishing data."""
         issue_keys = list(issue_keys or ())
         cache_keys = [self._jql_row_key(generation, projection, key) for key in issue_keys]
-        cached_rows = self.cache.get_many(cache_keys)
-        by_key = {
-            issue_key: cached_rows.get(cache_key)
-            for issue_key, cache_key in zip(issue_keys, cache_keys)
-            if isinstance(cached_rows.get(cache_key), dict)
-            and cached_rows.get(cache_key).get("key") == issue_key
-            and row_projection_complete(cached_rows.get(cache_key), fields)
-        }
+        cached_rows = self.cache.get_many_with_metadata(cache_keys)
+        by_key, sources = {}, {}
+
+        def accept(issue_key, entry):
+            if entry is None:
+                return False
+            row, source = entry
+            if (isinstance(row, dict) and row.get("key") == issue_key
+                    and row_projection_complete(row, fields, required)):
+                by_key[issue_key], sources[issue_key] = row, source
+                return True
+            return False
+
+        for issue_key, cache_key in zip(issue_keys, cache_keys):
+            accept(issue_key, cached_rows.get(cache_key))
 
         missing = [key for key in issue_keys if key not in by_key]
         if missing and self._projection_covers_issue_cache(fields, light):
-            full = self.cache.get_many(f"issue:{self.env}:{key}" for key in missing)
-            light_rows = self.cache.get_many(
+            full = self.cache.get_many_with_metadata(f"issue:{self.env}:{key}" for key in missing)
+            light_rows = self.cache.get_many_with_metadata(
                 f"issueL:{self.env}:{key}" for key in missing) if light else {}
             for issue_key in missing:
-                row = full.get(f"issue:{self.env}:{issue_key}")
-                if not row_projection_complete(row, fields) and light:
-                    row = light_rows.get(f"issueL:{self.env}:{issue_key}")
-                if (isinstance(row, dict) and row.get("key") == issue_key
-                        and row_projection_complete(row, fields)):
-                    by_key[issue_key] = row
+                if not accept(issue_key, full.get(f"issue:{self.env}:{issue_key}")) and light:
+                    accept(issue_key, light_rows.get(f"issueL:{self.env}:{issue_key}"))
             missing = [key for key in issue_keys if key not in by_key]
+        return by_key, missing, sources
+
+    def _hydrate_jql_leaf_rows(self, issue_keys, fields, light, generation, projection):
+        """Hydrate stable leaf IDs, preserving each reused row's original collection age."""
+        issue_keys = list(issue_keys or ())
+        fence = self.cache.fence()
+        by_key, missing, sources = self._resolve_cached_jql_rows(
+            issue_keys, fields, light, generation, projection)
 
         for offset in range(0, len(missing), self.ISSUE_BATCH):
             chunk = missing[offset:offset + self.ISSUE_BATCH]
             query = "key in (%s) ORDER BY key ASC" % ",".join(chunk)
+            started = time.time()
             for row in self._fetch_exhaustive_jql(query, fields, light, len(chunk)):
                 issue_key = (row or {}).get("key")
                 if issue_key:
                     by_key[issue_key] = row
+                    sources[issue_key] = {"fetchedAt": started, "upstreamValidated": True}
 
         rows = [by_key[key] for key in issue_keys if key in by_key]
         if len(rows) != len(issue_keys):
             raise ValueError("JQL leaf issue row를 완전하게 복원하지 못했습니다.")
-        self._store_jql_rows(rows, generation, projection, fields)
+        if self.cache.fence() != fence or self._jql_generation() != generation:
+            raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+        by_source_time = {}
+        for row in rows:
+            source = sources[row["key"]]
+            # The resolver already read this exact generation/projection. Preserve its
+            # payload identity; only canonical-cache copies and fresh rows need publishing.
+            if source.get("kind") == "jqlrow":
+                continue
+            by_source_time.setdefault((source["fetchedAt"], bool(source.get("upstreamValidated"))), []).append(row)
+        for (fetched_at, validated), source_rows in by_source_time.items():
+            self._store_jql_rows(source_rows, generation, projection, fields,
+                                 fetched_at=fetched_at, fence=fence, upstream_validated=validated)
         return rows
+
+    def _jql_opaque_key(self, generation, projection, digest, source):
+        """Bind query-only rows to the membership that produced them, beyond clock identity."""
+        identity = source.get("rowIdentity")
+        if identity is None:
+            return None
+        return (f"jqlopaque:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
+                f"{projection}:{digest}:{source['fetchedAt']}:r{identity}")
 
     def _cached_jql_leaf(self, leaf, predicate_fields, fields, light,
                          generation, projection, *, result_limit=None):
@@ -1528,10 +1618,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             fetched_rows = None
             def produce():
                 nonlocal fetched_rows
+                collected = time.time()
                 rows = (self._fetch_jql_leaf(leaf, fields, light) if result_limit is None else
                         self._fetch_exhaustive_jql(leaf + " ORDER BY key ASC", fields, light, result_limit))
                 fetched_rows = rows
-                self._store_jql_rows(rows, generation, projection, fields)
+                self._store_jql_rows(rows, generation, projection, fields,
+                                     fetched_at=collected, fence=fence)
                 issue_keys = [
                     (row or {}).get("key") for row in rows if (row or {}).get("key")
                 ]
@@ -1542,55 +1634,62 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     key, digest, leaf_generation, issue_keys, predicate_fields)
                 return issue_keys
 
-            issue_keys = self.cache.get_or_set_strict(
-                key, self.s.cache_ttl_seconds,
-                produce)[0]
+            # Reconstructing a broad cached membership may cost more than one whole search.
+            # Decide before dispatch; a dynamic budget still protects concurrent cache changes.
+            budget = current_budget()
+            entry = self.cache.get_with_metadata(key) if budget is not None else None
+            existing = entry[0] if entry else None
+            force_whole = False
+            if isinstance(existing, list):
+                opaque_key = self._jql_opaque_key(generation, projection, digest, entry[1])
+                scoped = self.cache.get(opaque_key) if opaque_key else None
+                _rows, missing, _sources = self._resolve_cached_jql_rows(
+                    existing, fields, light, generation, projection)
+                queries = ["key in (%s) ORDER BY key ASC" % ",".join(missing[start:start + self.ISSUE_BATCH])
+                           for start in range(0, len(missing), self.ISSUE_BATCH)]
+                force_whole = not isinstance(scoped, list) and not budget.can_fit(queries)
+            with read_scope() as membership_sources:
+                issue_keys = (self.cache.refresh(key, self.s.cache_ttl_seconds, produce,
+                                                min_fetched_at=float("inf")) if force_whole else
+                              self.cache.get_or_set_strict(key, self.s.cache_ttl_seconds, produce)[0])
+            for observed in membership_sources:
+                note_read(observed)
             if self.cache.fence() != fence:
                 raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
-            source = (self.cache.metadata(key) or {}).get("fetchedAt")
-            opaque_key = (f"jqlopaque:v{self.JQL_CACHE_VERSION}:{self.env}:g{generation}:"
-                          f"{projection}:{digest}:{source}")
-            scoped = self.cache.get(opaque_key) if fetched_rows is None else None
+            membership_source = next((row for row in reversed(membership_sources)
+                                      if row.get("kind") == "jqlleaf"), {})
+            source = membership_source.get("fetchedAt")
+            opaque_key = self._jql_opaque_key(generation, projection, digest, membership_source)
+            scoped = self.cache.get(opaque_key) if fetched_rows is None and opaque_key else None
             rows = fetched_rows if fetched_rows is not None else (
                 scoped if isinstance(scoped, list) else self._hydrate_jql_leaf_rows(
                     issue_keys, fields, light, generation, projection))
-            if (source is not None and scoped is None
+            if (opaque_key is not None and scoped is None
                     and any(not row_projection_complete(row, fields) for row in rows)):
                 # These are usable query results, not complete shared ticket projections.
                 self.cache.set_if_fence(opaque_key, rows, self.s.cache_ttl_seconds, fence,
-                                        fetched_at=source)
-            return rows
+                    fetched_at=source, upstream_validated=bool(membership_source.get("upstreamValidated")))
+            return _CachedJqlLeafResult(rows, dict(membership_source))
 
     def _jql_leaf_cache_ready(self, leaf, fields, light, generation, projection, required=()):
         """Whether membership and every projected row can be read without upstream work.
 
         Task streaming uses this only as a conservative batching hint.  A false negative merely
         emits more progressive snapshots; a false positive would make a supposedly warm batch
-        wait on Jira, so every row must be proven available in either its exact projection cache
-        or a compatible shared issue cache.
+        wait on Jira. Exact query-scoped rows can be replayed as received; otherwise every row
+        must be available in its projection cache or a compatible shared issue cache.
         """
-        _leaf_generation, _digest, key = self._jql_leaf_key(leaf)
-        issue_keys = self.cache.get(key)
-        if not isinstance(issue_keys, list):
+        _leaf_generation, digest, key = self._jql_leaf_key(leaf)
+        entry = self.cache.get_with_metadata(key)
+        if entry is None or not isinstance(entry[0], list):
             return False
-        if not issue_keys:
+        issue_keys, source = entry
+        opaque_key = self._jql_opaque_key(generation, projection, digest, source)
+        if opaque_key and isinstance(self.cache.get(opaque_key), list):
             return True
-        row_keys = [self._jql_row_key(generation, projection, issue_key)
-                    for issue_key in issue_keys]
-        projected = self.cache.get_many(row_keys)
-        missing = [issue_key for issue_key, row_key in zip(issue_keys, row_keys)
-                   if not row_projection_complete(projected.get(row_key), fields, required)]
-        if not missing:
-            return True
-        if not self._projection_covers_issue_cache(fields, light):
-            return False
-        full = self.cache.get_many(f"issue:{self.env}:{issue_key}" for issue_key in missing)
-        light_rows = self.cache.get_many(
-            f"issueL:{self.env}:{issue_key}" for issue_key in missing) if light else {}
-        return all(
-            row_projection_complete(full.get(f"issue:{self.env}:{issue_key}"), fields, required)
-            or (light and row_projection_complete(light_rows.get(f"issueL:{self.env}:{issue_key}"), fields, required))
-            for issue_key in missing)
+        _rows, missing, _sources = self._resolve_cached_jql_rows(
+            issue_keys, fields, light, generation, projection, required)
+        return not missing
 
     @staticmethod
     def _combine_jql_rows(rows_by_leaf, order):
@@ -1602,14 +1701,42 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     combined[key] = issue
         return sort_issues(combined.values(), order)
 
-    def _build_jql_snapshot(self, compiled, fields, light, generation, projection, context):
-        groups = plan_groups(compiled, self.s.epic_link_field_id)
+    def _publish_jql_union(self, compiled, rows, generation, metadata, fence):
+        """Publish only a complete, still-current union with its captured collection proof."""
+        if (self.cache.fence() != fence or generation != self._jql_generation()
+                or metadata.get("fetchedAt") is None or metadata.get("compliant") is False):
+            return False
+        policy = current_read_policy()
+        validated = bool(metadata.get("upstreamValidated"))
+        if policy.explicit and (not validated if policy.mode == CacheMode.LIVE else
+                               time.time() - metadata["fetchedAt"] > policy.max_age_seconds):
+            return False
+        # The complete union proves this whole query, not arbitrary individual predicates.
+        epoch, digest, whole_key = self._jql_leaf_key(compiled.whole_query)
+        if self.cache.get(whole_key) is None:
+            keys = [row["key"] for row in rows if row.get("key")]
+            predicates = tuple(sorted({field for leaf in compiled.leaf_fields for field in leaf}))
+            self._register_jql_leaf_indexes(whole_key, digest, epoch, keys, predicates)
+            return self.cache.set_if_fence(whole_key, keys, self.s.cache_ttl_seconds, fence,
+                fetched_at=metadata["fetchedAt"], upstream_validated=validated)
+        return True
+
+    def _build_jql_snapshot(self, compiled, fields, light, generation, projection, context, plan):
+        groups = plan.groups
+        fence = self.cache.fence()
         rows_by_group = []
-        for _group, result, error in self._iter_jql_groups(groups, fields, light, generation, projection):
-            if error:
-                raise error
-            rows_by_group.extend(rows for _members, rows in result)
+        with read_scope() as sources:
+            for _group, result, error in self._iter_jql_groups(groups, fields, light, generation, projection):
+                if error:
+                    raise error
+                rows_by_group.extend(rows for _members, rows in result)
+        for source in sources:
+            note_read(source)
         rows = self._combine_jql_rows(rows_by_group, compiled.order)
+        metadata = reduce_read_metadata(sources, source_selection="all")
+        if not self._publish_jql_union(compiled, rows, generation, metadata, fence):
+            raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+        policy = current_read_policy()
         return {
             "canonical": compiled.canonical,
             "context": context,
@@ -1618,22 +1745,44 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "generation": generation,
             "issueKeys": [row.get("key") for row in rows if row.get("key")],
             "issues": rows,
+            "createdAt": time.time(),
+            "cacheMode": policy.mode.value if policy.explicit else None,
+            "sourceMetadata": metadata,
+            "strategy": plan.requested_strategy,
+            "maxParts": plan.max_parts,
+            "execution": plan.diagnostics(),
         }
 
-    def _jql_snapshot(self, compiled, fields, light, snapshot_id=None):
+    def _jql_snapshot(self, compiled, fields, light, snapshot_id=None, *, strategy="auto", max_parts=64):
         context = self._jql_user_context()
-        fields = partition_fields(fields, plan_groups(compiled, self.s.epic_link_field_id))
+        validate_max_parts(max_parts)
+        groups = plan_groups(compiled, self.s.epic_link_field_id, strategy=strategy)
+        # Snapshot identity uses the pre-budget partition, even when execution falls back
+        # to one whole query. Frozen rows need no new membership/entity coverage proof.
+        fields = partition_fields(fields, groups)
         projection = self._projection_signature(fields, light)
+        policy = current_read_policy()
+        mode = policy.mode.value if policy.explicit else None
 
         def read_snapshot(sid):
             key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
-            snapshot = self.cache.get(key)
+            # Cursor lifetime is based on creation, never the requested source max-age.
+            # Suppress the storage row's timestamp: the payload dates its actual evidence.
+            with read_scope(cache_mode=RequestReadPolicy()):
+                entry = self.cache.get_with_metadata(key)
+            snapshot = entry[0] if entry else None
             if not isinstance(snapshot, dict):
+                raise ValueError("검색 snapshot이 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
+            created = snapshot.get("createdAt", entry[1]["fetchedAt"])
+            if time.time() > created + self.JQL_SNAPSHOT_TTL:
                 raise ValueError("검색 snapshot이 만료되었습니다. 첫 페이지부터 다시 조회하세요.")
             if (snapshot.get("canonical") != compiled.canonical
                     or snapshot.get("context") != context
                     or snapshot.get("projection") != projection
-                    or bool(snapshot.get("light")) != bool(light)):
+                    or bool(snapshot.get("light")) != bool(light)
+                    or snapshot.get("cacheMode") != mode
+                    or snapshot.get("strategy", "auto") != strategy
+                    or snapshot.get("maxParts", 64) != max_parts):
                 raise ValueError("검색 snapshot이 현재 JQL 또는 필드 projection과 일치하지 않습니다.")
             issue_keys = list(snapshot.get("issueKeys") or [])
             hydrated = dict(snapshot)
@@ -1642,32 +1791,61 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             if "issues" not in hydrated:
                 hydrated["issues"] = self._load_jql_rows(
                     issue_keys, int(snapshot.get("generation", 0)), projection)
+            source = dict(snapshot.get("sourceMetadata") or entry[1], kind="jqlsnap")
+            if policy.explicit:
+                # A continuation is a frozen result, not another upstream validation.
+                upstream = bool((self.cache.metadata(key) or {}).get("upstreamValidated"))
+                compliant = upstream if policy.mode == CacheMode.LIVE else (
+                    time.time() - source["fetchedAt"] <= policy.max_age_seconds)
+                source.update(requestedCacheMode=mode, effectiveCacheMode=mode,
+                              maxAgeSeconds=policy.max_age_seconds, compliant=compliant,
+                              upstreamValidated=upstream,
+                              freshUntil=source["fetchedAt"] + policy.max_age_seconds,
+                              state="fresh" if compliant else "stale")
+            source["displayUntil"] = created + self.JQL_SNAPSHOT_TTL
+            note_read(source)
+            hydrated.update(createdAt=created, sourceFetchedAt=source["fetchedAt"],
+                            sourceUpstreamValidated=bool(source.get("upstreamValidated")))
             return sid, hydrated
 
         if snapshot_id:
             return read_snapshot(snapshot_id)
         generation = self._jql_generation()
-        identity = hashlib.sha256(
-            f"{context}\n{generation}\n{projection}\n{compiled.canonical}".encode("utf-8")
-        ).hexdigest()[:32]
+        identity_text = f"{context}\n{generation}\n{projection}\n{compiled.canonical}"
+        if strategy != "auto" or max_parts != 64:
+            identity_text += f"\n{strategy}\n{max_parts}"
+        if mode is not None:
+            identity_text += f"\n{mode}"
+        identity = hashlib.sha256(identity_text.encode("utf-8")).hexdigest()[:32]
         key = f"jqlcurrent:v{self.JQL_CACHE_VERSION}:{self.env}:{generation}.{identity}"
         lock = self._jql_lock(key)
         with lock:
             def build():
                 fence = self.cache.fence()
-                snapshot = self._build_jql_snapshot(compiled, fields, light, generation, projection, context)
+                # Cost/coverage probes may be abandoned by a whole-query fallback.
+                # Only actual execution sources may date or validate the snapshot pointer.
+                with read_scope():
+                    plan, _selected = execution_plan(
+                        self, compiled, fields, light, strategy, max_parts, groups=groups)
+                snapshot = self._build_jql_snapshot(compiled, fields, light, generation, projection, context, plan)
                 sid = f"{generation}.{identity}.{uuid4().hex}"
                 snapshot_key = f"jqlsnap:v{self.JQL_CACHE_VERSION}:{self.env}:{sid}"
-                if not self.cache.set_if_fence(snapshot_key, snapshot, self.JQL_SNAPSHOT_TTL, fence):
+                if not self.cache.set_if_fence(snapshot_key, snapshot, self.JQL_SNAPSHOT_TTL, fence,
+                    upstream_validated=bool(snapshot["sourceMetadata"].get("upstreamValidated"))):
                     raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
-                return {"snapshotId": sid}
+                return {"snapshotId": sid, "expiresAt": snapshot["createdAt"] + self.JQL_SNAPSHOT_TTL}
 
-            current = self.cache.get_or_set_strict(
-                key, min(self.s.cache_ttl_seconds, self.JQL_SNAPSHOT_TTL), build)[0]
+            ttl = min(self.s.cache_ttl_seconds, self.JQL_SNAPSHOT_TTL)
+            current = self.cache.get(key)
+            if current is not None and time.time() > current.get("expiresAt", float("inf")):
+                current = self.cache.refresh(key, ttl, build, min_fetched_at=time.time())
+            elif current is None:
+                current = self.cache.get_or_set_strict(key, ttl, build)[0]
         return read_snapshot(current["snapshotId"])
 
+    @budgeted_query
     def search_issues_page(self, jql, start_at=0, max_results=100, fields=None, light=True,
-                           snapshot_id=None):
+                           snapshot_id=None, *, strategy="auto", max_parts=64):
         """One deterministic page from the app-composed OR snapshot.
 
         Unsupported grammar/order keeps Jira pagination. Proven reusable memberships are batched;
@@ -1680,13 +1858,22 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             requested_fields = ",".join(str(x) for x in requested_fields if str(x).strip())
         requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
         try:
-            compiled = self._compile_jql(jql)
-            execution_fields = fields_with_order(requested_fields, compiled.order)
-            sid, snapshot = self._jql_snapshot(
-                compiled, execution_fields, light, snapshot_id=snapshot_id)
+            with read_scope() as sources:
+                compiled = self._compile_jql(jql, strategy=strategy)
+                execution_fields = fields_with_order(requested_fields, compiled.order)
+                sid, snapshot = self._jql_snapshot(
+                    compiled, execution_fields, light, snapshot_id=snapshot_id,
+                    strategy=strategy, max_parts=max_parts)
         except JqlUnsupported:
-            return self._legacy_search_issues_page(
+            if snapshot_id:
+                raise ValueError("검색 snapshot이 현재 JQL과 일치하지 않습니다. 첫 페이지부터 다시 조회하세요.")
+            page = self._legacy_search_issues_page(
                 jql, start_at=start, max_results=size, fields=requested_fields, light=light)
+            return {**page, "execution": {"requestedStrategy": strategy, "effectiveStrategy": "off",
+                "logicalLeafCount": None, "physicalGroupCount": 1,
+                "fallbackReason": "unsupported_jql", **current_budget().diagnostics()}}
+        for source in sources:
+            note_read(source)
         issues = list(snapshot.get("issues") or [])
         page_issues = issues[start:start + size]
         total = len(issues)
@@ -1701,7 +1888,26 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "nextStartAt": next_start if next_start < total else None,
             "snapshotId": sid,
             "canonicalJql": compiled.canonical,
+            "snapshotCreatedAt": snapshot["createdAt"],
+            "snapshotSourceFetchedAt": snapshot["sourceFetchedAt"],
+            "snapshotFrozen": bool(snapshot_id),
+            "execution": {**snapshot.get("execution", {}), **current_budget().diagnostics()},
         }
+
+    @budgeted_query
+    def search_issues_preview(self, jql, *, limit=100, fields=None, light=True):
+        """Bounded discovery, independent of exhaustive pages and frozen snapshots."""
+        return search_preview(self, jql, limit=limit, fields=fields, light=light)
+
+    def _query_page(self, jql, fields, *, start_at=0, max_results=100, **extra_params):
+        provider = self.provider
+        params = {"jql": jql, "fields": fields, "maxResults": max_results, **extra_params}
+        if start_at is not None:
+            params["startAt"] = start_at
+        with self._query_scheduler.page_scope(
+                parallel_capable=getattr(provider, "supports_parallel", False)):
+            claim_physical_query(jql)
+            return provider.get_json("/rest/api/2/search", params=params)
 
     def _legacy_search_issues_page(self, jql, start_at=0, max_results=100, fields=None,
                                    light=True, write_through=True):
@@ -1719,35 +1925,58 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         if isinstance(requested_fields, (list, tuple, set)):
             requested_fields = ",".join(str(x) for x in requested_fields if str(x).strip())
         requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
-        data = self.provider.get_json("/rest/api/2/search", params={
-            "jql": jql, "fields": requested_fields,
-            "startAt": start, "maxResults": size})
-        if not isinstance(data, dict) or "issues" not in data:
+        fence, started = self.cache.fence(), time.time()
+        data = self._query_page(jql, requested_fields, start_at=start, max_results=size)
+        if (not isinstance(data, dict) or not isinstance(data.get("issues"), list)
+                or data.get("errorMessages") or data.get("errors")):
             if self._looks_anonymous(data):
                 raise SessionExpired("익명 응답(검색) — 세션 끊김(재인증 필요).")
             messages = " ".join((data or {}).get("errorMessages") or []) \
                 if isinstance(data, dict) else str(data or "")
             raise ValueError(messages or "Jira 검색 응답 형식이 올바르지 않습니다.")
         issues = list(data.get("issues") or [])
+        if any(not isinstance(row, dict) or not isinstance(row.get("key"), str) or not row["key"]
+               or not isinstance(row.get("fields"), dict) for row in issues):
+            raise ValueError("Jira 검색 결과의 issue 형식이 올바르지 않습니다.")
         # 반환된 실제 페이지 크기를 기준으로 다음 위치를 잡는다. Jira는 요청한 maxResults보다
         # 작은 서버 상한을 적용할 수 있으므로 start+요청크기로 넘기면 결과를 건너뛸 수 있다.
         returned = len(issues)
         total = data.get("total")
-        try:
-            total = int(total) if total is not None else None
-        except (TypeError, ValueError):
-            total = None
         next_start = start + returned
+        response_start = data.get("startAt", start)
+        response_size = data.get("maxResults", size)
+        if (type(response_start) is not int or response_start != start
+                or type(response_size) is not int or response_size < 0
+                or total is not None and (type(total) is not int or total < 0)
+                or returned > min(size, response_size)
+                or len({row["key"] for row in issues}) != returned
+                or total is not None and (returned and next_start > total
+                                          or not returned and start < total)):
+            raise ValueError("Jira 검색 pagination metadata가 일관되지 않습니다.")
         has_more = bool(returned) and (total is None or next_start < total)
         pfx = "issueL" if light else "issue"
         if write_through and self._projection_covers_issue_cache(requested_fields, light):
-            for it in issues:
-                key = (it or {}).get("key")
-                if key:
-                    self.cache.set(f"{pfx}:{self.env}:{key}", it, self.s.cache_ttl_seconds)
+            canonical = [(f"{pfx}:{self.env}:{row['key']}", row) for row in issues
+                         if row_projection_complete(row, requested_fields)]
+            self.cache.set_many_if_fence(canonical, self.s.cache_ttl_seconds, fence,
+                fetched_at=started, preserve_newer_keys={key for key, _ in canonical})
+        if self.cache.fence() != fence:
+            raise QueryStateChanged("티켓이 변경되어 검색 결과를 다시 확인해야 합니다.")
+        if write_through:
+            # Exhaustive callers own their aggregate observation; a direct page owns only
+            # this response, including valid emptiness and projections too narrow to cache.
+            policy = current_read_policy()
+            fresh_until = started + (policy.max_age_seconds if policy.explicit
+                                     else self.s.cache_ttl_seconds)
+            compliant = (policy.mode == CacheMode.LIVE or not policy.explicit
+                         or time.time() <= fresh_until)
+            note_read({"kind": "search", "fetchedAt": started, "freshUntil": fresh_until,
+                "displayUntil": started + self.cache.display_ttl("search:page"),
+                "state": "fresh" if compliant else "stale", "invalidated": False,
+                "upstreamValidated": True, "compliant": compliant})
         return {
             "startAt": start,
-            "maxResults": int(data.get("maxResults") or size),
+            "maxResults": response_size,
             "total": total,
             "issues": issues,
             "returned": returned,
@@ -1795,20 +2024,24 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         if not requested:
             return result
 
-        # Batch prefetch is only an optimisation.  If it fails, individual reads below retain
-        # exact per-key outcomes (and can still use rows already warmed before the failure).
-        try:
-            self.prefetch_issues(requested, light=light)
-        except Exception as exc:
-            if raise_retryable and self.issue_read_error_kind(exc) in ("auth", "transport"):
-                raise
+        cached = self._cached_issues(requested, light=light)
+        unresolved = [key for key in requested if cached.get(key) is None]
+        if unresolved:
+            # Prefetch remains optional. Recheck all hits afterwards: a miss fetch can outlive
+            # their TTL or overlap invalidation/replacement of an earlier captured row.
+            try:
+                self.prefetch_issues(unresolved, light=light)
+            except Exception as exc:
+                if raise_retryable and self.issue_read_error_kind(exc) in ("auth", "transport"):
+                    raise
+            cached = self._cached_issues(requested, light=light)
 
         for key in requested:
             try:
-                # The normal getter owns projection precedence, fresh/stale policy, and cache
-                # warming.  Do not copy its returned row into cache here: it may be a deliberate
-                # stale fallback after a failed refresh and must not be promoted to a fresh hit.
-                raw = self.get_issue_light(key) if light else self.get_issue(key)
+                # Only unresolved rows use the getter's refresh/stale fallback. Never copy its
+                # result back: deliberate stale-offline data must retain its original age.
+                raw = cached[key] if key in cached else (
+                    self.get_issue_light(key) if light else self.get_issue(key))
             except Exception as exc:
                 kind = self.issue_read_error_kind(exc)
                 if raise_retryable and kind in ("auth", "transport"):
@@ -1870,46 +2103,53 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         env = self.env
         # light=True 면 경량 필드로 받아 issueL 에 채운다(뱃지·경량 노드용). 이미 전체(issue:)나
         # 경량(issueL:) 캐시가 있으면 그 티켓은 커버된 것 — 다시 안 받는다(포함관계).
-        if light:
-            miss = [k for k in dict.fromkeys(keys)
-                    if k and self.cache.get(f"issue:{env}:{k}") is None
-                    and self.cache.get(f"issueL:{env}:{k}") is None]
-        else:
-            miss = [k for k in dict.fromkeys(keys)
-                    if k and self.cache.get(f"issue:{env}:{k}") is None]
+        keys = list(dict.fromkeys(k for k in keys if k))
+        cached = self._cached_issues(keys, light=light)
+        miss = [key for key in keys if cached.get(key) is None]
         if len(miss) < 2:                 # 1건이면 배치 이득 없음(그냥 개별 조회에 맡긴다)
             return
         fields = self._issue_fields(light=light)
         pfx = "issueL" if light else "issue"
         for i in range(0, len(miss), self.ISSUE_BATCH):
             chunk = miss[i:i + self.ISSUE_BATCH]
+            fence, collected = self.cache.fence(), time.time()
             try:
-                data = self.search_issues_page(
-                    "key in (%s)" % ",".join(chunk), start_at=0,
-                    max_results=len(chunk), fields=fields, light=light)
+                with read_scope() as sources:
+                    data = self.search_issues_page(
+                        "key in (%s)" % ",".join(chunk), start_at=0,
+                        max_results=len(chunk), fields=fields, light=light)
             except (SessionExpired, UpstreamUnavailable, TimeoutError, ConnectionError):
                 raise
             except Exception:
                 return
-            for it in (data.get("issues") or []):
-                k = it.get("key")
-                if k:
-                    self.cache.set(f"{pfx}:{env}:{k}", it, self.s.cache_ttl_seconds)
+            for source in sources:
+                note_read(source)
+            validated = not data.get("snapshotId") or bool(sources) and all(
+                source.get("upstreamValidated", False) for source in sources)
+            self.cache.set_many_if_fence(
+                ((f"{pfx}:{env}:{it['key']}", it) for it in data.get("issues") or []
+                 if it.get("key") and row_projection_complete(it, fields)),
+                self.s.cache_ttl_seconds, fence,
+                fetched_at=data.get("snapshotSourceFetchedAt", collected), upstream_validated=validated)
 
-    def _search(self, jql, cache_key=None, max_results=200, light=True, ttl=None):
+    @budgeted_query
+    def _search(self, jql, cache_key=None, max_results=200, light=True, ttl=None, *, strategy="auto", max_parts=64):
         fields = self._issue_fields(light=light)
+        fence = self.cache.fence()
         try:
-            compiled = self._compile_jql(jql)
+            compiled = self._compile_jql(jql, strategy=strategy)
             execution_fields = fields_with_order(fields, compiled.order)
-            _sid, snapshot = self._jql_snapshot(compiled, execution_fields, light)
+            _sid, snapshot = self._jql_snapshot(compiled, execution_fields, light,
+                                               strategy=strategy, max_parts=max_parts)
             issues = list(snapshot.get("issues") or [])
             if max_results is not None:
                 issues = issues[:max(0, int(max_results))]
             if cache_key:
                 # Preserve observability/compatibility for existing mt:/epic_* cache namespaces;
                 # normalized leaf and snapshot keys remain the source used for cache hits.
-                self.cache.set(cache_key + (":light" if light else ""), issues,
-                               ttl or self.s.cache_ttl_seconds)
+                self.cache.set_if_fence(cache_key + (":light" if light else ""), issues,
+                    ttl or self.s.cache_ttl_seconds, fence, fetched_at=snapshot["sourceFetchedAt"],
+                    upstream_validated=snapshot["sourceUpstreamValidated"])
             return issues
         except JqlUnsupported:
             return self._legacy_search(
@@ -1927,13 +2167,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         write-through 도 분리한다: full 은 issue:{key}(전체), light 는 issueL:{key}(경량) 로 —
         경량 이슈가 전체 이슈 캐시를 오염시켜 관련/첨부(issuelinks·attachment 사용)를 깨지 않게."""
         fields = self._issue_fields(light=light)
+        fence, collected = self.cache.fence(), time.time()
+        upstream_validated = True
 
         def do():
             issues, start = [], 0
             while True:
-                data = self.provider.get_json("/rest/api/2/search", params={
-                    "jql": jql, "fields": fields,
-                    "startAt": start, "maxResults": 100})
+                data = self._query_page(jql, fields, start_at=start)
                 # 검색 응답이 아니면(예: 인증 끊긴 Jira 의 로그인 HTML) 그 자리에서 멈춘다.
                 # ★ 예전엔 여기서 곧장 SessionExpired 를 올렸는데, 검색은 VIT·WBS·워크로드·
                 #   내 Task 에서 쉴 새 없이 돈다 — 응답이 조금만 예상과 달라도 그때마다 세션을
@@ -1946,9 +2186,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         raise SessionExpired("익명 응답(검색) — 세션 끊김(재인증 필요).")
                     # 없는 커스텀 필드 때문이면 그 필드 빼고 이 페이지만 다시(로그는 _note 가 1회).
                     if self._note_bad_field(data):
-                        data = self.provider.get_json("/rest/api/2/search", params={
-                            "jql": jql, "fields": self._issue_fields(light=light),
-                            "startAt": start, "maxResults": 100})
+                        data = self._query_page(jql, self._issue_fields(light=light), start_at=start)
                         if isinstance(data, dict) and "issues" in data:
                             batch = data.get("issues", [])
                             issues.extend(batch); start += 100
@@ -1978,16 +2216,23 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             #   이었던 이유다. 목록 조회는 다시 받으면 그만이라 빈 값을 굳힐 이유가 없다.
             #   (진짜로 0건인 프로젝트에서는 매번 한 번 더 묻는 것뿐이다.)
             # 포함관계 재사용: light 요청도 full 캐시(cache_key)가 있으면 그걸 쓴다(상위집합).
-            hit = self.cache.get(cache_key)
+            source_keys = [cache_key, cache_key + ":light"] if light else [cache_key]
+            cached = self.cache.get_many_with_metadata(source_keys)
+            entry = cached.get(cache_key)
+            hit = entry[0] if entry is not None else None
             if hit is None and light:
-                hit = self.cache.get(cache_key + ":light")
+                entry = cached.get(cache_key + ":light")
+                hit = entry[0] if entry is not None else None
             if hit is not None:
                 issues = hit
+                collected = entry[1]["fetchedAt"]
+                upstream_validated = bool(entry[1].get("upstreamValidated"))
             else:
                 issues = do()
                 if issues:
-                    self.cache.set(cache_key + (":light" if light else ""),
-                                   issues, ttl or self.s.cache_ttl_seconds)
+                    self.cache.set_if_fence(cache_key + (":light" if light else ""),
+                                           issues, ttl or self.s.cache_ttl_seconds, fence,
+                                           fetched_at=collected)
         else:
             issues = do()
         # write-through: full 은 issue:{key}(전체), light 는 issueL:{key}(경량) 로 분리한다.
@@ -1995,7 +2240,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         pfx = "issueL" if light else "issue"
         for it in issues:                       # write-through: 각 티켓 개별 캐시
             if it.get("key"):
-                self.cache.set(f"{pfx}:{self.env}:{it['key']}", it, self.s.cache_ttl_seconds)
+                self.cache.set_if_fence(f"{pfx}:{self.env}:{it['key']}", it,
+                    self.s.cache_ttl_seconds, fence, fetched_at=collected,
+                    upstream_validated=upstream_validated)
         return issues
 
     # ── Epic 자식 조회 ──
@@ -2032,8 +2279,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         sp = self.s.sp_field_id
         task_keys = self.direct_child_keys(epic_key, parent_type="Epic")
         raws = self.issues_by_keys(task_keys, light=True)
+        child_keys = self._direct_child_keys_reader(raw.get("key") for raw in raws)
         sub_keys_by_parent = {
-            raw.get("key"): self.direct_child_keys(raw.get("key"), parent_issue=raw)
+            raw.get("key"): child_keys(raw.get("key"), parent_issue=raw)
             for raw in raws if raw.get("key")
         }
         all_sub_keys = list(dict.fromkeys(
@@ -2074,16 +2322,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         items = list(items)
         prov = self.provider
         if prov is not None and getattr(prov, "supports_parallel", False) and len(items) > 1:
-            def observed(item):
+            def observed(indexed):
+                index, item = indexed
                 self.miss_begin()
                 try:
-                    return fn(item), self.miss_count()
+                    return index, fn(item), self.miss_count()
                 finally:
                     self.miss_begin()
-            with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
-                results = list(ex.map(observed, items))
-            self.miss_add(sum(missing for _value, missing in results))
-            return [value for value, _missing in results]
+            results = sorted(self._query_scheduler.run_bounded(enumerate(items), observed))
+            self.miss_add(sum(missing for _index, _value, missing in results))
+            return [value for _index, value, _missing in results]
         return [fn(x) for x in items]
 
     def epic_progress_map(self, plan):
@@ -2245,10 +2493,24 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 f"/rest/api/2/issue/{key}/comment",
                 params={"maxResults": self.CACHE_COMMENTS, "orderBy": "-created",
                         "expand": "renderedBody"})
+            if current_read_policy().explicit:
+                from app.infra.cache import CacheReadPolicyError
+                if self._looks_anonymous(data):
+                    raise SessionExpired("Jira 댓글 응답이 익명 세션을 나타냅니다.")
+                if not isinstance(data, dict) or not isinstance(data.get("comments"), list):
+                    raise CacheReadPolicyError("Requested comment preview could not be verified")
             rows = [self._project_comment_row(c)
                     for c in (data.get("comments") or [])[:self.CACHE_COMMENTS]]
             total = data.get("total")
             ids = [row.get("id") for row in rows]
+            if current_read_policy().explicit:
+                preview_complete = (type(total) is int and total >= 0 and data.get("startAt") == 0
+                                    and len(rows) == min(total, self.CACHE_COMMENTS)
+                                    and all(ids) and len(set(ids)) == len(ids)
+                                    and not (data.get("error") or data.get("errors")
+                                             or data.get("errorMessages") or data.get("partial")))
+                if not preview_complete:
+                    raise CacheReadPolicyError("Requested comment preview was incomplete")
             complete = (type(total) is int and total >= 0 and data.get("startAt") == 0
                         and total == len(rows) and all(ids) and len(set(ids)) == len(ids))
             coverage_key = f"comments:{self.env}:{key}:coverage"
@@ -2281,11 +2543,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def issue_comments_complete(self, key, *, fresh_after=None):
         """Dialog-only coverage, sharing completed snapshots and the normal mutation prefix."""
         base_key = f"comments:{self.env}:{key}"
-        base, source = self.cache._display_snapshot(base_key)
-        if (base and source and not source["invalidated"]
+        with read_scope(strict=revalidating()) as base_sources:
+            base, source = self.cache._display_snapshot(base_key)
+            complete_base = (base and source and not source["invalidated"]
                 and (fresh_after is None or source["fetchedAt"] * 1000 >= fresh_after)
-                and self.comment_coverage(key, base[0])["complete"]):
-            note_read(source)
+                and self.comment_coverage(key, base[0])["complete"])
+        if complete_base:
+            for observed in base_sources:
+                note_read(observed)
             rows = base[0]
             return {"key": key, "comments": self._comments_display_ownership(rows), "total": len(rows), "returned": len(rows),
                     "pages": 1, "complete": True, "hasMore": False, "remaining": 0,
@@ -2294,15 +2559,21 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         cache_key = base_key + ":full"
         def produce():
             started = time.time()
+            fence = self.cache.fence()
             with background_upstream():
                 snapshot = self.comment_snapshot(key, _for_ui=True)
             if not snapshot["complete"]:
                 raise _UncacheablePartial(snapshot)
             # The first page predates later pages. Finish time would wrongly prove coverage
             # of an edit made to an earlier page while the remaining pages were loading.
+            unchanged = fence == self.cache.fence()
+            policy = current_read_policy()
+            compliant = unchanged and (policy.mode == CacheMode.LIVE or not policy.explicit
+                                        or time.time() - started <= policy.max_age_seconds)
             note_read({"kind": "comments", "fetchedAt": started,
                        "freshUntil": started + self.s.cache_ttl_seconds,
-                       "displayUntil": started + self.cache.display_ttl(cache_key), "state": "fresh"})
+                       "displayUntil": started + self.cache.display_ttl(cache_key), "state": "fresh",
+                       "invalidated": not unchanged, "upstreamValidated": unchanged, "compliant": compliant})
             return snapshot
         try:
             with read_scope(strict=revalidating()) as sources:
@@ -2369,6 +2640,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         pages = 0
         reason = ""
         error = ""
+        fence = self.cache.fence() if _for_ui else None
         try:
             while maximum is None or len(rows) < maximum:
                 data = self.provider.get_json(
@@ -2376,6 +2648,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     params={"startAt": start, "maxResults": min(size, maximum - len(rows)) if maximum is not None else size,
                             "orderBy": "-created", "expand": "renderedBody"},
                 ) or {}
+                if _for_ui and self._looks_anonymous(data):
+                    raise SessionExpired("Jira 댓글 응답이 익명 세션을 나타냅니다.")
                 if not isinstance(data, dict):
                     reason = "invalid_page"
                     break
@@ -2427,6 +2701,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 elif len(rows) != total or start < total:
                     reason = "coverage_mismatch"
         except Exception as exc:
+            if _for_ui and (isinstance(exc, (SessionExpired, PermissionDenied, PermissionError))
+                            or getattr(exc, "status", None) in (403, 404)):
+                if not isinstance(exc, SessionExpired):
+                    self.cache.forget_prefixes((f"comments:{self.env}:{key}",), fence=fence)
+                raise
             reason = "provider_error"
             error = str(exc)[:300]
         complete = not reason and total is not None and len(rows) == total
@@ -3547,11 +3826,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         exclude_linked=True 면 **이미 다른 Epic 에 속한 Task 를 뺀다**(자르기 전에 걸러야 소속 없는
         후보가 limit 안에 남는다). JQL 은 단순히(project + 최신순), 나머지는 파이썬에서 — mock/prod 공통."""
         pk = self.s.project_key
-        # 상위 Task 피커의 **첫 로딩이 느린** 주범 — q 와 무관한 이 200건 검색을 매번 새로 돌렸다.
-        # q 필터·정렬은 파이썬에서 하므로 목록 자체는 재사용 가능. cache_key + 긴 TTL(OPTIONS_TTL)로
-        # 캐시 효용을 높인다(새 Task 생성·Epic Link 변경 시 'epic_cand:' 프리픽스로 무효화).
-        raws = self._search(f"project = {pk} ORDER BY updated DESC", max_results=200,
-                            cache_key=f"epic_cand:all:{self.env}", ttl=self.EPIC_LIST_TTL) or []
+        # 필터·관련도 정렬에 앞서 최신 200건만 모은다. 전체 프로젝트 snapshot을 만들지 않고
+        # q와 무관한 bounded prefix를 공유하며, 새 Task/필드 변경은 기존 정책으로 무효화한다.
+        raws = search_prefix(self, f"project = {pk} ORDER BY updated DESC")["issues"]
         enf = self.s.epic_link_field_id
         ql = (q or "").strip().lower()
         out = []
@@ -4806,10 +5083,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         for i in range(0, len(miss), self.ISSUE_BATCH):
             chunk = miss[i:i + self.ISSUE_BATCH]
             try:
-                data = self.provider.get_json("/rest/api/2/search", params={
-                    "jql": "key in (%s)" % ",".join(chunk),
-                    "fields": "created,reporter", "expand": "changelog",
-                    "maxResults": len(chunk)})
+                data = self._query_page(
+                    "key in (%s)" % ",".join(chunk), "created,reporter",
+                    start_at=None, max_results=len(chunk), expand="changelog")
             except SessionExpired:
                 raise
             except Exception:
@@ -4890,6 +5166,24 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def _direct_child_cache_key(self, key):
         return f"childkeys:v1:{self.env}:{str(key or '').strip().upper()}"
+
+    @staticmethod
+    def _known_subtask_keys(issue):
+        """Only a known non-Epic type and complete, well-formed subtasks prove membership."""
+        fields = (issue or {}).get("fields")
+        if not isinstance(fields, dict):
+            return None
+        kind = fields.get("issuetype")
+        name = kind.get("name") if isinstance(kind, dict) else None
+        if not isinstance(name, str) or not name.strip() or name.strip().casefold() == "epic":
+            return None
+        children = fields.get("subtasks")
+        if not isinstance(children, list) or any(
+            not isinstance(child, dict) or not isinstance(child.get("key"), str)
+            or not child["key"].strip() for child in children
+        ):
+            return None
+        return list(dict.fromkeys(child["key"].strip().upper() for child in children))
 
     def _fetch_agile_epic_children(self, epic_key):
         """Fetch a complete Agile Epic membership without turning a partial page into empty.
@@ -4974,7 +5268,59 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
         return rows
 
-    def direct_child_keys(self, key, *, parent_issue=None, parent_type=None, limit=None):
+    def _direct_child_keys_reader(self, parent_keys):
+        """Batch eligible memberships; leave each caller's scalar fallback/errors unchanged."""
+        parent_keys = list(dict.fromkeys(str(key or "").strip().upper() for key in parent_keys))
+        fence = self.cache.fence()
+        try:
+            cached = self.cache.get_many(self._direct_child_cache_key(key) for key in parent_keys)
+        except Exception:
+            cached = {}
+        read_parent = self._direct_child_parent_reader(parent_keys)
+
+        def read(key, *, parent_issue=None, parent_type=None, limit=None):
+            parent_key = str(key or "").strip().upper()
+            if not parent_key:
+                return []
+            children = cached.get(self._direct_child_cache_key(parent_key))
+            if self.cache.fence() == fence and children is not None:
+                children = list(children or [])
+                return children if limit is None else children[:max(0, int(limit))]
+            # A scalar fallback can wait on upstream or raise. Later parents must recheck
+            # eligibility after that work rather than return an earlier captured membership.
+            cached.clear()
+            return self.direct_child_keys(parent_key, parent_issue=parent_issue,
+                                          parent_type=parent_type, limit=limit, _read_parent=read_parent)
+
+        return read
+
+    def _direct_child_parent_reader(self, parent_keys):
+        """Select current parents inside the producer; supplied rows carry no implicit proof."""
+        entries, fence = None, None
+
+        def read(key):
+            nonlocal entries, fence
+            if entries is None:
+                fence = self.cache.fence()
+                # Probe observations include unused projections/parents. Only the tuple
+                # actually consumed below belongs to this membership producer's source age.
+                with read_scope():
+                    entries = self._cached_issue_entries(parent_keys, light=True)
+            entry = entries.get(key)
+            if entry is not None and self.cache.fence() == fence:
+                raw, source, cache_key = entry
+                ttl = source["freshUntil"] - source["fetchedAt"]
+                if self.cache._eligible(cache_key, raw, source["fetchedAt"], ttl, source["rowIdentity"]):
+                    note_read(source)
+                    return raw
+            # A real fallback can wait or raise; later parents need a new batch/policy check.
+            entries = None
+            return self.get_issue_light(key, strict=True)
+
+        return read
+
+    def direct_child_keys(self, key, *, parent_issue=None, parent_type=None, limit=None,
+                          _read_parent=None):
         """Return one shared, complete direct-child membership list.
 
         MyTasks can seed this cache from the parent row already returned by its main JQL. Ticket
@@ -4993,15 +5339,28 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         supplied = parent_issue if isinstance(parent_issue, dict) else None
         if supplied and str(supplied.get("key") or "").strip().upper() != parent_key:
             supplied = None
+        read_parent = _read_parent or self._direct_child_parent_reader([parent_key])
+
+        def protect_retained_membership():
+            if supplied is not None and current_read_policy().mode == CacheMode.LIVE:
+                existing = self.cache.metadata(self._direct_child_cache_key(parent_key))
+                if existing and not existing["invalidated"] and not existing.get("upstreamValidated"):
+                    # A delayed canonical parent can itself have request validation. It is
+                    # not independent authority over an equal/newer retained membership.
+                    from app.infra.cache import CacheReadPolicyError
+                    raise CacheReadPolicyError("Supplied parent cannot validate the retained child membership")
 
         def build():
             raw = supplied
             fields = (raw.get("fields") or {}) if raw else {}
             issue_type = str(parent_type or (fields.get("issuetype") or {}).get("name") or "")
-            # Non-Epic membership is authoritative only when the requested ``subtasks`` field is
-            # actually present. A partial row must not silently turn "unknown" into an empty list.
-            if not issue_type or (issue_type.casefold() != "epic" and "subtasks" not in fields):
-                raw = self.get_issue_light(parent_key)
+            known_type = bool(issue_type)
+            # Select the parent's own payload/source together; never certify supplied bytes
+            # using a later metadata lookup or the membership producer's current timestamp.
+            if issue_type.casefold() != "epic":
+                if known_type:
+                    protect_retained_membership()
+                raw = read_parent(parent_key)
                 fields = (raw.get("fields") or {}) if isinstance(raw, dict) else {}
                 issue_type = str((fields.get("issuetype") or {}).get("name") or issue_type)
 
@@ -5016,6 +5375,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     rows = self._fetch_agile_epic_children(parent_key)
                 candidates = [(row or {}).get("key") for row in rows]
             else:
+                if not known_type:
+                    protect_retained_membership()
                 subtasks = fields.get("subtasks")
                 if not isinstance(subtasks, list):
                     raise ValueError(f"{parent_key} direct-child membership is incomplete")
@@ -5143,7 +5504,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # key 앞부분을 기존 invalidate prefix와 맞춘다. 출력 계약이 바뀌었으므로 v2로 옛 캐시를 격리.
         self_key = f"timeline:{self.env}:{key}:self:v2"
         children_key = f"timeline:{self.env}:{key}:children:v2"
-        if defer:
+        if defer and not current_read_policy().explicit:
             own = self.cache.get(self_key)
             if own is None:
                 own = self.cache.get_stale(self_key)

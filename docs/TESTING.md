@@ -9,8 +9,16 @@ suite를 실행한다.
 - Python 3.11, Ubuntu
 - `JIRA_ENV=mock`
 - Fake Jira, fake LLM, 로컬 fixture·로컬 서버만 사용
-- 실행 명령: `python -m pytest -q --basetemp=.cache/test-tmp/ci --durations=30 -ra --junitxml=.cache/test-results/pytest.xml`
+- 배포 당시 연구 자료를 Git에서 읽을 수 있도록 전체 commit 이력을 checkout
+- 고유한 `RUNNER_TEMP` 실행 디렉터리에 pytest 임시 파일·cache·앱 runtime을 격리
 - GitHub secret, 사내 Jira/Confluence, OpenAI/Azure OpenAI API 호출 없음
+
+CI가 만든 `$owned_root` 아래 `$scratch`, 그 하위 `$TMPDIR`를 사용한다. pytest 사례는 실제
+OS 임시 디렉터리인 `$TMPDIR`의 자식에 둔다. 전체 suite 실행 명령은 다음과 같다.
+
+```sh
+python -m pytest -q --basetemp="$TMPDIR/cases" -o "cache_dir=$scratch/cache" --durations=30 -ra --junitxml="$owned_root/results/pytest.xml"
+```
 
 전체 suite의 최종 판정은 GitHub Actions 결과를 기준으로 한다. CI가 실패하면 실패한 test와
 직접 관련된 test를 로컬에서 재현한 뒤 수정한다.
@@ -22,6 +30,9 @@ suite를 실행한다.
 - 성공·실패한 pytest 결과는 `code-tests-results` artifact의 `pytest.xml`로 14일간 보존한다.
   JUnit의 사례별 시간은 setup/call/teardown 합계다. pytest 실행 전 dependency 설치가 실패하면
   보고서가 없을 수 있으며, artifact에는 이 XML만 올린다.
+- 성공·실패와 관계없이 pytest 종료 시 scratch를 정리한다. JUnit은 upload가 끝날 때까지
+  scratch 밖의 고유 실행 디렉터리에 보관하고, 항상 실행되는 마지막 단계에서 소유 경로를
+  확인한 뒤 정리한다. 저장소 안에는 테스트 실행 산출물을 남기지 않는다.
 - MCP의 `build_env`는 test call 안에서 환경을 만들므로 setup 시간만으로 비용을 알 수 없다.
   JUnit properties의 `mcp_environment_build_count`와 `mcp_environment_build_seconds`는 각
   test에서 완료한 환경 생성 횟수와 누적 시간이다. 이 값은 사례 전체 시간에 이미 포함되어 있다.
@@ -56,9 +67,27 @@ parser가 없더라도 다른 소스 검증이 실행되게 한다. 도메인·H
 예시:
 
 ```powershell
-..\.venv\Scripts\python.exe -B -m pytest -q --basetemp .cache/test-tmp/frontend-local `
-  tests/frontend/static_assets tests/routes/test_postcheck.py
+@'
+import os, subprocess, sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as scratch:
+    root = Path(scratch)
+    temp = root / "tmp"
+    temp.mkdir()
+    env = dict(os.environ, TMPDIR=str(temp), TMP=str(temp), TEMP=str(temp),
+               JIRA_ENV="mock", PYTHONDONTWRITEBYTECODE="1", LAKE_CACHE_DIR=str(root / "runtime"),
+               CACHE_DB_PATH=str(root / "runtime" / "cache.sqlite3"))
+    subprocess.run([sys.executable, "-B", "-m", "pytest", "-q",
+                    "--basetemp", str(temp / "cases"), "-o", f"cache_dir={root / 'cache'}",
+                    "tests/frontend/static_assets", "tests/routes/test_postcheck.py"],
+                   env=env, check=True)
+'@ | ..\.venv\Scripts\python.exe -B -
 ```
+
+임시 경로를 새 Python process에 전달한다. process 종료 후에는 성공·실패와 관계없이
+`TemporaryDirectory`가 scratch를 정리한다.
 
 변경이 여러 영역을 가로지르면 각 영역의 관련 test를 합쳐 한 번 실행한다. 전체 suite의 로컬
 실행은 CI 장애 재현, dependency 변경, test infrastructure 변경처럼 전체 환경 검증 자체가
@@ -87,5 +116,5 @@ LTM 모델이나 동일 production endpoint를 별도 judge로 호출하지 않�
 - release 후보의 정성 품질·비용·latency 확인
 - 사용자가 실 API 실행을 명시적으로 승인한 실험
 
-실행 결과와 실제 응답 전문은 `research/agent-improvement/{results,logs,reports}`에 보존한다.
+실행 결과와 실제 응답 전문은 `.research/agent-improvement/{results,logs,reports}`에 보존한다.
 자동 점수만으로 품질 통과를 선언하지 않고 사람이 출력 전문을 읽어 평가한다.

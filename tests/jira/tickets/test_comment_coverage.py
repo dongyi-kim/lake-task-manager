@@ -10,6 +10,7 @@ from app.infra.cache import Cache
 from app.infra.settings import get_settings
 from app.jira.jira_client import JiraClient
 from app.services.ticket_activity import ticket_activity
+from app.infra.cache_policy import CachePolicy, read_scope
 
 
 @pytest.fixture
@@ -98,6 +99,120 @@ def test_short_complete_list_proves_coverage_without_an_extra_request(comments_c
     assert len(calls) == 1
     # Truncating the caller's visible list cannot inherit the full-list proof.
     assert not client.comment_coverage("DL-9007", short[:1])["complete"]
+
+
+@pytest.mark.parametrize("mode", ["live", "hot", "warm", "cool"])
+def test_explicit_full_comments_accepts_actual_paginated_upstream_proof(comments_client, mode):
+    client, _, calls, _, clock = comments_client
+    client.cache.configure(CachePolicy())
+    with read_scope(cache_mode=mode) as sources:
+        result = client.issue_comments_complete("DL-9007")
+    assert result["complete"] and result["returned"] == 250
+    assert len(calls) == 3
+    assert sources[-1]["compliant"] and sources[-1]["upstreamValidated"]
+    assert result["fetchedAt"] == clock[0]
+
+
+@pytest.mark.parametrize("mode,age,requests", [("live", 0, 1), ("hot", 601, 1),
+    ("warm", 7200, 0), ("warm", 86401, 1), ("cool", 172800, 0)])
+def test_explicit_complete_short_cache_hit_checks_both_age_and_coverage(comments_client, mode, age, requests):
+    client, rows, calls, _, clock = comments_client
+    client.cache.configure(CachePolicy())
+    del rows[3:]
+    client._issue_comments("DL-9007", 100)
+    before = len(calls)
+    original = clock[0]
+    clock[0] += age
+    with read_scope(cache_mode=mode) as sources:
+        result = client.issue_comments_complete("DL-9007")
+    assert result["complete"] and len(calls) - before == requests
+    assert result["fetchedAt"] == (clock[0] if requests else original)
+    assert all(row.get("compliant") for row in sources)
+
+
+def test_explicit_short_list_without_matching_coverage_fetches_full_snapshot(comments_client):
+    client, rows, calls, _, _ = comments_client
+    client.cache.configure(CachePolicy())
+    del rows[3:]
+    client._issue_comments("DL-9007", 100)
+    client.cache.forget(f"comments:{client.env}:DL-9007:coverage")
+    with read_scope(cache_mode="warm"):
+        assert client.issue_comments_complete("DL-9007")["complete"]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("mode", ["live", "hot"])
+def test_explicit_complete_comments_preserves_auth_failure_without_cache_fallback(comments_client, mode):
+    from app.auth.base import SessionExpired
+    client, rows, _, _, clock = comments_client
+    client.cache.configure(CachePolicy())
+    del rows[3:]
+    client._issue_comments("DL-9007", 100)
+    clock[0] += 601
+    def expired(*_args, **_kwargs):
+        raise SessionExpired("expired")
+    client._provider.get_json = expired
+    with read_scope(cache_mode=mode), pytest.raises(SessionExpired):
+        client.issue_comments_complete("DL-9007")
+
+
+@pytest.mark.parametrize("mode", ["live", "hot", "warm", "cool"])
+def test_explicit_preview_is_complete_for_its_requested_window_not_entire_thread(comments_client, mode):
+    client, _, calls, _, _ = comments_client
+    client.cache.configure(CachePolicy())
+    with read_scope(cache_mode=mode) as sources:
+        preview = client._issue_comments("DL-9007", 100)
+        coverage = client.comment_coverage("DL-9007", preview)
+    assert len(preview) == 20 and len(calls) == 1
+    assert not coverage["complete"]
+    assert sources[-1]["compliant"] and sources[-1]["upstreamValidated"]
+
+
+def test_ui_comment_permission_loss_removes_complete_fallback(comments_client):
+    from app.auth.base import PermissionDenied
+    client, _, _, _, _ = comments_client
+    client.cache.configure(CachePolicy())
+    client.issue_comments_complete("DL-9007")
+    def denied(*_args, **_kwargs):
+        raise PermissionDenied("denied")
+    client._provider.get_json = denied
+    with read_scope(cache_mode="live"), pytest.raises(PermissionDenied):
+        client.issue_comments_complete("DL-9007")
+    assert client.cache.get_alive(f"comments:{client.env}:DL-9007:full") is None
+
+
+@pytest.mark.parametrize("page", [
+    {"comments": [], "total": None, "startAt": 0},
+    {"comments": [], "total": 3, "startAt": 0},
+    {"comments": [], "total": 0, "startAt": 1},
+    {"errorMessages": ["temporarily unavailable"]},
+])
+def test_explicit_preview_rejects_unknown_or_incomplete_requested_page(comments_client, page):
+    client, _, _, _, _ = comments_client
+    client._provider.get_json = lambda *_args, **_kwargs: page
+    with read_scope(cache_mode="live"), pytest.raises(RuntimeError):
+        client._issue_comments("DL-9007", 100)
+    assert client.cache.get(f"comments:{client.env}:DL-9007") is None
+
+
+def test_live_full_comments_retry_intervening_mutation_before_claiming_complete(comments_client):
+    client, _, calls, _, clock = comments_client
+    client.cache.configure(CachePolicy())
+    original = client._provider.get_json
+    changed = []
+    def racing(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if kwargs["params"]["startAt"] == 100 and not changed:
+            changed.append(1)
+            clock[0] += 10
+            client.cache.invalidate(f"comments:{client.env}:DL-9007")
+        return result
+    client._provider.get_json = racing
+    with read_scope(cache_mode="live") as sources:
+        result = client.issue_comments_complete("DL-9007")
+    assert result["complete"] and result["fetchedAt"] == clock[0]
+    assert len(calls) == 6
+    assert sources[-1]["compliant"] and sources[-1]["upstreamValidated"]
 
 
 @pytest.mark.parametrize("failure", ["network", "duplicate", "changed_total"])

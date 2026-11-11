@@ -605,7 +605,7 @@ export default {
       // Stream callbacks can already be buffered when AbortController switches to another load.
       // Work on a request-owned snapshot so an old callback never mutates cache[key]/visible state
       // through their shared alias. Same-filter supersession is fenced by its key generation.
-      let streamModel = cloneTaskModel(cache[key] || this.model);
+      let streamModel = reactive(cloneTaskModel(cache[key] || this.model));
       const streamGenerationCurrent = () => this._taskCacheGenerations
         && this._taskCacheGenerations[key] === cacheGeneration;
       this._queueEpicMetadata(this.model, cache);

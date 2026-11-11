@@ -58,7 +58,7 @@ def test_group_hydration_has_independent_model_and_same_filter_generation_fence(
 def test_buffered_old_stream_event_cannot_mutate_new_same_filter_cache_alias():
     src = task_view_source()
 
-    assert "let streamModel = cloneTaskModel(cache[key] || this.model);" in src
+    assert "let streamModel = reactive(cloneTaskModel(cache[key] || this.model));" in src
     assert "const streamGenerationCurrent = () => this._taskCacheGenerations" in src
     start = src.index("if (event.replace !== false && event.model &&")
     end = src.index("if (active && event.done)", start)

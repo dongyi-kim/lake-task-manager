@@ -88,7 +88,10 @@ def test_ab_and_repeats_share_benchmark_but_retain_candidate_identity(tmp_path, 
     monkeypatch.setattr(protocol, "git_snapshot", lambda: {
         "commit": "a" * 40, "gitStatusAvailable": True, "dirtyTrackedFiles": ["changed.py"],
         "dirtyUntrackedFiles": False, "candidateTreeSha256": "b" * 64})
+    dirty_args = list(args)
+    dirty_args[dirty_args.index("--run-group") + 1] = "dirty-qualification"
+    assert not (tmp_path / "dirty-qualification").exists()
     with pytest.raises(RuntimeError, match="tracked working-tree changes"):
-        runner.launch(args, cli_run=lambda *a, **k: pytest.fail("Invalid qualification must not spend model calls"),
+        runner.launch(dirty_args, cli_run=lambda *a, **k: pytest.fail("Invalid qualification must not spend model calls"),
                       fixture_factory=fixture,
                       identity_fn=lambda *a, **k: {"runtime": "test", "version": "1"})

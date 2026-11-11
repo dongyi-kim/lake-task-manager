@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from app.jira.jql import _split_order, tokenize
+from app.jira.jql_budget import budgeted_query, current_budget
 from app.services.ticket_commands import CommandError
 from app.local_mcp.projections import issue_projection, ticket_projection
 
@@ -13,7 +14,9 @@ from app.local_mcp.projections import issue_projection, ticket_projection
 def register_reads(register, runtime):
     def search_issues(jql: str, start_at: int = 0, max_results: int = 50,
                       snapshot_id: str | None = None, detail: Literal["full", "summary"] = "full",
-                      include_description: bool = False) -> dict:
+                      include_description: bool = False,
+                      strategy: Literal["auto", "off", "people", "full"] = "auto",
+                      max_parts: Annotated[int, Field(strict=True, ge=1, le=64)] = 64) -> dict:
         """Search current Jira issues with exact JQL inside configured search projects.
         Returns issues, total, hasMore, nextStartAt and snapshotId; max_results is 1..100,
         start_at is zero-based. Follow every page with the same JQL and returned snapshotId
@@ -32,9 +35,17 @@ def register_reads(register, runtime):
         The description switch is independent of detail: true includes the body even with summary.
         Raw description retains Jira markup;
         use get_ticket(read/edit) when a rendered/editable representation is actually needed.
-        Preserve include_description with the snapshot on following pages; changing the switch starts
-        a new first-page search. descriptionMissingKeys identifies requested bodies not returned;
+        Preserve include_description and cache_mode with the snapshot on following pages; changing
+        either starts a new first-page search. A snapshot lasts 30 minutes from creation, separately
+        from its source age. snapshotFrozen=true continues that fixed result and does not establish
+        another live validation; use a new first-page search when new current evidence is required.
+        descriptionMissingKeys identifies requested bodies not returned;
         a returned null/empty description is a known empty body. Do not re-read fields already obtained.
+        strategy=off uses one whole JQL (possibly many pages), people groups proven people filters,
+        full queries individual logical parts, auto keeps the existing safe grouping. max_parts caps
+        distinct physical JQL, not HTTP pages or retries; known over-budget plans fall back to whole
+        search. Keep strategy and max_parts unchanged with the cursor. execution describes the plan
+        and actual physicalQueryCount; this is not the total Jira REST attempt count.
         """
         if not 1 <= max_results <= 100 or start_at < 0:
             raise ValueError("max_results는 1~100, start_at은 0 이상이어야 합니다.")
@@ -46,6 +57,7 @@ def register_reads(register, runtime):
         if order:
             query += " ORDER BY " + " ".join(t.value for t in order)
         page = runtime.client.search_issues_page(query, start_at=start_at, max_results=max_results,
+            **({"strategy": strategy, "max_parts": max_parts} if strategy != "auto" or max_parts != 64 else {}),
             snapshot_id=snapshot_id, **({"fields": runtime.client._issue_fields(light=True) + ",description",
                                        "light": False} if include_description else {}))
         base = runtime.settings.jira_base.rstrip("/")
@@ -66,8 +78,11 @@ def register_reads(register, runtime):
                 issue["key"] for issue in page.get("issues") or [] if "description" not in issue["fields"]])
         return result
 
+    @budgeted_query
     def get_tickets(keys: Annotated[list[str], Field(min_length=1, max_length=100)],
-                    include_description: bool = False) -> dict:
+                    include_description: bool = False,
+                    strategy: Literal["auto", "off", "people", "full"] = "auto",
+                    max_parts: Annotated[int, Field(strict=True, ge=1, le=64)] = 64) -> dict:
         """Read 1..100 known Jira keys together, using batched search rather than per-ticket GETs.
         Use search_issues to discover candidates, get_tickets when keys are already known,
         and get_ticket(read/edit) for one rendered/editable description. Other metadata uses
@@ -79,6 +94,7 @@ def register_reads(register, runtime):
         bodies appear separately in descriptionMissingKeys; returned null/empty is known empty.
         A batch uses Jira search pages if the server applies a smaller page cap; it never
         fetches individual issues. Split larger key sets into batches of at most 100.
+        strategy and max_parts have the same meaning as search_issues and apply to the whole batch.
         """
         requested = list(dict.fromkeys(key.upper() for key in keys))
         for key in requested:
@@ -87,7 +103,7 @@ def register_reads(register, runtime):
         rows, missing_bodies, start, snapshot, seen = {}, set(), 0, None, set()
         while True:
             page = search_issues(query, start_at=start, max_results=100, snapshot_id=snapshot,
-                                 include_description=include_description)
+                                 include_description=include_description, strategy=strategy, max_parts=max_parts)
             for issue in page["issues"]:
                 if issue["key"] not in requested:
                     raise ValueError("요청하지 않은 티켓이 다건 조회에 포함되었습니다.")
@@ -102,7 +118,8 @@ def register_reads(register, runtime):
             start, snapshot = next_start, page.get("snapshotId")
         missing = [key for key in requested if key not in rows]
         result = {"issues": [rows[key] for key in requested if key in rows], "requestedKeys": requested,
-                  "returned": len(rows), "missingKeys": missing, "complete": not missing}
+                  "returned": len(rows), "missingKeys": missing, "complete": not missing,
+                  "execution": {**page.get("execution", {}), **current_budget().diagnostics()}}
         if include_description:
             result.update(descriptionRequested=True,
                           descriptionMissingKeys=[key for key in requested if key in missing_bodies])

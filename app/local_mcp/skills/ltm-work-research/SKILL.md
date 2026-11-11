@@ -2,7 +2,7 @@
 name: ltm-work-research
 description: LTM MCP로 테이블·기능·키워드의 업무 경위, 사람의 실제 기여, 모듈·Epic·WBS·Task의 활동과 진척을 조사하거나 중단한 조사를 이어갈 때 사용한다. 기간 실적 집계나 정해진 보고서 양식 작성이 주목적이면 ltm-work-reporting을 선택한다.
 metadata:
-  version: 0.1.6-candidate
+  version: 0.1.9-candidate
 ---
 
 # 업무 맥락과 진척 조사
@@ -17,7 +17,7 @@ metadata:
 2. 대상·인물·기간이 모호하면 [범위·인물·시점](references/research-scope.md)을 참고한다. 복구 요청이면 먼저 기존 `resume.md`를 읽는다.
 3. 여러 페이지·긴 기록 등 중단 비용이 큰 조사에는 수집 전에 [중간 저장과 재개](references/checkpoint-resume.md)를 읽고 조사 폴더를 준비한다. [저장 예제](references/checkpoint-example.json)는 합성 자료다. 짧은 단건 확인에는 생략할 수 있다.
 4. 연결이 끊기거나 전체 댓글·긴 레코드를 읽을 때는 [근거 수집·실패 구간 복구](references/research-evidence.md)를 읽고 실제 페이지/레코드 위치를 따른다. 이력은 정확한 변경 시점·전후값·과거 담당·충돌 해소에 필요할 때만 추가한다.
-5. 수치·기여·계층 단위를 해석하면 [집계](references/work-counting.md), 종료 범위가 불명확하면 [요청 대응표](references/request-matrix.md), 문장·양식 보완이 필요하면 [한국어 작성](references/korean-writing.md)을 참고한다.
+5. 실제 개발 진척·보고 대응을 해석하면 [개발 진척](references/development-progress.md), 수치·기여·계층 단위를 해석하면 [집계](references/work-counting.md)를 참고한다. 종료 범위가 불명확하면 [요청 대응표](references/request-matrix.md), 문장·양식 보완이 필요하면 [한국어 작성](references/korean-writing.md)을 참고한다.
 
 ## 조사와 종료
 
@@ -30,6 +30,6 @@ metadata:
 
 ## 결과
 
-질문에 대한 답을 먼저 쓰고, 필요한 경우 사건 흐름·진척·기여를 표로 정리한다. 핵심 주장에는 실제 읽은 티켓·댓글·문서 revision의 근거를 붙인다. 확인한 범위와 기준 시각, 상충 자료, 미확인·제외 이유를 구분한다. 저장했다면 실제 폴더와 다음 재개 작업을 알린다.
+질문에 대한 답을 먼저 쓴다. 일반 진척 조사는 실제 달라진 내용·확인된 산출물·남은 작업·장애가 중심이고 건수는 보조한다. WBS/SP 등의 수치 진척률을 명시적으로 묻지 않았다면 퍼센트 산정을 위해 계층·가중치를 추가 수집하지 않는다. 핵심 주장에는 실제 읽은 티켓·댓글·문서 revision의 근거를 붙인다. 확인한 범위와 기준 시각, 상충 자료, 미확인·제외 이유를 구분한다. 저장했다면 실제 폴더와 다음 재개 작업을 알린다.
 
 보고서가 필요해지면 기존 조사 근거를 재사용해 `ltm-work-reporting`을 선택한다. 티켓·댓글·문서로 게시하는 요청은 해당 작성 스킬과 [초안 검토](references/draft-review.md)를 따른다. 조사 요청 자체는 게시 승인이 아니다.

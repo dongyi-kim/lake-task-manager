@@ -1,7 +1,7 @@
 """Current scoped Jira hierarchy with shared issue/membership caches."""
 
 from app.auth.base import SessionExpired
-from app.infra.cache_policy import note_read, read_scope
+from app.infra.cache_policy import CacheMode, current_read_policy, note_read, read_scope
 from app.jira.evidence_service import validate_page, _check_auth, _json_size, EVIDENCE_PAGE_MAX_BYTES
 
 def get_descendants(client, root_key, *, projects, include_root=True, start_at=0, max_results=100,
@@ -178,16 +178,23 @@ def _descendant_children(client, key, raw, projects):
         source = current[0]
         # Read each cached payload with its own timestamp. A concurrent full or light refresh
         # must not make the previously selected parent appear newer than it is.
-        fetched = 0
-        for kind in ("issue", "issueL"):
-            snapshot = client.cache.get_stale_at(f"{kind}:{client.env}:{key}")
-            if snapshot and snapshot[0] == source:
-                fetched = max(fetched, snapshot[1])
+        request_policy = current_read_policy()
+        with read_scope(strict=True):
+            parents = client.cache.get_many_with_metadata(
+                [f"{kind}:{client.env}:{key}" for kind in ("issue", "issueL")])
+        matching = [metadata for value, metadata in parents.values() if value == source]
+        provenance = max(matching, key=lambda row: row["fetchedAt"], default=None)
+        fetched = provenance["fetchedAt"] if provenance else 0
+        allowed_age = request_policy.max_age_seconds if request_policy.explicit else ttl
+        valid_parent = (bool(provenance and provenance.get("upstreamValidated"))
+                        if request_policy.mode == CacheMode.LIVE else
+                        bool(provenance and time.time() - fetched <= allowed_age))
         # Done issue data may be fresh for 24h; its child membership still expires after 10m.
         # Fetch inside the shared membership producer so an intervening write fences both
         # issue write-through and membership publication, and failures never cache an empty list.
-        if time.time() - fetched > ttl or "subtasks" not in source["fields"]:
+        if not valid_parent or "subtasks" not in source["fields"]:
             fence = client.cache.fence()
+            fetched = time.time()
             source = client.provider.get_json(f"/rest/api/2/issue/{key}", params={
                 "fields": client._issue_fields(light=True),
             })
@@ -199,18 +206,20 @@ def _descendant_children(client, key, raw, projects):
                 _check_auth(client, source)
             if not isinstance(source, dict) or source.get("key") != key or not isinstance(source.get("fields"), dict):
                 raise ValueError("Jira parent 응답이 요청한 티켓을 포함하지 않습니다.")
-            fetched = time.time()
-            client.cache.set_if_fence(f"issueL:{client.env}:{key}", source,
-                                      client.s.cache_ttl_seconds, fence, fetched_at=fetched)
+            stored = client.cache.set_if_fence(f"issueL:{client.env}:{key}", source,
+                                               client.s.cache_ttl_seconds, fence, fetched_at=fetched)
+            provenance = {"fetchedAt": fetched, "invalidated": not stored,
+                          "upstreamValidated": stored, "compliant": stored}
             current[0] = source
             if ((source["fields"].get("issuetype") or {}).get("name") or "").casefold() == "epic":
                 raise ValueError("Parent 유형이 Epic으로 변경되었습니다. 계층을 다시 조회하세요.")
         children = source["fields"].get("subtasks")
         if not isinstance(children, list) or any(not isinstance(row, dict) or not row.get("key") for row in children):
             raise ValueError(f"{key} direct-child membership is incomplete")
-        note_read({"kind": "childkeys", "fetchedAt": fetched, "freshUntil": fetched + ttl,
-                   "displayUntil": fetched + client.cache.display_ttl(cache_key),
-                   "invalidated": False, "state": "fresh"})
+        note_read(dict(provenance, kind="childkeys", fetchedAt=fetched,
+                       freshUntil=fetched + ttl,
+                       displayUntil=fetched + client.cache.display_ttl(cache_key),
+                       state="fresh" if time.time() - fetched <= ttl else "stale"))
         return list(dict.fromkeys(str(row["key"]).strip().upper() for row in children))
 
     children, _ = client.cache.get_or_set_strict(cache_key, ttl, build)

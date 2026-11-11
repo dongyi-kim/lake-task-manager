@@ -674,7 +674,7 @@ def test_report_renders_every_distinct_candidate_identity(monkeypatch):
 
 
 def test_historical_base_report_keeps_its_declared_v1_contract():
-    report = (ROOT / "research/agent-improvement/evaluations/2026-08-15-base-rubric-1.2-full.md")
+    report = (ROOT / ".research/agent-improvement/evaluations/2026-08-15-base-rubric-1.2-full.md")
     text = report.read_text(encoding="utf-8")
     assert "protocolVersion | `1.0.0`" in text
     assert "3.72" in text
@@ -1243,10 +1243,10 @@ def test_primary_batteries_always_write_raw_results_through_the_cache_helper():
 def test_evaluation_rules_require_a_tracked_compact_markdown_report():
     guide = (ROOT / "app/agent/EVALUATION.md").read_text(encoding="utf-8")
     agent_guide = (ROOT / "app/agent/AGENT.md").read_text(encoding="utf-8")
-    archive = (ROOT / "research/agent-improvement/README.md").read_text(encoding="utf-8")
+    archive = (ROOT / ".research/agent-improvement/README.md").read_text(encoding="utf-8")
     for text in (guide, agent_guide, archive):
         assert ".cache/agent-evaluation/" in text
-        assert "research/agent-improvement/evaluations/" in text
+        assert ".research/agent-improvement/evaluations/" in text
     for token in ("candidate commit", "protocolVersion", "rubricVersion",
                   "batteryVersion", "batteryManifestSha256", "specializedReviewSpecSha256"):
         assert token in guide

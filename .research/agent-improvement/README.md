@@ -2,6 +2,8 @@
 
 LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 성능 및 토큰 사용량을 비교한 실험 자료를 보관한다. 프로덕션 동작 규칙과 작성 표준은 [`app/agent/AGENT.md`](../../app/agent/AGENT.md)를 기준으로 하며, 이 디렉터리의 자료는 재현과 의사결정을 위한 연구 기록이다.
 
+특정 작업·브랜치의 조사 기록과 전용 실험 스크립트를 숨김 폴더에 모은다. 공용 평가 도구와 CI 회귀 테스트는 각각 `tools/`, `tests/`에 유지한다. 과거 보고서에 기록된 실행 경로·commit·측정값은 당시 조건으로 보존한다.
+
 ## 디렉터리
 
 - `reports/`: 비교 보고서, 사람 관점 정성평가, 설계·성능 기록
@@ -26,7 +28,7 @@ LakeTaskManager Agent의 prompt 언어 구성, role contract, 구조적 품질, 
 
 실행별 raw response·trace·usage·debug JSON은 `.cache/agent-evaluation/<runGroupId>/`에만 저장하고 git에
 담지 않는다. 같은 run group·suite·repeat의 raw/`.claim`은 덮어쓰지 않고 재실행에 새 식별자를 쓴다.
-Codex/Claude 직접 채점이 끝나면 `research/agent-improvement/evaluations/`에 경량 Markdown을
+Codex/Claude 직접 채점이 끝나면 `.research/agent-improvement/evaluations/`에 경량 Markdown을
 반드시 남긴다. 그래야 이후 같은 battery/case만 focused로 재실행해 candidate commit과 version이 일치하는
 과거 결과를 찾을 수 있다.
 

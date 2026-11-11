@@ -19,7 +19,8 @@
 관련 test만 로컬에서 실행하며, 외부 API 없는 전체 suite는 PR/`main` push의 GitHub Actions가
 담당한다. 실 LLM/API 배터리는 자동화하지 않고 명시적 승인 후 로컬에서 수동 실행한다.
 
-실험 결과와 보고서는 `research/agent-improvement/`에만 보관한다. 프로덕션 개발 지침과 과거 실험 결론을 섞지 않는다.
+실험 결과와 보고서는 `.research/agent-improvement/`에만 보관한다. 프로덕션 개발 지침과 과거 실험 결론을 섞지 않는다.
+공용 CI·테스트·빌드·평가 도구는 기존 `tools/`, `tests/` 경로에 유지한다. 특정 작업·브랜치의 조사 자료와 전용 실험 스크립트만 `.research/` 아래에 둔다.
 
 ## 작업공간 임시 산출물 규칙
 

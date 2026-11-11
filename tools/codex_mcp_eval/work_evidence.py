@@ -6,6 +6,11 @@ import re
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 
+def _evidence_record_format(page):
+    version = page.get("recordFormat", "jira-evidence-v1")
+    return version if isinstance(version, str) and version in {"jira-evidence-v1", "jira-evidence-v2"} else None
+
+
 def literal_source_records(call, kind):
     """Read identities only at typed result locations, never inside quoted bodies."""
     data, name = call.get("result", {}).get("data"), call.get("name")
@@ -35,6 +40,8 @@ def literal_source_records(call, kind):
     elif name == "get_comment_source":
         comments = [data]
     elif name == "get_evidence_page" and data.get("kind") in {"comments", "history"}:
+        if _evidence_record_format(data) is None:
+            return []
         records = [row for row in data.get("items") or [] if isinstance(row, dict) and "recordJson" not in row]
         if data["kind"] == "comments":
             comments = records
@@ -116,6 +123,8 @@ def source_observed(calls, source):
     for call in successful:
         page = call["result"].get("data") or {}
         if call.get("name") != "get_evidence_page" or not isinstance(page, dict) or page.get("kind") != "comments":
+            continue
+        if _evidence_record_format(page) is None:
             continue
         key = page.get("key")
         records = list(page.get("items") or [])
@@ -302,11 +311,15 @@ def evidence_collection(calls, key, kind="comments"):
         page = result.get("data") or {}
         if page.get("key") != key or page.get("kind") != kind:
             continue
+        record_format = _evidence_record_format(page)
         start, count, items = page.get("startAt"), page.get("total"), page.get("items") or []
         first_offset = items[0].get("recordOffset", 0) if items else 0
         if start == 0 and first_offset == 0:
             # Membership is fresh; same-ID/same-digest source bytes remain reusable.
             records, started, ended, valid = {}, True, False, True
+        if record_format is None:
+            valid = False
+            continue
         if type(start) is not int or type(count) is not int or count < 0:
             valid = False
             continue
@@ -321,8 +334,10 @@ def evidence_collection(calls, key, kind="comments"):
                 continue
             source = item.get("sourceIndex")
             records.pop(source, None)
+            if item.get("recordFormat", "jira-evidence-v1") != record_format:
+                continue
             digest = item.get("recordSha256")
-            state = chunks.setdefault((str(item.get("id")), digest), {})
+            state = chunks.setdefault((str(item.get("id")), digest, record_format), {})
             state[item["recordOffset"]] = item["recordJson"]
             text, offset = "", 0
             while offset in state and state[offset]:

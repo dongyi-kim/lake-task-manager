@@ -20,6 +20,12 @@ class CacheMetadata(OpenModel):
     freshUntil: float | None = None
     displayUntil: float | None = None
     policyRevision: int | None = None
+    requestedCacheMode: Literal["live", "hot", "warm", "cool", "cold"] | None = None
+    effectiveCacheMode: Literal["live", "hot", "warm", "cool", "cold"] | None = None
+    maxAgeSeconds: Literal[0, 600, 86400, 604800, 2592000] | None = None
+    compliant: bool | None = None
+    upstreamValidated: bool | None = None
+    oldestComponentFetchedAt: float | None = None
 
 
 class RecoveryAction(OpenModel):

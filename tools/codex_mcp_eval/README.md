@@ -1,5 +1,7 @@
 # Codex + LTM MCP 조회 품질 평가
 
+`etl/`은 ETL 업무를 조사하는 MCP의 품질·성능을 검증하는 공용 평가 배터리다. 1년간 약 1만 건의 합성 Jira·Confluence 자료, 질문, 정답 검증과 장애 복구 시나리오를 제공하며 실제 데이터 적재를 수행하지 않는다. CI 회귀 테스트에서도 사용하는 코드이므로 `tools/`에 유지하고, 특정 작업의 계획·실험 보고서는 `.research/`에 보관한다.
+
 ## #190 업무 조사·보고 후보 평가
 
 `--battery work`는 `codex-mcp-work` 3.0.0 / prompt `codex-mcp-work-v4`이다.
@@ -196,7 +198,7 @@ raw·manifest·출처 snapshot·MCP 요청/응답·SDK 오류·캐시 출처·up
 `null`/unavailable이며 tool 호출 수로 대체하지 않는다. latency는 fixture 초기화를 제외한 Codex process
 기동+모델+MCP 시간이다. token usage는 CLI가 반환한 값만 기록한다.
 
-직접 검수 결과는 `research/agent-improvement/evaluations/`에 Markdown으로 남긴다. 모델·commit·manifest·
+직접 검수 결과는 `.research/agent-improvement/evaluations/`에 Markdown으로 남긴다. 모델·commit·manifest·
 fixture 날짜·평가자·비교 한계·모든 checklist 결과·대표 출력·실패를 포함해야 평가 완료다.
 
 `1.0.1`은 S5 자동 검사의 한 항목 제한을 수정한다. 원래 질문은 우선 업무와 대안을 함께 제시하는

@@ -107,12 +107,12 @@ def test_recovered_planning_context_reconciles_the_real_progress_total(client, m
     original = client._compile_jql
     planning_failed = False
 
-    def transient(jql, *, now=None):
+    def transient(jql, *, now=None, **kwargs):
         nonlocal planning_failed
         if now is not None and not planning_failed:
             planning_failed = True
             raise SessionExpired("temporary planning session failure")
-        return original(jql, now=now)
+        return original(jql, now=now, **kwargs)
 
     monkeypatch.setattr(client, "_compile_jql", transient)
     events = list(mytasks.iter_my_task_models(client, scope="assignee"))

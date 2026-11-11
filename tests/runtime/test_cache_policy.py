@@ -257,7 +257,7 @@ def test_http_source_headers_and_explicit_revalidation(cache, clock):
         assert fresh.headers["x-ltm-cache-state"] == "fresh"
         assert float(fresh.headers["x-ltm-fetched-at"]) == 100601
         client.get("/api/ticket/DL-1?revalidate=1")
-        assert produced == [1]
+        assert produced == [1, 1]  # Public force refresh validates upstream on every request.
 
 
 def test_full_done_issue_satisfies_light_request_beyond_general_ttl(cache, clock):

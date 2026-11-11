@@ -64,6 +64,26 @@ def test_force_revision_check_fetches_only_metadata_and_reuses_original_body(sou
     assert len([p for _, p in source.calls if "body.storage" in p["expand"]]) == 2
 
 
+def test_live_checks_latest_revision_but_reuses_immutable_body_age(source):
+    first = conf.body(source.client, "100")
+    original_age = first["cacheInfo"]["bodyFetchedAt"]
+    with read_scope(cache_mode="live") as observed:
+        again = conf.body(source.client, "100")
+    assert len(source.calls) == 3  # Existing head+body, then only a new head check.
+    assert again["body"] == first["body"]
+    assert again["cacheInfo"]["bodyFetchedAt"] == original_age
+    assert any(row.get("immutableRevision") for row in observed)
+    assert all(row.get("compliant") for row in observed)
+
+
+def test_live_revision_reuse_never_hides_permission_failure(source):
+    conf.body(source.client, "100")
+    source.state.failure = PermissionDenied("revoked")
+    with read_scope(cache_mode="live"), pytest.raises(PermissionDenied):
+        conf.body(source.client, "100")
+    assert not source.cache.entries_by_prefix("confbody:", retained=True)
+
+
 def test_browser_body_pair_primes_mcp_source_in_one_versioned_request(source):
     original = source.fetch
     def fetch(path, params=None):

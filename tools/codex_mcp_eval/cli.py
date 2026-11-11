@@ -119,7 +119,8 @@ def parse_events(stdout: str, *, secret="", allow_research_files=False) -> dict:
             "errors": errors, "forbiddenToolEvents": forbidden,
             "usage": {"calls": None, "promptTokens": prompt, "completionTokens": completion,
                       "totalTokens": prompt + completion if prompt is not None and completion is not None else None,
-                      "cachedTokens": number("cached_input_tokens"), "costUsd": None},
+                      "cachedTokens": number("cached_input_tokens"),
+                      "reasoningTokens": number("reasoning_output_tokens"), "costUsd": None},
             "measurementAvailability": {"modelCalls": False, "costUsd": False, "timeToFirstToken": False,
                                         "tokens": prompt is not None and completion is not None}}
 
@@ -168,8 +169,12 @@ def run(binary: str, prompt: str, workspace: Path, *, model=MODEL, effort=EFFORT
         except (ValueError, TypeError, KeyError, ValidationError):
             parsed["ok"] = False
             parsed["errors"].append("invalid_final_output_schema")
+        except Exception as exc:
+            # The process has already spent tokens. A broken host-side schema or
+            # postprocessor must return that completed usage, not erase it.
+            parsed.update(ok=False, error="codex_postprocess_failed", postprocessErrorType=type(exc).__name__)
     if not parsed["ok"]:
-        parsed["error"] = "codex_execution_failed"
+        parsed.setdefault("error", "codex_execution_failed")
     # stderr may include host/profile paths or credentials. Keep only its presence.
     parsed["stderrPresent"] = bool(result.stderr.strip())
     return parsed

@@ -150,7 +150,7 @@ LTM에서 수정한 내용은 기간에 관계없이 갱신하며, 편집 권한
 mutation 정보와 issue→leaf 역인덱스로 영향받는 상세·목록·집계 캐시만 선택적으로 갱신한다.
 
 실제 Task 필터·워크로드·WBS 흐름의 비교 수치와 한계는
-[JQL UI 성능 보고서](research/agent-improvement/reports/jql-strategic-cache-ui-20261104.md)에 있다.
+[JQL UI 성능 보고서](.research/agent-improvement/reports/jql-strategic-cache-ui-20261104.md)에 있다.
 
 ## 실행 환경
 
