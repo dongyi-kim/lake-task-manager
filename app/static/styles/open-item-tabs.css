@@ -1,0 +1,26 @@
+/* Metadata tabs below existing navigation. No document/card/editor layout ownership. */
+.open-item-tabs { display:flex; align-items:stretch; min-width:0; max-width:100%; gap:4px;
+  border-bottom:1px solid var(--border); background:var(--panel-2); padding:4px 8px 0; }
+.open-item-tabs .oit-list { display:flex; flex:1; min-width:0; position:relative; overflow-x:auto; overflow-y:hidden;
+  gap:3px; scrollbar-width:thin; scroll-behavior:auto; overscroll-behavior-x:contain; }
+.open-item-tabs .oit-item { display:flex; flex:none; align-items:stretch; min-width:100px; max-width:280px;
+  border:1px solid transparent; border-bottom:2px solid transparent; border-radius:var(--radius-control) var(--radius-control) 0 0;
+  background:transparent; color:var(--muted); transition:background var(--motion-hover),border-color var(--motion-hover); }
+.open-item-tabs .oit-item:hover { background:var(--hover); }
+.open-item-tabs .oit-item.active { background:var(--selected); border-color:var(--border); border-bottom-color:var(--accent); color:var(--text); }
+.open-item-tabs .oit-tab { display:flex; align-items:center; gap:6px; min-width:0; min-height:32px; padding:5px 8px;
+  color:inherit; background:none; border:0; font:inherit; font-size:var(--size-meta); cursor:pointer; text-align:left; border-radius:var(--radius-control); }
+.open-item-tabs .oit-icon { flex:none; width:14px; height:14px; }
+.open-item-tabs .oit-key { flex:none; font-size:11px; color:var(--info); font-variant-numeric:tabular-nums; }
+.open-item-tabs .oit-title { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.open-item-tabs .oit-item.active .oit-title { font-weight:600; }
+.open-item-tabs .oit-close { flex:none; width:26px; padding:0; border:0; border-radius:var(--radius-control);
+  background:none; color:var(--muted); font:inherit; font-size:17px; cursor:pointer; }
+.open-item-tabs .oit-close:hover { background:var(--panel-3); color:var(--text); }
+.open-item-tabs .oit-scroll { flex:none; width:26px; min-height:32px; align-self:stretch; padding:0; border:0;
+  border-radius:var(--radius-control); background:none; color:var(--text); font:inherit; font-size:22px; cursor:pointer; }
+.open-item-tabs .oit-scroll:hover:not(:disabled) { background:var(--hover); }
+.open-item-tabs :is(.oit-tab,.oit-close,.oit-scroll):disabled { cursor:default; color:var(--muted-2); }
+.open-item-tabs .oit-scroll:disabled { opacity:.45; }
+.open-item-tabs :is(button,.oit-list):focus-visible { outline:2px solid var(--focus); outline-offset:-2px; }
+@media (prefers-reduced-motion:reduce) { .open-item-tabs .oit-item { transition:none; } }
