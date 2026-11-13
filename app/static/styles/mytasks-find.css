@@ -6,11 +6,11 @@
 .mt-find { display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
   width: 560px; max-width: 100%; box-sizing: border-box; padding: 8px;
   color: var(--text); background: var(--panel); border: 1px solid var(--border-hi);
-  border-radius: 12px; box-shadow: 0 8px 32px #0003, 0 2px 6px #0002;
+  border-radius: 8px; box-shadow: 0 8px 24px #0002;
   pointer-events: auto; }
-.mt-find:focus-within { border-color: var(--warn); }
+.mt-find:focus-within { border-color: var(--focus); }
 .mt-find-icon { flex: none; width: 19px; height: 19px; margin: 0 6px; color: var(--warn); }
-.mt-find input { flex: 1; min-width: 0; width: 0; height: 34px; padding: 0 4px;
+.mt-find input { flex: 1; min-width: 0; width: 0; height: 30px; padding: 0 4px;
   border: 0; border-radius: 4px; background: transparent; color: var(--text);
   font: inherit; font-size: 13px; outline: none; }
 .mt-find input::placeholder { color: var(--muted-2); font-size: 12px; }
@@ -19,11 +19,11 @@
 .mt-find-count.empty { color: var(--muted-2); }
 .mt-find-actions { display: flex; gap: 2px; padding-left: 6px; margin-left: 4px;
   border-left: 1px solid var(--border); }
-.mt-find button { display: grid; place-items: center; width: 32px; height: 32px;
-  padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.mt-find button { display: grid; place-items: center; width: 30px; height: 30px;
+  padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
 .mt-find button:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
-.mt-find button:disabled { opacity: .3; cursor: default; }
-.mt-find button:focus-visible { outline: 2px solid var(--warn); outline-offset: 1px; }
+.mt-find button:disabled { opacity: .55; cursor: default; }
+.mt-find button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .mt-find button svg { width: 18px; height: 18px; fill: none; stroke: currentColor;
   stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .mt-find-status { flex-basis: 100%; padding: 5px 8px 2px 39px; border-top: 1px solid var(--border);
@@ -31,9 +31,9 @@
 
 /* Dim surfaces and individual nonmatches, never a container of matching SubTasks.
    No scrim intercepts clicks: filters, cards, folding and pagination remain usable. */
-.mt-find-active { --mt-find-backdrop: color-mix(in srgb, var(--bg) 66%, #000);
-  --mt-find-current: #527400; }
-:root[data-theme="dark"] .mt-find-active { --mt-find-current: #d2ff4f; }
+.mt-find-active { --mt-find-backdrop: color-mix(in srgb, var(--bg) 86%, var(--text));
+  --mt-find-current: var(--focus); }
+:root[data-theme="dark"] .mt-find-active { --mt-find-current: var(--focus); }
 .mt-find-active .mt-board-lanes { background: var(--mt-find-backdrop); }
 .mt-find-active .mt-colbg { opacity: .18; }
 :root .mytasks.mt-find-active :is(.mt-gcard2, .mt-compact-flow) { background: transparent;
@@ -51,17 +51,19 @@
 .mt-find-active .mt-card.mt-find-match {
   outline: 1px solid var(--warn); outline-offset: -1px; scroll-margin-block: 120px; }
 .mt-find-active .mt-card.mt-find-current { outline: 3px solid var(--mt-find-current); outline-offset: -2px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mt-find-current) 36%, transparent),
-    0 0 18px color-mix(in srgb, var(--mt-find-current) 22%, transparent); }
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mt-find-current) 30%, transparent); }
 .mt-find-active .mt-card.mt-find-match .mt-title { opacity: 1; }
 @media (max-width: 900px) {
   .mt-find-dock { right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
 }
 @media (max-width: 480px) {
-  .mt-find { gap: 2px; padding: 6px; border-radius: 10px; }
+  .mt-find { gap: 2px; padding: 6px; border-radius: 8px;
+  box-shadow: 0 8px 24px #0002; }
   .mt-find-icon { width: 16px; margin: 0 3px; }
   .mt-find-count { padding: 5px; font-size: 11px; }
   .mt-find-actions { padding-left: 3px; margin-left: 2px; gap: 0; }
-  .mt-find button { width: 28px; }
+  .mt-find button { width: 30px;
+  height: 30px;
+  border-radius: 5px; }
   .mt-find-status { padding-left: 28px; }
 }

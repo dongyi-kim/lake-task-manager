@@ -2,15 +2,15 @@
  * updated: 2026-07-08 */
 
 /* 상태 pill */
-.pill { font-size: 9.5px; font-weight: 700; border-radius: 2px; padding: 1.5px 6px; border: 1px solid;
+.pill { font-size: 11px; font-weight: 600; border-radius: var(--radius-control); padding: 1.5px 6px; border: 1px solid;
         white-space: nowrap; flex: 0 0 auto;
         background: color-mix(in srgb, currentColor 12%, transparent);
         border-color: color-mix(in srgb, currentColor 32%, transparent); }
 
 /* 이슈타입 배지 */
 .tbadge { --tc: var(--ty-task);   /* fallback — 인라인 --tc 미지정 시에도 칩이 안 깨지게 */
-          font-size: 10px; font-weight: 700; line-height: 16px; padding: 0 7px; border-radius: 2px;
-          letter-spacing: .3px; flex: 0 0 auto; white-space: nowrap; }
+          font-size: 11px; font-weight: 600; line-height: 16px; padding: 0 7px; border-radius: var(--radius-control);
+          flex: 0 0 auto; white-space: nowrap; }
 .tbadge.v-plain { color: var(--muted); border: 1px solid var(--border); }
 /* 알파 틴트 칩 — 배경 14% / 보더 34% / 글자 원색. --tc 는 TypeBadge 가 인라인으로 준다 */
 .tbadge.v-solid { color: var(--tc); background: color-mix(in srgb, var(--tc) 14%, transparent);
@@ -66,18 +66,18 @@
 
 /* LoginOverlay */
 .login-ov { position: fixed; inset: 0; z-index: 99999; display: flex; align-items: center; justify-content: center;
-            background: rgba(17,20,28,.72); backdrop-filter: blur(3px); }
-.login-card { background: var(--panel); color: var(--text); border-radius: 12px; padding: 30px 34px; max-width: 420px;
-              box-shadow: 0 18px 60px rgba(0,0,0,.4); text-align: center; }
+            background: var(--overlay); backdrop-filter: blur(3px); }
+.login-card { background: var(--panel); color: var(--text); border: 1px solid var(--border-hi); border-radius: var(--radius-dialog); padding: 30px 34px; max-width: 420px;
+              box-shadow: var(--shadow-overlay); text-align: center; }
 .login-ic { font-size: 34px; margin-bottom: 6px; }
 .login-h { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
 .login-msg { font-size: 13.5px; line-height: 1.6; color: var(--muted); margin-bottom: 20px; }
-.login-btn { background: var(--accent); color: #fff; border: 0; border-radius: 9px; padding: 11px 26px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.login-btn { background: var(--accent); color:var(--on-accent); border: 0; border-radius: var(--radius-control); min-height: var(--control-height-primary); padding: 8px 20px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .login-btn:disabled { opacity: .6; cursor: default; }
 /* 자동 로그인 타임아웃 진행바 — 다 차면 manual 색으로 바뀌고 아래 안내가 '수동 로그인'으로 전환된다. */
 .login-prog { height: 6px; border-radius: 6px; background: var(--border); overflow: hidden; margin: -8px 0 10px; }
-.login-prog i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 6px; transition: width .2s linear; }
-.login-prog.manual i { background: #e0922f; }
+.login-prog i { display: block; height: 100%; width: 0; background: var(--info); border-radius: 6px; transition: width .2s linear; }
+.login-prog.manual i { background: var(--warn); }
 .login-sub { font-size: 12px; line-height: 1.55; color: var(--muted); margin: 0 0 18px; }
 
 /* FormulaCallout */
@@ -110,7 +110,7 @@
   display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
   /* 내용 폭만 쓰되 화면을 넘지 않게. 알림이 화면 폭을 다 먹으면 경고가 아니라 방해가 된다. */
   width: max-content; max-width: min(620px, calc(100vw - 24px));
-  padding: 8px 30px 8px 13px; border-radius: 10px; font-size: 12px; position: fixed;
+  padding: 8px 30px 8px 13px; border-radius: 10px; font-size: 12px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   border: 1px solid color-mix(in srgb, var(--st-prog) 40%, var(--border));
@@ -139,10 +139,10 @@
    드래그 대신 메뉴를 쓰는 이유는 TicketMenu.js 주석 참고 — 요약하면 "놓을 수 있는 칸" 이
    티켓마다 다르므로, 가능한 것만 보여 주는 편이 정직하다. */
 .tkmenu { position: fixed; z-index: 9500; min-width: 200px; padding: 5px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(0,0,0,.20), 0 1px 3px rgba(0,0,0,.10); }
+  background: var(--panel); border: 1px solid var(--border-hi); border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-overlay); }
 .tkm-h { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700;
-  color: var(--accent); padding: 4px 8px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  color: var(--info); padding: 4px 8px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 .tkm-loading, .tkm-err { font-size: 11.5px; color: var(--muted); padding: 6px 8px; }
 .tkm-i { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
   border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--text);
@@ -157,17 +157,17 @@
 
 /* ── 전이 화면 ─────────────────────────────────────────────────────────── */
 .trx-ov { position: fixed; inset: 0; z-index: 9600; display: flex; align-items: center;
-  justify-content: center; background: rgba(15,18,22,.42); backdrop-filter: blur(2px); }
+  justify-content: center; background: var(--overlay); backdrop-filter: blur(2px); }
 /* 본문이 커지면(에디터 높이 조절) **다이얼로그도 같이 커진다**. 안쪽만 늘어나고 창은 그대로면
    늘린 만큼 스크롤이 생겨 늘린 보람이 없다. 화면 높이에 닿으면 그때부터 본문이 스크롤한다. */
 .trx { width: min(460px, calc(100vw - 32px)); background: var(--panel);
-  border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--border-hi); border-radius: var(--radius-dialog); overflow: hidden;
   display: flex; flex-direction: column; max-height: 92vh;
-  box-shadow: 0 18px 50px rgba(0,0,0,.30); }
+  box-shadow: var(--shadow-overlay); }
 .trx-h, .trx-f2 { flex: none; }
 .trx-h { display: flex; align-items: center; gap: 8px; padding: 12px 14px;
   border-bottom: 1px solid var(--border); font-size: 13.5px; }
-.trx-key { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--accent); }
+.trx-key { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--info); }
 .trx-x { margin-left: auto; border: 0; background: none; font-size: 19px; line-height: 1;
   color: var(--muted-2); cursor: pointer; }
 .trx-b { padding: 12px 14px; display: flex; flex-direction: column; gap: 13px; }
@@ -177,11 +177,11 @@
 .trx-hint { font-size: 10.5px; color: var(--muted-2); }
 .trx input[type="number"], .trx select, .trx textarea, .trx-who input {
   font: inherit; font-size: 12.5px; color: var(--text); background: var(--panel-2);
-  border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+  border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 8px; }
 .trx textarea { resize: vertical; }
 /* 시/분 두 칸 — 문자열을 직접 치게 하지 않는 것이 이 화면의 요점이다 */
 .trx-time { display: flex; align-items: center; gap: 6px; }
-.trx-time input { width: 68px; text-align: right; }
+.trx-time input { width: 58px; text-align: right; }
 .trx-time em { font-style: normal; font-size: 11.5px; color: var(--muted); }
 .trx-prev { margin-left: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
   color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -205,8 +205,8 @@
 .trx-need { font-size: 11.5px; color: var(--muted-2); flex: 1 1 auto; }
 .trx-cancel, .trx-ok { border-radius: 8px; font: inherit; font-size: 12.5px; font-weight: 600;
   padding: 6px 12px; cursor: pointer; margin-left: auto; }
-.trx-cancel { margin-left: auto; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
-.trx-ok { margin-left: 0; border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+.trx-cancel { margin-left: auto; border: 1px solid var(--control-border); background: var(--panel); color: var(--muted); }
+.trx-ok { margin-left: 0; border: 1px solid var(--accent); background: var(--accent); color:var(--on-accent); }
 .trx-ok:disabled { opacity: .5; cursor: not-allowed; }
 
 /* 담당자 — 고른 사람은 칩(노드)으로 남는다. 사진이 이름보다 먼저 잡히므로 아바타를 크게 둔다. */
@@ -221,7 +221,6 @@
 .trx-chip-x:hover { color: var(--text); }
 .trx-drop button.hi { background: var(--panel-2); }
 .trx-drop .avt { flex: none; }
-.trx-time input { width: 58px; }
 .trx-hint i { font-style: normal; color: var(--accent); }
 /* 전이 화면 안의 댓글 에디터 — 다이얼로그 폭에 맞추고, 본문이 길어지면 화면을 넘지 않게 */
 .trx .cmt-editor { border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
@@ -255,7 +254,7 @@
 .up-i em { flex: none; }
 .up-b { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 9px; }
 .up-b > input { font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2);
-  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  border: 1px solid var(--control-border); border-radius: 8px; padding: 8px 10px; }
 .up-list { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .up-i { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
   border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--text);
@@ -263,7 +262,7 @@
 .up-i.hi { background: var(--panel-2); }
 .up-i em { margin-left: auto; font-style: normal; font-family: ui-monospace, Consolas, monospace;
   font-size: 10.5px; color: var(--muted-2); }
-.up-i i { font-style: normal; font-size: 9.5px; font-weight: 700; color: #fff;
+.up-i i { font-style: normal; font-size: 9.5px; font-weight: 700; color:var(--on-accent);
   background: var(--accent); border-radius: 3px; padding: 0 5px; line-height: 15px; }
 
 
@@ -315,7 +314,7 @@
   padding: 10px 14px; border: 1px solid var(--border-hi); border-radius: 10px;
   background: var(--panel); color: var(--text); box-shadow: 0 6px 24px rgba(0,0,0,.18); font-size: 12px; }
 .clipboard-ticket-prompt select { max-width: 100%; color: var(--text); background: var(--panel-2);
-  border: 1px solid var(--border); border-radius: 4px; padding: 4px; }
+  border: 1px solid var(--control-border); border-radius: 4px; padding: 4px; }
 .clipboard-ticket-prompt .btn { flex: none; }
 
 /* 우상단 고정. 파일명은 아이콘 옆(윗줄), **저장 경로는 아랫줄에 전체**(말줄임 없이 줄바꿈). */
@@ -335,3 +334,10 @@
   word-break: break-all; line-height: 1.4; }
 .dl-x { position: absolute; top: 5px; right: 7px; border: 0; background: none;
   color: var(--muted-2); font-size: 15px; line-height: 1; cursor: pointer; }
+
+@media (prefers-reduced-motion: reduce) {
+  .login-prog i { transition: none; }
+  .stbanner.authenticating .stb-dot { animation: none; }
+  .toast-enter-from, .toast-leave-to { transform: none; }
+  .toast-enter-active, .toast-leave-active, .toast-move { transition: none; }
+}

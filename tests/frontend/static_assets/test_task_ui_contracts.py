@@ -81,14 +81,30 @@ def test_uniform_subtask_status_reuses_solo_parent_and_foldable_children_in_one_
     # 실제 그룹들은 먼저, standalone/compact 공유 목록은 마지막에 붙는다.
     assert view.index("const out = grouped.filter") < view.index("if (solo) out.push(solo)")
     assert ".mt-gslot > .mt-gcard2 { grid-column: 1 / -1;" in css
-    assert ".mt-compact-flow { width: 100%; min-width: 0; border-radius: 3px;" in css
-    assert ".mt-compact-flow:hover { box-shadow: 0 6px 16px" in css
-    assert ".mt-compact-head > .mt-card.two { width: 100%; box-sizing: border-box;\n  border-radius: 3px 3px 0 0; box-shadow: none;" in css
-    assert ':root[data-theme="dark"] .ax-h .mt-compact-flow {' in css
-    assert ".mt-compact-children { display: grid; grid-template-columns: minmax(0, 1fr);" in css
-    assert ".mt-subfoot { display: flex; align-items: center; gap: 7px; width: 100%; height: 30px;" in css
-    assert ".mt-subfoot-toggle { flex: none; display: inline-grid; place-items: center; width: 19px; height: 19px;" in css
-    assert ".mt-subfoot-owners { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px;" in css
+    def declarations(selector):
+        blocks = re.findall(re.escape(selector) + r"\s*\{([^}]+)\}", css)
+        assert blocks, f"Missing layout rule: {selector}"
+        return dict(re.findall(r"([\w-]+)\s*:\s*([^;]+)", ";".join(blocks)))
+
+    # Preserve shared card width, child layout and fold controls. Radius, shadow,
+    # theme-specific overrides and exact bar height belong to the design system.
+    flow = declarations(".mt-compact-flow")
+    assert flow["width"].strip() == "100%"
+    assert flow["min-width"].strip() == "0"
+    head = declarations(".mt-compact-head > .mt-card.two")
+    assert head["width"].strip() == "100%"
+    assert head["box-sizing"].strip() == "border-box"
+    children = declarations(".mt-compact-children")
+    assert children["display"].strip() == "grid"
+    assert children["grid-template-columns"].strip() == "minmax(0, 1fr)"
+    foot = declarations(".mt-subfoot")
+    assert foot["display"].strip() == "flex"
+    assert foot["width"].strip() == "100%"
+    toggle = declarations(".mt-subfoot-toggle")
+    assert toggle["display"].strip() == "inline-grid"
+    owners = declarations(".mt-subfoot-owners")
+    assert owners["flex"].strip() == "1 1 auto"
+    assert owners["min-width"].strip() == "0"
     assert ".mt-subfoot-progress-sep { margin-left: auto; }" in css
     assert view.count('class="mt-owner mt-sub-owner"') == 3
     assert view.count('class="mt-subdue-sep"') == 3

@@ -129,16 +129,15 @@ def _total(page):
 def _assert_blue_edges(card):
     from playwright.sync_api import expect
 
-    accent = card.evaluate("""el => {
-      const probe=document.createElement('i'); probe.style.color='var(--accent)'; el.append(probe);
-      const accent=getComputedStyle(probe).color; probe.remove();
-      return accent;
+    info = card.evaluate("""el => {
+      const probe=document.createElement('i'); probe.style.color='var(--info)'; el.append(probe);
+      const info=getComputedStyle(probe).color; probe.remove();
+      return info;
     }""")
     # A zero-offset outer ring covers all four sides without replacing the Epic rail.
-    expect(card).to_have_css("box-shadow", re.compile(re.escape(accent) + r" 0px 0px 0px 1px"))
+    expect(card).to_have_css("box-shadow", re.compile(re.escape(info) + r" 0px 0px 0px 1px"))
     shadow = card.evaluate('el => getComputedStyle(el).boxShadow')
     assert 'inset' not in shadow
-    assert ' 0px 3px 10px ' in shadow, "the thin ring retains a soft blue elevation"
 
 
 def _key_weight(card):

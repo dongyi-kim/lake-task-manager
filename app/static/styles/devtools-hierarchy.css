@@ -1,15 +1,15 @@
 .hp-card .dt-card-h { flex-wrap: wrap; }
 .hp-context { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px;
-  color: var(--accent); background: var(--panel-2); font-size: 12px; font-weight: 600; }
+  color: var(--info); background: var(--info-surface); font-size: 12px; font-weight: 600; }
 .hp-body { padding: 0 14px 14px; font-size: 13px; line-height: 1.55; }
 .hp-intro { margin: 0 0 8px; color: var(--muted); }
 .hp-intro strong { display: block; color: var(--text); }
 .hp-flow { padding: 8px 10px; border-radius: 6px; background: var(--panel-2); color: var(--text); }
 .hp-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 12px; }
 .hp-controls label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); min-width: 140px; }
-.hp-controls select { min-height: 31px; max-width: 260px; padding: 5px 8px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--panel); color: var(--text); font: inherit; }
-.hp-controls select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hp-controls select { min-height: var(--control-height); max-width: 260px; padding: 5px 8px; border-radius: var(--radius-control);
+  border: 1px solid var(--control-border); background: var(--panel); color: var(--text); font: inherit; }
+.hp-controls select:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 .hp-controls select:disabled { opacity: .7; }
 .hp-controls .dt-run, .hp-controls .dt-open { min-height: 31px; }
 .hp-hint { color: var(--muted); font-size: 12px; }
@@ -21,7 +21,7 @@
 .hp-passed, .hp-completed, .hp-succeeded { color: var(--good); }
 .hp-failed { color: var(--danger); }
 .hp-blocked { color: var(--warn); }
-.hp-running { color: var(--accent); }
+.hp-running { color: var(--info); }
 .hp-pending, .hp-skipped { color: var(--muted-2); }
 .hp-steps { margin: 10px 0; padding-left: 24px; }
 .hp-steps li { padding: 5px 0; }
@@ -32,7 +32,7 @@
   max-height: 240px; overflow: auto; padding: 8px; font-size: 11px; }
 .hp-tickets { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .hp-tickets strong { width: 100%; }
-.hp-tickets a { color: var(--accent); overflow-wrap: anywhere; }
+.hp-tickets a { color: var(--info); overflow-wrap: anywhere; }
 .hp-tickets a span { color: var(--muted); font-size: 12px; }
 .hp-copy { box-sizing: border-box; width: 100%; min-height: 150px; padding: 8px; font-size: 12px;
   color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; }

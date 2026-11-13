@@ -10,18 +10,14 @@ from urllib.parse import urlsplit
 import pytest
 
 from frontend.shell.test_local_mcp_ui import static_server  # noqa: F401
+from support.browser import launch_chromium
 
 
 @pytest.fixture
 def admin_ui(static_server):
     pw = pytest.importorskip("playwright.sync_api")
     with pw.sync_playwright() as playwright:
-        try:
-            browser = playwright.chromium.launch()
-        except pw.Error as exc:
-            if "Executable doesn't exist" in str(exc):
-                pytest.skip("Optional Chromium binary is not installed")
-            raise
+        browser = launch_chromium(playwright)
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         errors, requests, held = [], [], []
         page.on("pageerror", lambda error: errors.append(str(error)))
@@ -233,7 +229,7 @@ def test_local_navigation_and_settings_do_not_wait_for_jira_identity(admin_ui):
         comments: Ticket.methods.canEdit.call({}, {id:'other-author', mine:false}),
       };
     }""")
-    assert routes == {"tabs": ["ai", "wbs", "vit", "workload", "mytasks"],
+    assert routes == {"tabs": ["ai", "wbs", "vit", "workload", "mytasks", "confluence"],
                       "wbs": "WbsView", "tools": "DevToolsView", "comments": True}
     expect(page.locator('#local-home a[href="#/wbs"]')).to_be_visible()
     expect(page.locator('#local-home a[href="#/workload"]')).to_be_visible()

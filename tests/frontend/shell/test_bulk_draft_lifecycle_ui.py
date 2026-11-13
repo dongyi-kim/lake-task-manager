@@ -86,21 +86,21 @@ def test_expired_bulk_evidence_survives_load_purge_and_form_restore_without_repl
     assert not errors
 
 
-@pytest.mark.parametrize("status", [401, 503])
-def test_initial_context_failure_can_close_or_retry_without_discarding_typed_json(editor_browser, status):
+def test_local_draft_initialization_failure_preserves_typed_json_until_retry(editor_browser):
     page, base, errors, _ = editor_browser
-    failing, posts = True, []
-
-    def context(route):
-        if failing:
-            route.fulfill(status=status, content_type="application/json", body='{"error":"fixture context unavailable"}')
-        else:
-            route.continue_()
-
-    page.route("**/api/bulk/create-context", context)
+    posts = []
     page.route("**/api/bulk/create", lambda route: (posts.append(route.request.post_data), route.abort()))
     page.goto(base)
     page.evaluate("""async () => {
+      // Draft initialization is local; an unavailable Jira context must not gate typing.
+      // Fail the durable boundary that actually controls whether this form can close.
+      window.failBulkDraftStorage = true;
+      const original = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function(...args) {
+        const tx = original.apply(this, args);
+        if (window.failBulkDraftStorage && args[1] === 'readwrite') queueMicrotask(() => tx.abort());
+        return tx;
+      };
       const {createApp} = await import('/vendor/vue.esm-browser.prod.js');
       const {default:component} = await import('/components/ui/BulkCreateDialog.js');
       window.mountBulkDraft=()=>{
@@ -121,7 +121,7 @@ def test_initial_context_failure_can_close_or_retry_without_discarding_typed_jso
     assert page.locator(".blk").get_by_role("button", name="입력 버리고 닫기").is_visible()
     assert page.locator(".blk").get_by_role("button", name="입력 JSON 복사").is_visible()
     assert page.evaluate("() => window.bulkDraftVm.src") == source
-    failing = False
+    page.evaluate("window.failBulkDraftStorage = false")
     page.locator(".blk").get_by_role("button", name="연결 확인 다시 시도").click()
     page.wait_for_function("() => window.bulkDraftVm.formDraftReady")
     assert page.locator(".blk [role=alert]").count() == 0
@@ -132,7 +132,7 @@ def test_initial_context_failure_can_close_or_retry_without_discarding_typed_jso
     page.wait_for_function("() => window.bulkDraftVm.formDraftReady")
     assert page.evaluate("() => window.bulkDraftVm.src") == source
     assert posts == []
-    assert not [error for error in errors if f"HTTP {status} " not in error or "/api/bulk/create-context" not in error]
+    assert not errors
 
 
 @pytest.mark.parametrize("age_days", [0, 8], ids=["pending", "expired"])
