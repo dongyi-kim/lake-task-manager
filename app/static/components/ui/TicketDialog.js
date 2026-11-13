@@ -34,6 +34,7 @@ import { loadTiptap } from "../../lib/tiptap.js";
 import { confirmBox } from "../../lib/confirm.js";
 import { pushToast } from "../../lib/toast.js";
 import { copyTicketLink } from "../../lib/ticketlink.js";
+import { prepareTicketLeave } from "../../lib/ticketLeaveGuard.js";
 import {
   DIALOG_PANEL_LABELS, DIALOG_PANEL_ORDER, panelStatus, panelsInState,
   requestErrorText, setPanelStatus,
@@ -57,8 +58,9 @@ export default {
   // mode: dialog(모달, 기본) | page(새 창 전용 단독 페이지 — 오버레이·닫기 없음)
   props: { keyId: { type: String, required: true },
            mode: { type: String, default: "dialog" },
-           theme: { type: String, default: "light" } },   // 페이지 모드 테마 버튼 표시용
-  emits: ["close", "search", "toggle-theme"],
+           theme: { type: String, default: "light" },
+           initialScroll: { type: Object, default: null } },
+  emits: ["close", "search", "toggle-theme", "metadata", "view-scroll"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [],
                     updateBaseline: null, updateOpenedAt: 0, updatesReady: false,
                     pdesc: null, pdescOpen: false, pdescErr: "",
@@ -68,7 +70,7 @@ export default {
                     // 링크 추가(관련 티켓/관련문서) · 파일 첨부(＋ 버튼 · 드래그앤드롭)
                     relPick: false, linkBusy: false, linkErr: "",
                     docPick: false, docBusy: false, docErr: "",
-                    uploading: false, upErr: "", upNow: null, upElapsed: 0,
+                    uploading: false, upErr: "", upNow: null, upElapsed: 0, pendingWrites: 0,
                     dragOver: false, dragInEditor: false,
                     // 편집 가능 필드 — Jira 가 답한 것만 편집 UI 를 연다(추측 금지).
                     emeta: null, descEdit: false, descBusy: false, descErr: "",
@@ -95,6 +97,7 @@ export default {
                     // 하위 티켓 만들기 — 만들 수 있는 타입은 부모가 정한다(서버가 다시 검사한다)
                     kidTypes: [], adding: false }; },
   mounted() {
+    this._restorePosition = this.initialScroll ? { ...this.initialScroll } : null;
     this._cacheUpdated = (event) => {
       const { path, value } = event.detail || {};
       const base = '/api/ticket/' + encodeURIComponent(this.keyId);
@@ -138,6 +141,10 @@ export default {
       if (e.key !== "Escape") return;
       if (this.zoom) { this.zoom = null; return; }
       if (this.stOpen) { this.stOpen = false; return; }
+      // Child dialogs and teleported field pickers own their first Escape.
+      // Check before yielding to the async parent guard, while the child is still open.
+      if (this.adding || this.stPick || Object.entries(this.$refs).some(([name, field]) =>
+        name.startsWith("editField") && field && field.open)) return;
       // 본문/댓글 **리치 에디터에 포커스가 있으면** ESC 는 다이얼로그를 닫지 말고 **에디터에서
       // 빠져나가기만** 한다(사용자 요청). 포커스가 빠진 뒤 한 번 더 누르면 다이얼로그가 닫힌다.
       if (isBusy()) {          // AI 생성 중 — 지금 닫으면 받아 놓은 글이 사라진다
@@ -343,13 +350,38 @@ export default {
   },
   watch: {
     keyId() { this.load(); },
-    v() { this.$nextTick(() => { this.augment(); this.posCollapse(); this.acknowledgeDisplayedUpdates(); }); },
-    comments() { this.$nextTick(() => { this.augment(); this.posCollapse(); this.acknowledgeDisplayedUpdates(); }); },
+    v() { this.$nextTick(() => { this.augment(); this.posCollapse(); this.acknowledgeDisplayedUpdates(); this.restoreViewScroll(); this.reportMetadata(); }); },
+    comments() { this.$nextTick(() => { this.augment(); this.posCollapse(); this.acknowledgeDisplayedUpdates(); this.restoreViewScroll(); }); },
+    panelState() { this.$nextTick(() => this.restoreViewScroll()); },
+    children() { this.$nextTick(() => this.restoreViewScroll()); },
+    timeline() { this.$nextTick(() => this.restoreViewScroll()); },
     pdesc() { this.$nextTick(this.augment); },        // 상위 설명 렌더 후(확대버튼·뱃지 주입)
     // 이 Sub-Task 에 설명이 없으면 상위 설명을 자동으로 펼친다(가장 흔한 케이스)
     parentOf(p) { if (p && this.ownDescEmpty && !this.pdescOpen) this.toggleParentDesc(); },
   },
   methods: {
+    async prepareToLeave() {
+      await this.$nextTick();
+      return prepareTicketLeave(this, { isBusy, busyLabel,
+        notify: message => pushToast({ kind: "warn", title: "현재 작업을 보존하고 있습니다", message }) });
+    },
+    viewScroll() { const body = this.$refs.body; return { x: body?.scrollLeft || 0, y: body?.scrollTop || 0 }; },
+    stopScrollRestore() { this._restorePosition = null; },
+    restoreViewScroll() {
+      const body = this.$refs.body, position = this._restorePosition;
+      if (!body || !position) return;
+      body.scrollLeft = Math.max(0, Number(position.x) || 0);
+      body.scrollTop = Math.max(0, Number(position.y) || 0);
+      if (Math.abs(body.scrollTop - (Number(position.y) || 0)) < 1) this._restorePosition = null;
+    },
+    onBodyScroll() {
+      this.posCollapse();
+      if (!this._restorePosition) this.$emit("view-scroll", { key: this.keyId, scroll: this.viewScroll() });
+    },
+    reportMetadata() {
+      if (this.v && (!this.v.key || this.v.key === this.keyId))
+        this.$emit("metadata", { key: this.keyId, title: this.v.summary || "" });
+    },
     beginUpdateView(key) {
       if (this._updateViewKey === key) return;
       this._updateViewKey = key;
@@ -894,7 +926,9 @@ export default {
     },
     async cancelDescEdit() {
       const editor = this.$refs.ded;
+      if (editor?.busy || editor?.submitting) return;
       if (editor && await editor.flushDraft() === false) return;
+      if (editor?.busy || editor?.submitting || this.$refs.ded !== editor) return;
       this.descEdit = false; this.stopWatchDesc();
     },
     cancelSumEdit() { this.sumEdit = false; this.sumErr = ""; },
@@ -947,19 +981,25 @@ export default {
      *  예전엔 코멘트 목록만 다시 받아, 파일을 붙였는데 첨부 목록은 그대로였다. */
     reloadSide() { this.reloadAttachments(); this.reloadDocs(); },
     async delAttachment(a) {
-      if (!await confirmBox(a.filename + " 을(를) 삭제할까요?", { okLabel: "삭제", danger: true })) return;
-      this.upErr = "";
-      try { await api.attachmentDelete(this.tk, a.id); }
-      catch (e) { this.upErr = "삭제 실패: " + ((e && e.message) || e); }
-      this.reloadSide();
+      this.pendingWrites++;
+      try {
+        if (!await confirmBox(a.filename + " 을(를) 삭제할까요?", { okLabel: "삭제", danger: true })) return;
+        this.upErr = "";
+        try { await api.attachmentDelete(this.tk, a.id); }
+        catch (e) { this.upErr = "삭제 실패: " + ((e && e.message) || e); }
+        this.reloadSide();
+      } finally { this.pendingWrites--; }
     },
     async delDoc(d) {
-      if (!await confirmBox((d.title || d.url) + " 을(를) 이 티켓에서 뗄까요?",
-                            { okLabel: "떼기", danger: true })) return;
-      this.docErr = "";
-      try { await api.documentDelete(this.tk, d.linkId); }
-      catch (e) { this.docErr = "떼지 못했습니다: " + ((e && e.message) || e); }
-      this.reloadDocs();
+      this.pendingWrites++;
+      try {
+        if (!await confirmBox((d.title || d.url) + " 을(를) 이 티켓에서 뗄까요?",
+                              { okLabel: "떼기", danger: true })) return;
+        this.docErr = "";
+        try { await api.documentDelete(this.tk, d.linkId); }
+        catch (e) { this.docErr = "떼지 못했습니다: " + ((e && e.message) || e); }
+        this.reloadDocs();
+      } finally { this.pendingWrites--; }
     },
     reloadAttachments() {
       return this.retryPanel("attachments");
@@ -1032,7 +1072,9 @@ export default {
     },
     async cancelCompose() {
       const ed = this.$refs.newCommentEditor;
+      if (ed?.busy || ed?.submitting) return;
       if (ed && ed.flushDraft && await ed.flushDraft() === false) return;
+      if (ed?.busy || ed?.submitting || this.$refs.newCommentEditor !== ed) return;
       this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
     },
     submitNew(md, mutationId) { return api.commentCreate(this.tk, md, mutationId); },
@@ -1049,15 +1091,22 @@ export default {
         this.editingId = c.id;
       } catch (e) { this.editErr = "댓글 원본을 불러오지 못했습니다."; }
     },
-    cancelEdit() { this.editingId = null; this.editInitial = ""; },
+    cancelEdit() {
+      const editors = [this.$refs.editingCommentEditor].flat().filter(Boolean);
+      if (editors.some(editor => editor.busy || editor.submitting)) return;
+      this.editingId = null; this.editInitial = "";
+    },
     submitEdit(c, md) { return api.commentUpdate(this.tk, c.id, md); },
     onEdited() { this.editingId = null; this.editInitial = ""; this.reloadComments(); this.reloadSide(); },
     async delComment(c) {
       // window.confirm 을 쓰면 **앱 창에서는 아무 일도 일어나지 않는다**(Playwright 가 대화상자를
       // 자동 거절한다). 크롬에서만 되던 이유가 이것이었다.
-      if (!await confirmBox("이 댓글을 삭제할까요?", { okLabel: "삭제", danger: true })) return;
-      try { await api.commentDelete(this.tk, c.id); await this.reloadComments(); }
-      catch (e) { window.alert("삭제 실패: " + ((e && e.message) || e)); }
+      this.pendingWrites++;
+      try {
+        if (!await confirmBox("이 댓글을 삭제할까요?", { okLabel: "삭제", danger: true })) return;
+        try { await api.commentDelete(this.tk, c.id); await this.reloadComments(); }
+        catch (e) { window.alert("삭제 실패: " + ((e && e.message) || e)); }
+      } finally { this.pendingWrites--; }
     },
     // 상위 티켓 설명 — 기존 /api/ticket 응답을 그대로 재사용(정화된 HTML + 프론트 memo 캐시)
     async toggleParentDesc() {
@@ -1113,11 +1162,12 @@ export default {
         const body = comment
           ? { target: "comment", commentId: String(comment.id), id, index, checked: want }
           : { target: "description", id, index, checked: want };
+        this.pendingWrites++;
         api.toggleCheckbox(this.tk, body).then((r) => {
           if (r && r.ok) { cb.defaultChecked = want; if (want) cb.setAttribute("checked", ""); else cb.removeAttribute("checked"); }
           else { cb.checked = !want; this.editErr = (r && r.error) || "체크박스 저장 실패"; }
         }).catch((err) => { cb.checked = !want; this.editErr = "체크박스 저장 실패: " + ((err && err.message) || err); })
-          .finally(() => { delete cb.dataset.cbBusy; });
+          .finally(() => { delete cb.dataset.cbBusy; this.pendingWrites--; });
         return;
       }
       // 본문의 문서/웹 링크를 열면 '최근 열어본 항목'에 남긴다(Jira 뱃지는 다이얼로그가 기록).
@@ -1276,7 +1326,8 @@ export default {
       </div>
     </div>
       <div class="tkt-dlg" :class="{ expanded, page: isPage }"
-           :role="isPage ? null : 'dialog'" :aria-modal="isPage ? null : 'true'">
+           :role="isPage ? null : 'dialog'" :aria-modal="isPage ? null : 'true'"
+           @pointerdown="stopScrollRestore">
         <!-- 최상단 타이틀바 — 배경은 티켓 타입 색을 따른다.
              좌: "[타입] [번호] [제목] - 상태" / 우: Jira에서 열기 · 최대화 · 닫기 -->
         <div class="tkt-bar" :style="{ '--tc': typeColor(v && v.type) }">
@@ -1336,9 +1387,12 @@ export default {
           </span>
         </div>
 
+        <slot name="tabs"></slot>
+
         <!-- 스크롤 주체는 **본문**이다. 다이얼로그 전체를 스크롤시키면 바가 타이틀바
              옆까지 올라와 모서리 밖으로 삐져나온 것처럼 보인다. -->
-        <div class="tkt-body" ref="body" @scroll="posCollapse">
+        <div class="tkt-body" ref="body" @scroll="onBodyScroll"
+             @wheel.passive="stopScrollRestore" @keydown="stopScrollRestore">
 
         <!-- 섹션별 독립 렌더: 스파인(계보/형제/타임라인)은 본문(v) 응답을 기다리지 않는다.
              본문·코멘트도 각자 자기 상태가 채워지는 대로 그려진다. -->
@@ -1499,37 +1553,37 @@ export default {
               <span v-if="stOpen" class="fe-back" @click.stop="stOpen = false"></span>
             </span></div>
             <div><span class="k">우선순위</span><span class="val">
-              <FieldEdit :ticket="tk" field="priority" :meta="fmeta('priority')"
+              <FieldEdit ref="editFieldPriority" :ticket="tk" field="priority" :meta="fmeta('priority')"
                          :value="v.priority" @saved="onFieldSaved">
                 <PriIcon :rank="v.priRank" :name="v.priority" /><span class="prio-n">{{ v.priority || '미지정' }}</span>
               </FieldEdit></span></div>
             <div><span class="k">담당자</span><span class="val val-user">
-              <FieldEdit :ticket="tk" field="assignee" :meta="fmeta('assignee')"
+              <FieldEdit ref="editFieldAssignee" :ticket="tk" field="assignee" :meta="fmeta('assignee')"
                          :value="v.assigneeId" :user-id="v.assigneeId" :choices="mentionUsers"
                          @saved="onFieldSaved">
                 <Avatar v-if="v.assigneeId" :user="v.assigneeId" :name="v.assignee" :size="18" />{{ v.assignee || '—' }}
               </FieldEdit></span></div>
             <div><span class="k">보고자</span><span class="val val-user">
-              <FieldEdit :ticket="tk" field="reporter" :meta="fmeta('reporter')"
+              <FieldEdit ref="editFieldReporter" :ticket="tk" field="reporter" :meta="fmeta('reporter')"
                          :value="v.reporterId" :user-id="v.reporterId" :choices="mentionUsers"
                          @saved="onFieldSaved">
                 <Avatar v-if="v.reporterId" :user="v.reporterId" :name="v.reporter" :size="18" />{{ v.reporter || '—' }}
               </FieldEdit></span></div>
             <div><span class="k">작업 기한</span><span class="val">
-              <FieldEdit :ticket="tk" field="duedate" :meta="fmeta('duedate')"
+              <FieldEdit ref="editFieldDue" :ticket="tk" field="duedate" :meta="fmeta('duedate')"
                          :value="v.due" @saved="onFieldSaved">{{ v.due || '—' }}</FieldEdit></span></div>
             <div v-if="v.statusCategory === 'done' || v.timeSpentSeconds != null" class="tkt-work-time"
                  title="완료 처리 시 입력한 시간을 포함한 이 티켓의 누적 작업시간입니다. 하위 티켓 시간은 포함하지 않습니다.">
               <span class="k">누적 작업시간</span><span class="val">{{ recordedWorkTime }}</span></div>
             <div><span class="k">컴포넌트</span><span class="val">
-              <FieldEdit :ticket="tk" field="components" :meta="fmeta('components')"
+              <FieldEdit ref="editFieldComponents" :ticket="tk" field="components" :meta="fmeta('components')"
                          :value="v.components || []" @saved="onFieldSaved">
                 <span v-if="v.components && v.components.length" class="tkt-labels">
                   <span v-for="c in v.components" :key="c" class="tkt-label comp">{{ c }}</span>
                 </span><span v-else>—</span>
               </FieldEdit></span></div>
             <div><span class="k">소속 Epic</span><span class="val">
-              <FieldEdit :ticket="tk" field="epic" :meta="fmeta(epicFieldId)"
+              <FieldEdit ref="editFieldEpic" :ticket="tk" field="epic" :meta="fmeta(epicFieldId)"
                          :value="v.epicKey" @saved="onFieldSaved">
                 <!-- '내 Task' 카드와 **같은 뱃지·같은 시그니처 컬러**. 같은 Epic 이 화면마다
                      다른 모습이면 색으로 소속을 알아보는 것 자체가 안 된다.
@@ -1541,7 +1595,7 @@ export default {
                 </span><span v-else>—</span>
               </FieldEdit></span></div>
             <div class="wide"><span class="k">라벨</span><span class="val">
-              <FieldEdit :ticket="tk" field="labels" :meta="fmeta('labels')"
+              <FieldEdit ref="editFieldLabels" :ticket="tk" field="labels" :meta="fmeta('labels')"
                          :value="v.labels || []" @saved="onFieldSaved">
                 <span v-if="v.labels && v.labels.length" class="tkt-labels">
                   <span v-for="l in v.labels" :key="l" class="tkt-label">{{ l }}</span>
@@ -1585,12 +1639,12 @@ export default {
             <CommentEditor ref="ded" :ticket-key="tk" :mention-users="mentionUsers"
                            :initial="v.descriptionEditHtml !== undefined ? v.descriptionEditHtml : v.descriptionHtml" hide-footer
                            sections kind="description"
-                           :submit-fn="saveDesc" @cancel="descEdit = false" />
+                           :submit-fn="saveDesc" @cancel="cancelDescEdit" />
             <div class="tkt-desc-edit-f">
               <span v-if="descErr" class="tkt-cmt-err">{{ descErr }}</span>
-              <button class="cmt-ed-btn ghost" @click="$refs.ded && $refs.ded.discardDraft()">초안 삭제</button>
-              <button class="cmt-ed-btn ghost" @click="cancelDescEdit">취소</button>
-              <button class="cmt-ed-btn primary" :disabled="descBusy"
+              <button class="cmt-ed-btn ghost" :disabled="$refs.ded?.busy || $refs.ded?.submitting" @click="$refs.ded && $refs.ded.discardDraft()">초안 삭제</button>
+              <button class="cmt-ed-btn ghost" :disabled="$refs.ded?.busy || $refs.ded?.submitting" @click="cancelDescEdit">취소</button>
+              <button class="cmt-ed-btn primary" :disabled="descBusy || $refs.ded?.busy || $refs.ded?.submitting"
                       @click="$refs.ded && $refs.ded.submit()">{{ descBusy ? '저장 중…' : '저장' }}</button>
             </div>
           </div>
@@ -1804,7 +1858,7 @@ export default {
                       <button class="tkt-cmt-act" @click="delComment(c)">삭제</button>
                     </span>
                   </div>
-                  <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial" :draft-scope="'comment:' + tk + ':' + c.id"
+                  <CommentEditor v-if="editingId === c.id" ref="editingCommentEditor" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial" :draft-scope="'comment:' + tk + ':' + c.id"
                     submit-label="저장" :submit-fn="(md) => submitEdit(c, md)"
                     @submitted="onEdited" @cancel="cancelEdit" />
                   <div v-else class="tkt-cmt-b tkt-desc" @click="(e) => onContentClick(e, c)" v-html="c.html"></div>

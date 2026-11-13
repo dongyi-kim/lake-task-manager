@@ -3,10 +3,10 @@ const COMMENT_EDITOR_TEMPLATE = `
   <div class="cmt-editor" :class="{ maximized, 'drag-over': dragOver }"
        @dragenter="onDragEnter" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDropFiles">
     <div v-if="loadErr" class="cmt-ed-err">{{ loadErr }}
-      <button class="cmt-ed-btn" @click="$emit('cancel')">닫기</button>
+      <button class="cmt-ed-btn" :disabled="busy || submitting" @click="cancelEditing">닫기</button>
     </div>
     <template v-else>
-      <div class="cmt-tb" v-show="ready">
+      <div class="cmt-tb" v-show="ready" :inert="busy || submitting">
         <button v-if="kind === 'confluence'" type="button" class="tb-b" @click="openConfluenceMacro()" title="Confluence 매크로 삽입">매크로</button>
         <button type="button" class="tb-b" :class="{on:active('bold')}" @click="tbBold" title="굵게"><b>B</b></button>
         <button type="button" class="tb-b" :class="{on:active('italic')}" @click="tbItalic" title="기울임"><i>I</i></button>
@@ -199,10 +199,10 @@ const COMMENT_EDITOR_TEMPLATE = `
       <div v-if="hideFooter && err" class="cmt-ed-msg solo">{{ err }}</div>
       <div v-if="!hideFooter" class="cmt-ed-bar">
         <span v-if="err" class="cmt-ed-msg">{{ err }}</span>
-        <button class="cmt-ed-btn ghost" :disabled="busy" @click="discardDraft">초안 삭제</button>
-        <button class="cmt-ed-btn ghost" :disabled="busy" @click="cancelEditing">취소</button>
-        <button class="cmt-ed-btn primary" :disabled="busy || !ready || draftConflict" @click="submit">
-          {{ busy ? busyLabel : submitLabel }}</button>
+        <button class="cmt-ed-btn ghost" :disabled="busy || submitting" @click="discardDraft">초안 삭제</button>
+        <button class="cmt-ed-btn ghost" :disabled="busy || submitting" @click="cancelEditing">취소</button>
+        <button class="cmt-ed-btn primary" :disabled="busy || submitting || !ready || draftConflict" @click="submit">
+          {{ busy ? busyLabel : submitting ? '저장 준비 중…' : submitLabel }}</button>
       </div>
       <Teleport to="body"><ConfluenceMacroDialog v-if="confMacroDialog" :initial="confMacroDialog" :editing="confMacroDialog.position !== null" @apply="applyConfluenceMacro" @close="confMacroDialog=null" /></Teleport>
     </template>

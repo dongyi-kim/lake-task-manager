@@ -21,6 +21,9 @@ import TransitionDialog from "./ui/TransitionDialog.js";
 import SearchOverlay from "./ui/SearchOverlay.js";
 import SettingsMenu from "./ui/SettingsMenu.js";
 import GuideSpot from "./ui/GuideSpot.js";
+import OpenItemTabs from "./ui/OpenItemTabs.js";
+import { reactive } from "../vendor/vue.esm-browser.prod.js";
+import { createOpenItemTabs, normalizeItemId } from "../lib/openItemTabs.js";
 import { api, watchAuth } from "../lib/api.js";
 import { confirmBox } from "../lib/confirm.js";
 import { pushToast } from "../lib/toast.js";
@@ -55,10 +58,11 @@ function ticketOf() {
 
 export default {
   name: "AppRoot",
-  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, ClipboardTicketPrompt, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab, GuideSpot },
+  components: { FormulaCallout, LoginOverlay, StatusBanner, ToastStack, ClipboardTicketPrompt, TicketMenu, TicketDialog, TransitionDialog, SearchOverlay, SettingsMenu, FloatingRefresh, AddTicketFab, GuideSpot, OpenItemTabs },
   // Health reads local configuration; Jira authentication never gates local navigation/drafts.
   data() { return { route: currentRoute(), theme: document.documentElement.getAttribute("data-theme") || "light",
                     ready: false, needLogin: false, ticketKey: null, searchOpen: false, clipboardJiraBase: "",
+                    ticketTabs: createOpenItemTabs({ kind: "task", reactive }), ticketNavigationBusy: false,
                     // 배포 repo 업데이트 가능 여부(null=아직 모름). updating=재시작 트리거 후.
                     update: null, updating: false,
                     // 하위 상태변경 후처리: 부모 전이에 필수 입력이 있으면 이 다이얼로그로 채운다.
@@ -68,6 +72,7 @@ export default {
     tabs() { return TABS; },
     view() { return ROUTES[this.route] || ROUTES.home; },
     pageTicket() { return this.ticketKeyFromPath; },
+    ticketTabScroll() { return this.ticketTabs.state.items.find(item => item.id === this.ticketKey)?.scroll || { x: 0, y: 0 }; },
   },
   mounted() {
     // 티켓 링크·뱃지와 사람 멘션은 화면별 구현 대신 앱 전체가 같은 상세 호버를 사용한다.
@@ -75,6 +80,7 @@ export default {
     // 5분 이상 유휴 후 포커스/가시성/첫 입력이 돌아오면, 사용자의 첫 쓰기보다 먼저 Jira
     // 세션을 뒤에서 확인한다. 정상 화면은 기다리지 않으며 중복 이벤트는 모듈이 합친다.
     this._stopAuthActivity = installAuthActivityProbe(api);
+    window.addEventListener("pagehide", this._ticketPageHide = () => this.persistTicketScroll());
     // 로그인 왕복(앱 창이 Jira 로 갔다 돌아옴) 뒤 **보던 자리로** 되돌린다.
     // 없으면 늘 홈에서 다시 시작하게 되는데, 그건 로그인이 아니라 사고처럼 느껴진다.
     try {
@@ -97,7 +103,7 @@ export default {
     window.addEventListener("hashchange", () => { this.route = currentRoute(); });
     // 티켓 추가(fab) 등에서 만든 새 티켓을 바로 연다.
     window.addEventListener("lake-open-ticket", (e) => {
-      const k = e && e.detail && e.detail.key; if (k) this.ticketKey = k;
+      const k = e && e.detail && e.detail.key; if (k) this.requestTicket(k);
     });
     // 하위 티켓 상태변경/생성의 **후처리** — 부모 상태 규칙을 촉발하면 '상위도 바꿀까?' 물어본다.
     window.addEventListener("cascade-prompt", (e) => { if (e && e.detail) this.onCascade(e.detail); });
@@ -114,14 +120,14 @@ export default {
       const a = e.target.closest && e.target.closest(".tkt[data-key]");
       if (!a) return;
       e.preventDefault();
-      this.ticketKey = a.getAttribute("data-key");
+      this.requestTicket(a.getAttribute("data-key"));
     });
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" && e.key !== " ") return;
       const a = e.target.closest && e.target.closest(".tkt[data-key]");
       if (!a) return;
       e.preventDefault();
-      this.ticketKey = a.getAttribute("data-key");
+      this.requestTicket(a.getAttribute("data-key"));
     });
     // 통합 검색 단축키: "/" (입력 중 아닐 때) 또는 Ctrl/Cmd+K
     document.addEventListener("keydown", (e) => {
@@ -136,6 +142,7 @@ export default {
     //   멎는다. 여기에 부팅을 묶으면 창이 '불러오는 중…' 에서 몇 분씩 갇힌다(실제로 겪었다).
     api.health().then((h) => {
       this.clipboardJiraBase = String((h && h.jiraBase) || "");
+      this.ticketTabs.setContext({ env: h?.env, jiraBase: h?.jiraBase, projectKey: h?.projectKey });
       this.needLogin = !!(h && h.needLogin);
       // The nonblocking connection notice performs silent recovery; observe its completion.
       if (this.needLogin) watchAuth();
@@ -145,8 +152,95 @@ export default {
     this.checkUpdate();
     setInterval(() => this.checkUpdate(), 30 * 60 * 1000);
   },
-  unmounted() { if (this._stopAuthActivity) this._stopAuthActivity(); },
+  unmounted() {
+    if (this._stopAuthActivity) this._stopAuthActivity();
+    clearTimeout(this._ticketScrollTimer);
+    window.removeEventListener("pagehide", this._ticketPageHide);
+  },
   methods: {
+    persistTicketScroll() {
+      clearTimeout(this._ticketScrollTimer);
+      const dialog = this.$refs.activeTicketDialog;
+      if (this.ticketKey && dialog) this.ticketTabs.setScroll(this.ticketKey, dialog.viewScroll());
+    },
+    onTicketScroll(value) {
+      if (!value?.key || value.key !== this.ticketKey) return;
+      clearTimeout(this._ticketScrollTimer);
+      this._ticketScrollTimer = setTimeout(() => {
+        if (value.key === this.ticketKey) this.ticketTabs.setScroll(value.key, value.scroll);
+      }, 150);
+    },
+    focusTicketReturn() {
+      if (this.ticketKey) {
+        if (this.$refs.modalTicketTabs) this.$refs.modalTicketTabs.focusTab(this.ticketKey);
+        else this.$refs.activeTicketDialog?.$el.querySelector('.tkt-bar button, .tkt-bar a')?.focus();
+      } else if (this.$refs.taskTicketTabs && this.ticketTabs.state.activeId)
+        this.$refs.taskTicketTabs.focusTab(this.ticketTabs.state.activeId);
+      else if (this._ticketReturnFocus?.isConnected) this._ticketReturnFocus.focus();
+      else this.$el.querySelector('.mytasks .mt-card[tabindex="0"], .top .tabs a')?.focus();
+    },
+    async requestTicket(value, options = {}) {
+      const key = value == null ? null : normalizeItemId("task", value);
+      if (value != null && !key) return false;
+      if (this.ticketNavigationBusy) return false;
+      if (key === this.ticketKey && !options.remove) {
+        if (options.fromSearch) {
+          this.searchOpen = false;
+          this.$nextTick(() => this.focusTicketReturn());
+        }
+        return true;
+      }
+      if (this.cascadeTrx) {
+        pushToast("열려 있는 전이 창에서 작업을 마친 뒤 다시 선택하세요.", "warn"); return false;
+      }
+      const focused = document.activeElement;
+      let completed = false;
+      this.ticketNavigationBusy = true;
+      const previous = this.ticketKey, dialog = this.$refs.activeTicketDialog;
+      if (!previous && key) this._ticketReturnFocus = document.activeElement;
+      try {
+        if (dialog && !(await dialog.prepareToLeave())) return false;
+        if (this.ticketKey !== previous) return false;
+        this.persistTicketScroll();
+        if (options.remove) {
+          this.ticketTabs.close(options.remove);
+          this.ticketKey = previous ? this.ticketTabs.state.activeId : null;
+        } else if (key) {
+          this.ticketTabs.open({ id: key });
+          this.ticketKey = key;
+        } else this.ticketKey = null; // Closing the modal never removes metadata or a scoped draft.
+        if (options.fromSearch) this.searchOpen = false;
+        await this.$nextTick();
+        this.ticketNavigationBusy = false;
+        await this.$nextTick(); // The shared tab buttons must be enabled before focus().
+        this.focusTicketReturn();
+        completed = true;
+        return true;
+      } catch (error) {
+        pushToast({ kind: "error", title: "티켓 전환 실패", message: error?.message || "현재 작성 내용을 확인하세요." });
+        return false;
+      } finally {
+        this.ticketNavigationBusy = false;
+        if (!completed) {
+          await this.$nextTick();
+          if (focused?.isConnected && focused !== document.body) focused.focus();
+          else this.focusTicketReturn();
+        }
+      }
+    },
+    closeTicketTab(value) {
+      const key = normalizeItemId("task", value);
+      if (!key || this.ticketNavigationBusy) return false;
+      if (key === this.ticketKey) return this.requestTicket(null, { remove: key });
+      // Inactive metadata has no mounted body to flush. Closing it does not delete its drafts.
+      const result = this.ticketTabs.close(key);
+      this.$nextTick(() => this.focusTicketReturn());
+      return result;
+    },
+    onTicketMetadata(value) {
+      if (value?.key === this.ticketKey && typeof value.title === "string")
+        this.ticketTabs.update(value.key, { title: value.title });
+    },
     /** 하위 상태변경 후처리 — 부모도 바꿀지 확인하고, [예]면 기존 전이 경로로 상위를 전이한다.
      *  필수 입력이 있는 전이면(needsScreen) 부모 전이 다이얼로그를 열어 사용자가 채우게 한다.
      *  상위 전이가 또 조상 규칙을 촉발하면 응답의 cascade 로 **연쇄**된다. */
@@ -229,7 +323,7 @@ export default {
         </a>
         <nav class="tabs">
           <a v-for="t in tabs" :key="t.k" :class="{ on: route === t.k }"
-             :href="'#/' + t.k">{{ t.label }}<span v-if="t.spark" class="tab-spark"
+             :href="'#/' + t.k" @focus="$event.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' })">{{ t.label }}<span v-if="t.spark" class="tab-spark"
              aria-hidden="true">✨</span></a>
         </nav>
         <div class="top-actions">
@@ -254,6 +348,10 @@ export default {
       <template v-else>
         <StatusBanner />
         <FormulaCallout :route="route" />
+        <OpenItemTabs v-if="route === 'mytasks' && !ticketKey && ticketTabs.state.items.length"
+                      ref="taskTicketTabs" kind="task" label="최근 열린 티켓"
+                      :items="ticketTabs.state.items" :active-id="ticketTabs.state.activeId"
+                      :disabled="ticketNavigationBusy" @activate="requestTicket" @close="closeTicketTab" />
         <keep-alive><component :is="view"></component></keep-alive>
         <!-- 좌하단 플로팅 강제 새로고침 — 데이터 화면에서만(개발 도구·티켓 단독 페이지 제외) -->
         <FloatingRefresh v-if="route !== 'devtools' && route !== 'confluence'" />
@@ -269,14 +367,22 @@ export default {
       <!-- 기능 안내(한 번만) — 목록은 lib/guides.js. 다이얼로그가 떠 있으면 띄우지 않는다:
            가리킬 버튼이 그 뒤에 가려져 무엇을 말하는지 알 수 없게 된다. -->
       <GuideSpot v-if="ready && !needLogin && !ticketKey && !pageTicket" :route="route" />
-      <TicketDialog v-if="ticketKey" :key-id="ticketKey" @close="ticketKey = null" />
+      <TicketDialog v-if="ticketKey" :key="ticketKey" ref="activeTicketDialog" :key-id="ticketKey"
+                    :initial-scroll="ticketTabScroll" @metadata="onTicketMetadata" @view-scroll="onTicketScroll"
+                    @close="requestTicket(null)">
+        <template #tabs>
+          <OpenItemTabs ref="modalTicketTabs" kind="task" label="최근 열린 티켓"
+                        :items="ticketTabs.state.items" :active-id="ticketKey" :disabled="ticketNavigationBusy"
+                        @activate="requestTicket" @close="closeTicketTab" />
+        </template>
+      </TicketDialog>
       <!-- 하위 상태변경 후처리: 상위 전이에 필수 입력이 있을 때만 뜨는 부모 전이 다이얼로그 -->
       <TransitionDialog v-if="cascadeTrx" :ticket="cascadeTrx.ticket" :transition="cascadeTrx.transition"
                         @close="cascadeTrx = null" @done="onCascadeDone()" />
       <!-- keep-alive: 같은 창에서 다시 열면 마지막 검색어·결과가 그대로 남는다 -->
       <keep-alive>
         <SearchOverlay v-if="searchOpen" @close="searchOpen = false"
-                       @open-ticket="(k) => { ticketKey = k; searchOpen = false; }" />
+                       @open-ticket="(k) => requestTicket(k, { fromSearch: true })" />
       </keep-alive>
     </div>`,
 };
