@@ -1,10 +1,9 @@
 /* A continuous reading desk: navigation / document / outline. No nested cards. */
 .wrap.wrap-confluence { height:100dvh; min-height:0; padding:0; display:flex; flex-direction:column; overflow:hidden; }
 .wrap-confluence header.top { margin:0; padding:0 16px; flex-shrink:0; min-width:0; }
-.wrap-confluence header.top .tabs { min-width:0; overflow-x:auto; scrollbar-width:none; }
+.wrap-confluence header.top .tabs { scrollbar-width:none; }
 .wrap-confluence header.top .tabs::-webkit-scrollbar { display:none; }
-.wrap-confluence header.top .top-actions { flex-shrink:0; }
-.wrap-confluence header.top .nav-home { flex-shrink:0; }
+.conf-view { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; overflow:hidden; }
 .conf-workspace { display:flex; flex:1; min-height:0; min-width:0; position:relative; overflow:hidden; color:var(--text); background:var(--panel); }
 .conf-composer { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; }
 .conf-page-menu { position:fixed; inset:auto; margin:0; padding:6px; width:236px; max-width:calc(100vw - 16px); border:1px solid var(--border-hi); border-radius: var(--radius-panel, 8px); background:var(--panel); color:var(--text); box-shadow: var(--shadow-overlay); }
