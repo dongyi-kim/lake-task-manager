@@ -107,6 +107,10 @@ def test_editor_code_scrolls_host_and_host_end_chains_to_dialog(editor_browser):
     body.evaluate('el => {el.scrollTop=0}')
     assert body.evaluate('el => el.scrollHeight-el.clientHeight-el.scrollTop') > 20
     before = body.evaluate('el => el.scrollTop')
+    # Chromium can clamp a programmatic scrollHeight position by one compositor pixel
+    # on the first wheel. Settle that inner boundary before testing the chained gesture.
+    _wheel_over(page, end)
+    page.wait_for_timeout(150)
     _wheel_over(page, end)
     page.wait_for_function('before => document.querySelector(".tkt-ov .tkt-body").scrollTop > before + 20', arg=before)
     for boundary in [False, True]:

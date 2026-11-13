@@ -19,13 +19,14 @@
       var t = localStorage.getItem("theme") ||
         (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       document.documentElement.setAttribute("data-theme", t);
-      document.documentElement.style.backgroundColor = (t === "dark" ? "#0e0f13" : "#f2f3f5");
+      document.documentElement.style.backgroundColor = "var(--bg, " + (t === "dark" ? "#131820" : "#e9edf3") + ")";
     } catch (e) {}
   })();
 </script>
 <link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="styles/tokens.css">
 <link rel="stylesheet" href="styles/base.css">
+<link rel="stylesheet" href="styles/open-item-tabs.css">
 <link rel="stylesheet" href="styles/devtools-hierarchy.css">
 <link rel="stylesheet" href="styles/components.css">
 <link rel="stylesheet" href="styles/local-mcp.css">

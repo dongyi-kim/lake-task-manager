@@ -85,10 +85,10 @@ export default {
   },
   emits: ["submitted", "cancel", "outline"],
   watch: {
-    readOnly(value) { if (this._ed && !this.busy) this._ed.setEditable(!value); },
+    readOnly(value) { if (this._ed && !this.busy && !this.submitting) this._ed.setEditable(!value); },
     autoNumberHeadings() { if (this._ed) this._ed.view.dispatch(this._ed.state.tr.setMeta("headingNumbering", true)); },
   },
-  data() { return { ready: false, loadErr: "", busy: false, err: "", tick: 0, languages: [], confMacroDialog: null,
+  data() { return { ready: false, loadErr: "", busy: false, submitting: false, err: "", tick: 0, languages: [], confMacroDialog: null,
                     maximized: false, restored: false, draftError: "", draftConflict: false,
                     submitMutationId: "", pendingSubmitHtml: "",
                     // 인라인 모드에서 사용자가 끌어 정한 본문 높이(px). null = 기본값.
@@ -691,139 +691,145 @@ export default {
     htmlValue() { return this._ed ? this._ed.getHTML() : ""; },
     hasPendingUploads() { return !!(this._pending && this._pending.size); },
     async submit() {
-      if (this.busy || !this.ready || this.draftConflict || !this._ed) return;
-      // An uncertain retry must send byte-for-byte the same logical body used by the first POST.
-      // The visible editor can be reconstructed from a draft, but async badge/title enrichment
-      // must not silently change the receipt fingerprint between attempts.
-      let html = this.pendingSubmitHtml || this._ed.getHTML();
-      // 안전망 — 앱 주소로 남은 티켓 링크(붙여넣기가 health 응답보다 빨랐던 경우)는 실 Jira 주소로.
-      // 저장된 댓글은 다른 사람도 읽는다: localhost 링크로 남기면 안 된다.
-      const jiraOrigin = await jiraBase();
-      if (jiraOrigin) {
-        const port = location.port ? ":" + location.port : "";
-        const re = new RegExp("https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])" + port
-                              + "(/browse/[A-Za-z][A-Za-z0-9]*-\\d+)", "g");
-        html = html.replace(re, jiraOrigin.replace(/\/+$/, "") + "$1");
-      }
-      const text = (this._ed.getText() || "").trim();
-      if (!hasEditorContent(html)) {
-        if (!this.allowEmpty) { this.err = "내용을 입력하세요."; return; }
-        html = "";
-      }
-      if (this.submitAdapter) return this.submitWithAdapter(html, jiraOrigin);
-      this.busy = true; this.err = "";
-      const uploaded = [];       // 이번 시도에서 새로 올린 첨부 id(확정 실패 때만 롤백)
-      const failed = [];                               // UPLOAD_TRIES 회 재시도 후에도 못 올린 파일 이름
-      // 올릴 것부터 센다 — prod 는 첨부 하나에 몇 초씩 걸린다. 몇 개 중 몇 번째인지 모르면
-      // 그 몇 초가 '멈춘 것' 으로 느껴진다.
-      const queue = [];
-      for (const [url, info] of this._pending) if (html.includes(url)) queue.push([url, info]);
-      this.upTotal = queue.length;
-      this.upDone = 0;
-      this.upStart = Date.now();
-      // 1초마다 경과 시간을 갱신한다(라벨이 살아 있어야 '진행 중'으로 읽힌다).
-      this._upTick = setInterval(() => { this.tickNow = Date.now(); }, 1000);
-      this._ed.setEditable(false);
+      if (this.busy || this.submitting || !this.ready || this.draftConflict || !this._ed) return;
+      this.submitting = true;
       try {
-        for (const [url, info] of queue) {
-          this.upName = info.name;
-          this.upSize = fmtSize((info.blob && info.blob.size) || 0);
-          const file = new File([info.blob], info.name,
-                                { type: (info.blob && info.blob.type) || "application/octet-stream" });
-          // 최대 UPLOAD_TRIES 회까지 다시 올려 본다 — 간헐 실패(네트워크/세션)로 파일을 버리지 않게.
-          let res = info.uploaded || null;          // 댓글 응답만 유실됐으면 같은 첨부를 다시 올리지 않는다
-          let uncertainUpload = null;
-          if (!res) {
-            if (!info.uploadMutationId) info.uploadMutationId = newMutationId("attachment");
-            for (let attempt = 1; attempt <= UPLOAD_TRIES; attempt++) {
-              try { res = await api.attachmentUpload(this.ticketKey, file, info.uploadMutationId); break; }
-              catch (e) {
-                if (e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending)) { uncertainUpload = e; break; }
-                if (attempt < UPLOAD_TRIES) {                      // 아직 기회가 남았으면 잠깐 뒤 재시도
-                  this.upName = info.name + " (재시도 " + attempt + "/" + (UPLOAD_TRIES - 1) + ")";
-                  await sleep(400 * attempt);                      // 점점 더 기다렸다 다시(백오프)
+        this._ed.setEditable(false);
+        // An uncertain retry must send byte-for-byte the same logical body used by the first POST.
+        // The visible editor can be reconstructed from a draft, but async badge/title enrichment
+        // must not silently change the receipt fingerprint between attempts.
+        let html = this.pendingSubmitHtml || this._ed.getHTML();
+        // 안전망 — 앱 주소로 남은 티켓 링크(붙여넣기가 health 응답보다 빨랐던 경우)는 실 Jira 주소로.
+        // 저장된 댓글은 다른 사람도 읽는다: localhost 링크로 남기면 안 된다.
+        const jiraOrigin = await jiraBase();
+        if (jiraOrigin) {
+          const port = location.port ? ":" + location.port : "";
+          const re = new RegExp("https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])" + port
+                                + "(/browse/[A-Za-z][A-Za-z0-9]*-\\d+)", "g");
+          html = html.replace(re, jiraOrigin.replace(/\/+$/, "") + "$1");
+        }
+        const text = (this._ed.getText() || "").trim();
+        if (!hasEditorContent(html)) {
+          if (!this.allowEmpty) { this.err = "내용을 입력하세요."; return; }
+          html = "";
+        }
+        if (this.submitAdapter) return await this.submitWithAdapter(html, jiraOrigin);
+        this.busy = true; this.err = "";
+        const uploaded = [];       // 이번 시도에서 새로 올린 첨부 id(확정 실패 때만 롤백)
+        const failed = [];                               // UPLOAD_TRIES 회 재시도 후에도 못 올린 파일 이름
+        // 올릴 것부터 센다 — prod 는 첨부 하나에 몇 초씩 걸린다. 몇 개 중 몇 번째인지 모르면
+        // 그 몇 초가 '멈춘 것' 으로 느껴진다.
+        const queue = [];
+        for (const [url, info] of this._pending) if (html.includes(url)) queue.push([url, info]);
+        this.upTotal = queue.length;
+        this.upDone = 0;
+        this.upStart = Date.now();
+        // 1초마다 경과 시간을 갱신한다(라벨이 살아 있어야 '진행 중'으로 읽힌다).
+        this._upTick = setInterval(() => { this.tickNow = Date.now(); }, 1000);
+        this._ed.setEditable(false);
+        try {
+          for (const [url, info] of queue) {
+            this.upName = info.name;
+            this.upSize = fmtSize((info.blob && info.blob.size) || 0);
+            const file = new File([info.blob], info.name,
+                                  { type: (info.blob && info.blob.type) || "application/octet-stream" });
+            // 최대 UPLOAD_TRIES 회까지 다시 올려 본다 — 간헐 실패(네트워크/세션)로 파일을 버리지 않게.
+            let res = info.uploaded || null;          // 댓글 응답만 유실됐으면 같은 첨부를 다시 올리지 않는다
+            let uncertainUpload = null;
+            if (!res) {
+              if (!info.uploadMutationId) info.uploadMutationId = newMutationId("attachment");
+              for (let attempt = 1; attempt <= UPLOAD_TRIES; attempt++) {
+                try { res = await api.attachmentUpload(this.ticketKey, file, info.uploadMutationId); break; }
+                catch (e) {
+                  if (e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending)) { uncertainUpload = e; break; }
+                  if (attempt < UPLOAD_TRIES) {                      // 아직 기회가 남았으면 잠깐 뒤 재시도
+                    this.upName = info.name + " (재시도 " + attempt + "/" + (UPLOAD_TRIES - 1) + ")";
+                    await sleep(400 * attempt);                      // 점점 더 기다렸다 다시(백오프)
+                  }
                 }
               }
             }
+            if (!res && uncertainUpload) throw uncertainUpload;
+            if (res) {
+              if (!info.uploaded) uploaded.push(res.id);
+              info.uploaded = res;
+              // objectURL → **첨부 콘텐츠 경로**(/secure/attachment/{id}/{name}). 파일명만 박으면
+              // html 모드(prod)에서 <img src="name"> 가 앱 오리진 상대경로가 돼 이미지가 엑박이 된다.
+              // 경로로 두면 렌더가 실제 첨부로 풀고(프록시 재작성), wiki 모드는 저장 시 !name! 로 축약한다.
+              html = html.split(url).join(res.path || res.filename);
+            } else {
+              failed.push(info.name);                               // 끝내 실패 — 본문에서 참조를 걷어낸다
+              html = stripPendingRef(html, url);
+            }
+            this.upDone += 1;
           }
-          if (!res && uncertainUpload) throw uncertainUpload;
-          if (res) {
-            if (!info.uploaded) uploaded.push(res.id);
-            info.uploaded = res;
-            // objectURL → **첨부 콘텐츠 경로**(/secure/attachment/{id}/{name}). 파일명만 박으면
-            // html 모드(prod)에서 <img src="name"> 가 앱 오리진 상대경로가 돼 이미지가 엑박이 된다.
-            // 경로로 두면 렌더가 실제 첨부로 풀고(프록시 재작성), wiki 모드는 저장 시 !name! 로 축약한다.
-            html = html.split(url).join(res.path || res.filename);
-          } else {
-            failed.push(info.name);                               // 끝내 실패 — 본문에서 참조를 걷어낸다
-            html = stripPendingRef(html, url);
+          this.upName = ""; this.upSize = "";              // 이제 본문/댓글 자체를 올린다
+          clearInterval(this._upTick); this._upTick = null;
+          // 올릴 게 파일뿐이었는데 전부 실패 — 저장할 본문이 없다. 알리고 끝낸다(_pending 은 남겨
+          // 사용자가 다시 [등록]으로 재시도할 수 있게). text 는 사용자가 친 글자(파일 참조 제거와 무관).
+          if (!text && uploaded.length === 0 && failed.length) {
+            pushToast({ kind: "error", icon: "⚠", title: "파일 업로드 실패",
+                        message: failed.join(", ") + " — 모두 실패해 저장하지 않았습니다. 다시 시도해 주세요.",
+                        timeout: 9000 });
+            this.err = "파일 업로드에 모두 실패했습니다: " + failed.join(", ");
+            return;                                                 // finally 가 busy=false
           }
-          this.upDone += 1;
-        }
-        this.upName = ""; this.upSize = "";              // 이제 본문/댓글 자체를 올린다
-        clearInterval(this._upTick); this._upTick = null;
-        // 올릴 게 파일뿐이었는데 전부 실패 — 저장할 본문이 없다. 알리고 끝낸다(_pending 은 남겨
-        // 사용자가 다시 [등록]으로 재시도할 수 있게). text 는 사용자가 친 글자(파일 참조 제거와 무관).
-        if (!text && uploaded.length === 0 && failed.length) {
-          pushToast({ kind: "error", icon: "⚠", title: "파일 업로드 실패",
-                      message: failed.join(", ") + " — 모두 실패해 저장하지 않았습니다. 다시 시도해 주세요.",
-                      timeout: 9000 });
-          this.err = "파일 업로드에 모두 실패했습니다: " + failed.join(", ");
-          return;                                                 // finally 가 busy=false
-        }
-        // 새 댓글만 논리 요청 id를 유지한다. 서버 응답이 유실되어도 같은 id로 재시도하면 Jira를
-        // 먼저 대조하므로 중복 댓글을 만들지 않는다. 수정/본문은 기존 PUT 경로를 그대로 쓴다.
-        if (this.kind === "comment" && !this.initial && !this.submitMutationId) {
-          this.submitMutationId = newMutationId("comment");
-        }
-        // Persist the logical write id and any attachments that already succeeded *before* the
-        // comment request. If its response is lost, a refresh can safely reconcile the same write
-        // without uploading the same image or posting the same comment again.
-        this.pendingSubmitHtml = html;
-        if (this.draftScopeName() && await this.flushDraft() === false) throw new Error(this.draftError);
-        await this.submitFn(html, this.submitMutationId || null);
-        await this.finishSubmission();
-        // 본문 저장까지 성공한 뒤에야 '일부 파일 실패'를 알린다 — 본문은 확실히 저장됐고, 어떤
-        // 파일이 빠졌는지 우하단 알림으로 분명히 남긴다(다이얼로그가 닫혀도 보이도록 토스트로).
-        if (failed.length) {
-          pushToast({ kind: "error", icon: "⚠", title: "파일 업로드 실패",
-                      message: failed.join(", ") + " — 본문은 저장했습니다. 파일은 다시 첨부해 주세요.",
-                      timeout: 9000 });
-          this.err = "파일 업로드 실패: " + failed.join(", ") + " (본문은 저장됨)";
-        }
-        this.$emit("submitted");
-      } catch (e) {
-        // timeout/응답 유실이면 댓글은 이미 생성됐을 수 있다. 이때 첨부를 지우면 게시된 댓글의
-        // 이미지가 즉시 깨지고, 재시도에서 또 업로드된다. 확인 가능한 실패에만 롤백한다.
-        const preserveUpload = !!(e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending));
-        if (preserveUpload && this.draftKey()) await this.flushDraft();
-        if (!preserveUpload) {
-          for (const id of uploaded) {
-            let removed = false;
-            try { await api.attachmentDelete(this.ticketKey, id); removed = true; } catch (_) { /* noop */ }
-            if (removed) {
-              for (const info of this._pending.values()) {
-                if (info.uploaded && String(info.uploaded.id) === String(id)) {
-                  info.uploaded = null;
-                  // The old mutation receipt points at the now-deleted attachment. A retry needs
-                  // a fresh logical upload id or it could restore a broken attachment path.
-                  info.uploadMutationId = "";
+          // 새 댓글만 논리 요청 id를 유지한다. 서버 응답이 유실되어도 같은 id로 재시도하면 Jira를
+          // 먼저 대조하므로 중복 댓글을 만들지 않는다. 수정/본문은 기존 PUT 경로를 그대로 쓴다.
+          if (this.kind === "comment" && !this.initial && !this.submitMutationId) {
+            this.submitMutationId = newMutationId("comment");
+          }
+          // Persist the logical write id and any attachments that already succeeded *before* the
+          // comment request. If its response is lost, a refresh can safely reconcile the same write
+          // without uploading the same image or posting the same comment again.
+          this.pendingSubmitHtml = html;
+          if (this.draftScopeName() && await this.flushDraft() === false) throw new Error(this.draftError);
+          await this.submitFn(html, this.submitMutationId || null);
+          await this.finishSubmission();
+          // 본문 저장까지 성공한 뒤에야 '일부 파일 실패'를 알린다 — 본문은 확실히 저장됐고, 어떤
+          // 파일이 빠졌는지 우하단 알림으로 분명히 남긴다(다이얼로그가 닫혀도 보이도록 토스트로).
+          if (failed.length) {
+            pushToast({ kind: "error", icon: "⚠", title: "파일 업로드 실패",
+                        message: failed.join(", ") + " — 본문은 저장했습니다. 파일은 다시 첨부해 주세요.",
+                        timeout: 9000 });
+            this.err = "파일 업로드 실패: " + failed.join(", ") + " (본문은 저장됨)";
+          }
+          this.$emit("submitted");
+        } catch (e) {
+          // timeout/응답 유실이면 댓글은 이미 생성됐을 수 있다. 이때 첨부를 지우면 게시된 댓글의
+          // 이미지가 즉시 깨지고, 재시도에서 또 업로드된다. 확인 가능한 실패에만 롤백한다.
+          const preserveUpload = !!(e && (e.uncertain || e.needLogin || e.authRecovered || e.authRecoveryPending));
+          if (preserveUpload && this.draftKey()) await this.flushDraft();
+          if (!preserveUpload) {
+            for (const id of uploaded) {
+              let removed = false;
+              try { await api.attachmentDelete(this.ticketKey, id); removed = true; } catch (_) { /* noop */ }
+              if (removed) {
+                for (const info of this._pending.values()) {
+                  if (info.uploaded && String(info.uploaded.id) === String(id)) {
+                    info.uploaded = null;
+                    // The old mutation receipt points at the now-deleted attachment. A retry needs
+                    // a fresh logical upload id or it could restore a broken attachment path.
+                    info.uploadMutationId = "";
+                  }
                 }
               }
             }
+            this.submitMutationId = "";
+            this.pendingSubmitHtml = "";
+            // Persist the rollback too. Otherwise reopening the editor could restore the deleted
+            // attachment ids and the old mutation id, producing a broken image on the next submit.
+            if (this.draftKey()) await this.flushDraft();
           }
-          this.submitMutationId = "";
-          this.pendingSubmitHtml = "";
-          // Persist the rollback too. Otherwise reopening the editor could restore the deleted
-          // attachment ids and the old mutation id, producing a broken image on the next submit.
-          if (this.draftKey()) await this.flushDraft();
+          this.err = (e && e.uncertain ? "반영 여부 확인 필요: "
+            : (e && e.needLogin ? "로그인 후 다시 제출하세요: " : "저장 실패: "))
+            + ((e && e.message) || e);
+        } finally {
+          this.busy = false;
         }
-        this.err = (e && e.uncertain ? "반영 여부 확인 필요: "
-          : (e && e.needLogin ? "로그인 후 다시 제출하세요: " : "저장 실패: "))
-          + ((e && e.message) || e);
       } finally {
-        if (this._ed && !this._dead) this._ed.setEditable(true);
-        this.busy = false;
+        this.submitting = false;
+        if (this._ed && !this._dead) this._ed.setEditable(!this.readOnly, false);
       }
     },
   },

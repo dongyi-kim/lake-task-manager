@@ -61,6 +61,8 @@ FORMAT_SELECTORS = {
 
 
 def _free_port() -> int:
+    if os.environ.get("LTM_TEST_PORT"):
+        return int(os.environ["LTM_TEST_PORT"])
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
@@ -97,9 +99,7 @@ def editor_browser(request, tmp_path):
     env = os.environ.copy()
     env.update({
         "JIRA_ENV": "mock",
-        "APP_PORT": str(port),
         "LAKE_NO_WINDOW": "1",
-        "APP_PORT": str(port),  # Origin validation must use the same port as the fixture server.
         "LAKE_MOCK_LATENCY_MS": str(latency_ms),
         # Local-only writes validate Host/Origin against the configured listener.
         "APP_PORT": str(port),
@@ -715,6 +715,9 @@ def test_comment_mention_search_enriches_context_name_under_delay(editor_browser
     """검색 중 피드백과 local→server 이름 보강만 800ms 지연을 주어 검증한다."""
     page, base, errors, _upload_path = editor_browser
     _open_ticket(page, base, COMMENT_TICKET)
+    # Every mock upstream call takes 800ms and shares a serialized provider gate.
+    # Finish ticket initialization before measuring the mention search's own delay.
+    page.wait_for_load_state('networkidle', timeout=45_000)
     page.get_by_role("button", name="＋ 댓글 달기").click()
     editor = page.locator(".tkt-compose-editor .ProseMirror")
     editor.wait_for(state="visible")

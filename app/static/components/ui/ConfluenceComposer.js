@@ -10,13 +10,13 @@ export default {
   components: { CommentEditor },
   props: { base: String, spaces: Array, space: String, parent: Object, editingPage: Object, parentDraft: Boolean, tocVisible: Boolean },
   emits: ["close", "created", "outline", "toggle-toc"],
-  data() { return { ready: false, busy: false, error: "", progress: "", restored: false,
+  data() { return { ready: false, busy: false, submitting: false, finishingSubmission: false, error: "", progress: "", restored: false,
     formKey: "", draftId: "new", runHistory: [], knownParents: [], initialHtml: "", sourceVersion: this.editingPage?.version.number || null,
     form: { title: this.editingPage?.title || "", space: this.editingPage?.space?.key || this.parent?.space || this.space, parent: this.parent || null, numbered: !this.editingPage }, run: null }; },
   computed: {
     contextKey() { return this.editingPage ? ':edit:'+this.editingPage.id : this.parentDraft ? ':parent:'+this.parent.id : ''; },
     draftScope() { return "confluence:" + this.base + this.contextKey + ":" + this.draftId; },
-    locked() { return this.busy || !!this.run; },
+    locked() { return this.busy || this.submitting || this.finishingSubmission || !!this.run; },
     revisionConflict() { return !!this.editingPage && !this.run && this.sourceVersion !== this.editingPage.version.number; },
     parentAvailable() { return this.form.parent && this.form.parent.space === this.form.space; },
     parentChoices() { return [...new Map([...this.knownParents, this.parent].filter(item => item && item.space === this.form.space).map(item => [item.id, item])).values()]; },
@@ -43,13 +43,14 @@ export default {
       draftId: this.draftId, sourceVersion: this.sourceVersion, runHistory: this.runHistory, preserveExpiredForMutation: !!this.run }))); },
     chooseParent(id) { this.form.parent = this.parentChoices.find(item => item.id === id) || null; },
     async finishRun() {
-      if (this.busy || !this.run) return;
+      if (this.busy || this.submitting || this.finishingSubmission || !this.run) return;
       if (!window.confirm("Confluence에서 문서와 첨부의 반영 결과를 확인했습니까? 발행 기록을 남기고 새 초안을 시작합니다. 이미 발행된 문서는 삭제하지 않습니다.")) return;
-      const history = [{ title: this.run.payload.title, pageId: this.run.page?.id || "", mutationId: this.run.payload.mutation_id,
-        endedAt: Date.now() }, ...this.runHistory.filter(item => item.mutationId !== this.run.payload.mutation_id)].slice(0, 20);
-      const draftId = newMutationId("conf-draft");
-      const form = { title: "", space: this.form.space, parent: this.form.parent, numbered: this.form.numbered };
+      this.finishingSubmission = true;
       try {
+        const history = [{ title: this.run.payload.title, pageId: this.run.page?.id || "", mutationId: this.run.payload.mutation_id,
+          endedAt: Date.now() }, ...this.runHistory.filter(item => item.mutationId !== this.run.payload.mutation_id)].slice(0, 20);
+        const draftId = newMutationId("conf-draft");
+        const form = { title: "", space: this.form.space, parent: this.form.parent, numbered: this.form.numbered };
         // Commit the new body scope first. An interrupted cleanup cannot restore old content
         // as a fresh document; the closed mutation ID stays visible in publication history.
         await saveDraft(this.formKey + ":history", JSON.parse(JSON.stringify({ items: history })));
@@ -58,15 +59,34 @@ export default {
         if (this.editingPage) { await clearDraft(this.formKey); this.$emit('close'); return; }
         this.draftId = draftId; this.runHistory = history; this.run = null; this.form = form; this.error = ""; this.progress = "";
       } catch (error) { this.error = "발행 기록 정리 실패: " + error.message; }
+      finally { this.finishingSubmission = false; }
     },
     noop() {},
-    async close() {
-      if (this.busy) return;
+    async close(options = {}) {
+      const editor = this.$refs.editor;
+      const blocked = () => this.busy || this.submitting || this.finishingSubmission ||
+        editor?.busy || editor?.submitting || editor?.aiBusy || editor?.draftConflict || editor?._dead || this.$refs.editor !== editor;
+      if (blocked()) return false;
+      // Tab/hash navigation must wait for restoration and a durable form/body save.
+      if (options.requireDurable === true && (!this.ready || !editor || editor.ready === false)) return false;
+      const tick = editor?.tick;
+      const snapshot = () => JSON.stringify({ form: this.form, run: this.run, draftId: this.draftId,
+        sourceVersion: this.sourceVersion, runHistory: this.runHistory });
+      const before = snapshot();
+      const unchanged = () => {
+        if (editor?.tick === tick && snapshot() === before) return true;
+        this.error = "저장 중 내용이 바뀌었습니다. 현재 내용을 확인한 뒤 다시 이동해 주세요.";
+        return false;
+      };
       try {
-        if (this.$refs.editor && await this.$refs.editor.flushDraft() === false) return;
+        if (editor && await editor.flushDraft() === false) return false;
+        if (blocked() || !unchanged()) return false;
         if (this.ready) await this.persist();
+        if (blocked() || !unchanged()) return false;
+        if (options.canClose && !options.canClose()) return false;
         this.$emit("close");
-      } catch (error) { this.error = "초안 저장 실패: " + error.message; }
+        return true;
+      } catch (error) { this.error = "초안 저장 실패: " + error.message; return false; }
     },
     async discard() {
       if (this.locked) return;
@@ -76,10 +96,13 @@ export default {
       } catch (error) { this.error = "초안 삭제 실패: " + error.message; }
     },
     async publish() {
-      if (this.busy || !this.ready || this.revisionConflict) return;
+      if (this.busy || this.submitting || this.finishingSubmission || !this.ready || this.revisionConflict) return;
       if (!this.form.title.trim() || !this.form.space) { this.error = "Space와 문서 제목을 입력하세요."; return; }
       this.error = "";
-      await this.$refs.editor.submit();
+      // Keep the parent action locked throughout editor preparation and publication.
+      this.submitting = true;
+      try { await this.$refs.editor.submit(); }
+      finally { this.submitting = false; }
     },
     async publishDocument({ html, files }) {
       if (this.revisionConflict) throw new Error('초안 작성 후 서버 문서가 변경되었습니다. 최신 원문과 초안을 확인해 주세요.');
@@ -135,17 +158,19 @@ export default {
     },
     async submitted() {
       const id = this.run?.page?.id;
+      this.finishingSubmission = true;
       try { await clearDraft(this.formKey); }
       catch (error) { this.error = "발행은 완료했지만 초안 정리를 확인하지 못했습니다: " + error.message; return; }
+      finally { this.finishingSubmission = false; }
       this.$emit("created", id);
     },
   },
   template: `
     <section class="conf-composer" aria-label="새 Confluence 문서" @keydown.esc.stop="close">
       <header class="conf-compose-header"><div><h2>{{ editingPage ? '문서 수정' : '새 문서' }}</h2></div>
-        <div class="conf-compose-actions"><button class="btn" :disabled="busy" @click="close">닫기 · 초안 보관</button>
+        <div class="conf-compose-actions"><button class="btn" :disabled="busy || submitting || finishingSubmission" @click="close">닫기 · 초안 보관</button>
           <button class="btn" @click="$emit('toggle-toc')" :aria-expanded="tocVisible" aria-controls="conf-document-toc">목차</button>
-          <button class="btn primary" :disabled="busy || !ready || revisionConflict" @click="publish">{{ busy ? '발행 중…' : run?.completed ? '발행한 문서 보기' : run ? '발행 이어서 하기' : '발행' }}</button></div></header>
+          <button class="btn primary" :disabled="busy || submitting || finishingSubmission || !ready || revisionConflict" @click="publish">{{ busy || submitting || finishingSubmission ? '발행 중…' : run?.completed ? '발행한 문서 보기' : run ? '발행 이어서 하기' : '발행' }}</button></div></header>
       <p v-if="revisionConflict" class="conf-error" role="alert">초안 작성 이후 서버 문서가 변경되었습니다. 초안은 보관 중이며 자동으로 덮어쓰지 않습니다. 원문과 비교한 뒤 초안을 삭제하고 최신 문서에서 다시 수정해 주세요. <a :href="base + '/pages/viewpage.action?pageId=' + editingPage.id" target="_blank" rel="noopener noreferrer">최신 원문 확인</a></p>
       <p v-if="error" class="conf-error" role="alert">{{ error }}</p>
       <p v-if="!ready && !error" class="conf-muted" role="status">초안 확인 중…</p>
@@ -165,7 +190,7 @@ export default {
         <div class="conf-compose-note"><button class="btn" :disabled="locked" @click="$refs.editor.tbImage()">파일·이미지 첨부</button><span>초안에 보관되며 발행할 때 첨부됩니다. 파일당 최대 10MiB.</span>
           <button v-if="!locked" class="conf-more" @click="discard">초안 삭제</button></div>
         <p v-if="progress || run?.page" role="status" class="conf-compose-progress">{{ progress || ('문서 #' + run.page.id + ' 생성됨 · 남은 첨부를 이어서 발행하세요.') }}</p>
-        <button v-if="run && !busy" class="conf-more" @click="finishRun">결과 확인 완료 · 새 초안 시작</button>
+        <button v-if="run && !busy && !submitting && !finishingSubmission" class="conf-more" @click="finishRun">결과 확인 완료 · 새 초안 시작</button>
         <details v-if="runHistory.length" class="conf-compose-note"><summary>종료한 발행 기록 ({{ runHistory.length }})</summary><ul><li v-for="item in runHistory" :key="item.mutationId">{{ item.title }} · {{ item.pageId ? '#' + item.pageId : '결과 직접 확인' }} <small>{{ item.mutationId }}</small></li></ul></details>
       </div>
     </section>`,

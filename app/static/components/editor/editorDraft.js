@@ -93,9 +93,11 @@ export const editorDraftMethods = {
       this.flushDraft();
     },
     async cancelEditing() {
-      if (await this.flushDraft() !== false) this.$emit("cancel");
+      if (this.busy || this.submitting) return;
+      if (await this.flushDraft() !== false && !this.busy && !this.submitting) this.$emit("cancel");
     },
     async discardDraft() {
+      if (this.busy || this.submitting) return false;
       if (this.submitMutationId || this.mutationPending) {
         this.err = "Jira 반영 여부를 확인하기 전에는 이 초안을 버릴 수 없습니다. 로그인 또는 네트워크 복구 후 다시 등록해 주세요.";
         pushToast({ kind: "warn", icon: "⚠", title: "확인 중인 댓글",

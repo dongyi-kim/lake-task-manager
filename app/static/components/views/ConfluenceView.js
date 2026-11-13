@@ -13,16 +13,20 @@ import confluenceRecents from '../../lib/confluenceRecents.js';
 import ConfluenceTreeRow from '../ui/ConfluenceTreeRow.js';
 import { readConfluence } from '../../lib/confluenceRead.js';
 import ConfluenceReadNotice from '../ui/ConfluenceReadNotice.js';
+import { reactive } from '../../vendor/vue.esm-browser.prod.js';
+import { createOpenItemTabs, normalizeItemId } from '../../lib/openItemTabs.js';
+import OpenItemTabs from '../ui/OpenItemTabs.js';
 
-const pageId = () => location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "";
+const pageId = () => normalizeItemId('confluence', location.hash.match(/^#\/confluence\/(\d+)/)?.[1] || "");
 const nextStart = data => data?._links?.next ? Number(data.start || 0) + Number(data.size ?? data.results?.length ?? 0) : null;
 const merge = (old, rows) => [...new Map([...old, ...rows].map(row => [String(row.id ?? row.key), row])).values()];
 
 export default {
   name: "ConfluenceView",
-  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu, ConfluenceTreeRow, ConfluenceReadNotice },
+  components: { ConfluencePanel, ConfluenceDocumentList, ConfluenceComposer, ConfluencePageMenu, ConfluenceTreeRow, ConfluenceReadNotice, OpenItemTabs },
   mixins: [confluenceLayout, confluenceTree, confluenceSavedTree, confluenceRecents],
-  data() { return { base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
+  data() { return { documentTabs: createOpenItemTabs({ kind: 'confluence', reactive }), tabNavigationPending: false,
+    base: "", favorites: [], recentDocuments: [], navigationFolds: readNavigationFolds(), spaces: [], space: "", spacesNext: null,
     loading: false, error: "", doc: null, selectedId: "", reading: false, readError: "", readFailure: null, readSlow: false, readRetrying: false, requestedVersion: null,
     checking: false, revision: null, revisionError: "",
     headings: [], activeHeading: "", composing: false, editingPage: null, openingEditor: false, composeParent: null, contextPage: null }; },
@@ -34,16 +38,113 @@ export default {
     headingDepth() { return Math.min(...this.headings.map(row => row.level), 6); },
   },
   mounted() {
+    this._viewActive = true;
     this._readGeneration = 0;
-    this._hash = () => { const id = pageId(); if (this._navigationReady && id && id !== this.selectedId) this.read(id); };
+    this._tabNavigationGeneration = 0;
+    this._hash = () => {
+      const id = pageId();
+      if (this._viewActive && this._navigationReady && id && id !== this.selectedId) this.navigateDocument(id, { fromHash: true });
+    };
     window.addEventListener("hashchange", this._hash);
     this.initialize();
   },
-  activated() { if (this._hash) this._hash(); this.$nextTick(() => this.buildToc()); },
-  deactivated() { this.contextPage=null; this.stopToc(); },
-  beforeUnmount() { this._readAbort?.abort(); window.removeEventListener("hashchange", this._hash); this.stopToc(); },
+  activated() {
+    this._viewActive = true;
+    if (this._hash) this._hash();
+    if (this._navigationReady && !pageId() && !this.selectedId && this.documentTabs.state.activeId && !this.composing)
+      this.navigateDocument(this.documentTabs.state.activeId);
+    this.$nextTick(() => this.buildToc());
+  },
+  deactivated() { this._viewActive = false; ++this._tabNavigationGeneration; this.tabNavigationPending = false;
+    this.captureTabScroll(); this.contextPage=null; this.stopToc(); },
+  beforeUnmount() { this.captureTabScroll(); ++this._tabNavigationGeneration; ++this._readGeneration;
+    this._readAbort?.abort(); window.removeEventListener("hashchange", this._hash); this.stopToc(); },
   methods: {
-    startCompose(parent = null) { this.editingPage = null; this.composeParent = parent; this.contextPage = null;
+    async closeComposerForNavigation() {
+      if (!this.composing) return true;
+      // The composer owns body drafts and mutation receipts. Metadata tabs never discard either.
+      if (!this._composerClosePromise) {
+        const composer = this.$refs.composer;
+        if (!composer) return false;
+        this._composerClosePromise = Promise.resolve(composer.close({ requireDurable: true, canClose: () => this._viewActive }))
+          .finally(() => { this._composerClosePromise = null; });
+      }
+      return await this._composerClosePromise === true;
+    },
+    captureTabScroll() {
+      clearTimeout(this._tabScrollTimer);
+      const reader = this.$refs.reader;
+      if (reader && this.doc && String(this.doc.id) === this.selectedId)
+        this.documentTabs.setScroll(this.selectedId, { x: reader.scrollLeft, y: reader.scrollTop });
+    },
+    rememberTabScroll() {
+      clearTimeout(this._tabScrollTimer);
+      this._tabScrollTimer = setTimeout(() => this.captureTabScroll(), 150);
+    },
+    restoreNavigationFocus(previous) {
+      if (!previous?.closest?.('.open-item-tabs')) return;
+      this.$nextTick(() => {
+        const current = globalThis.document?.activeElement;
+        if (current && current !== globalThis.document.body && current !== previous) return;
+        const target = previous.isConnected && !previous.disabled ? previous :
+          this.$el.querySelector('[data-open-tab="' + this.documentTabs.state.activeId + '"]');
+        target?.focus({ preventScroll: true });
+      });
+    },
+    async navigateDocument(value, { fromHash = false, anchor = '' } = {}) {
+      const id = normalizeItemId('confluence', confluencePageId(String(value)));
+      if (!id || !this._viewActive) return false;
+      if (id === this.selectedId && !anchor && this.composing) return true;
+      const previousFocus = globalThis.document?.activeElement;
+      const navigation = ++this._tabNavigationGeneration;
+      const previousHash = this.selectedId ? '#/confluence/' + this.selectedId : '#/confluence';
+      this.tabNavigationPending = true;
+      try {
+        if (!await this.closeComposerForNavigation()) {
+          if (fromHash && navigation === this._tabNavigationGeneration)
+            history.replaceState(null, '', previousHash);
+          return false;
+        }
+        if (navigation !== this._tabNavigationGeneration || !this._viewActive) return false;
+        this.captureTabScroll(); this.closeDrawer();
+        this._pendingAnchor = anchor;
+        if (this.tree.nodes.get(id)?.hasChildren === true) this.prioritizeTree(id);
+        if (this.tree.matches.includes(id)) this.activeMatch = id;
+        this.documentTabs.open({ id, title: this.documentTabs.state.items.find(row => row.id === id)?.title || id });
+        if (!fromHash) openConfluenceDocument(id);
+        if (id !== this.selectedId || !this.doc) this.read(id);
+        else if (anchor) this.$nextTick(() => this.jumpToAnchor(anchor));
+        return true;
+      } finally { if (navigation === this._tabNavigationGeneration) {
+        this.tabNavigationPending = false; this.restoreNavigationFocus(previousFocus);
+      } }
+    },
+    async closeDocumentTab(id) {
+      if (!this._viewActive) return;
+      if (id !== this.documentTabs.state.activeId) { this.documentTabs.close(id); return; }
+      const previousFocus = globalThis.document?.activeElement;
+      const navigation = ++this._tabNavigationGeneration;
+      this.tabNavigationPending = true;
+      try {
+        if (!await this.closeComposerForNavigation() || navigation !== this._tabNavigationGeneration || !this._viewActive) return;
+        this.captureTabScroll(); this.documentTabs.close(id);
+        this._pendingAnchor = '';
+        const next = this.documentTabs.state.activeId;
+        if (next) { openConfluenceDocument(next); this.read(next); }
+        else {
+          ++this._readGeneration; this._readAbort?.abort(); this.stopToc();
+          this.selectedId = ''; this.doc = null; this.headings = []; this.activeHeading = '';
+          this.reading = false; this.readError = ''; this.readFailure = null;
+          this.readSlow = false; this.readRetrying = false; this.revision = null; this.revisionError = ''; this.checking = false;
+          history.replaceState(null, '', '#/confluence');
+          this.$nextTick(() => this.$el.querySelector('[aria-label="문서 트리 검색"]')?.focus());
+        }
+      } finally { if (navigation === this._tabNavigationGeneration) {
+        this.tabNavigationPending = false; this.restoreNavigationFocus(previousFocus);
+      } }
+    },
+    startCompose(parent = null) { if (this.tabNavigationPending) return;
+      this.captureTabScroll(); this.editingPage = null; this.composeParent = parent; this.contextPage = null;
       this.closeDrawer(); this.stopToc(); this.headings = []; this.composing = true; },
     showPageMenu(row,event) {
       if (row.more) return;
@@ -68,6 +169,7 @@ export default {
       if (String(id) === this.selectedId) this.read(id, null, true); else this.open(id); },
     async initialize() {
       // Local configuration is independent of SSO/network so saved titles appear immediately.
+      const healthPromise = api.health().catch(() => null);
       try { const config = await api.confluenceConfig(); this.base = config.base;
         const spaces = new Set((config.spaces || []).map(value => value.toLowerCase()));
         this._recentSpaces = spaces;
@@ -75,8 +177,12 @@ export default {
         this.loadRecentDocuments();
         this.loadSavedTrees(); }
       catch (error) { this.error = error.message; }
+      const health = await healthPromise;
+      this.documentTabs.setContext({ env: health?.env, jiraBase: health?.jiraBase, projectKey: health?.projectKey, confluenceBase: this.base });
       this._navigationReady = true;
-      this.loadSpaces(); this._hash();
+      this.loadSpaces();
+      const initialId = pageId() || this.documentTabs.state.activeId;
+      if (initialId && this._viewActive) this.navigateDocument(initialId, { fromHash: !!pageId() });
     },
     async loadSpaces(more = false) {
       this.loading = true; this.error = "";
@@ -92,13 +198,10 @@ export default {
       this.contextPage = null;
       await this.loadTree(true);
     },
-    open(id) { this.closeDrawer();
-      const matchId = confluencePageId(String(id));
-      if (this.tree.nodes.get(matchId)?.hasChildren === true) this.prioritizeTree(matchId);
-      if (this.tree.matches.includes(matchId)) this.activeMatch = matchId;
-      try { const url=new URL(String(id)); this._pendingAnchor=url.hash ? decodeURIComponent(url.hash.slice(1)) : ''; } catch (_) { this._pendingAnchor=''; }
-      openConfluenceDocument(id);
-      if (confluencePageId(String(id)) === this.selectedId && this._pendingAnchor) this.$nextTick(()=>this.jumpToAnchor(this._pendingAnchor));
+    open(id) {
+      let anchor = '';
+      try { const url = new URL(String(id)); anchor = url.hash ? decodeURIComponent(url.hash.slice(1)) : ''; } catch (_) { /* numeric page id */ }
+      return this.navigateDocument(id, { anchor });
     },
     async read(id, version = null, refresh = false) {
       const gen = ++this._readGeneration;
@@ -108,7 +211,10 @@ export default {
       this.readSlow = false; this.readRetrying = false; this.readFailure = null;
       const slowTimer = setTimeout(() => { if (gen === this._readGeneration) this.readSlow = true; }, 8000);
       const replacing = String(this.doc?.id) === String(id);
-      const scrollTop = replacing ? this.$refs.reader?.scrollTop || 0 : 0;
+      const savedScroll = this.documentTabs.state.items.find(row => row.id === String(id))?.scroll;
+      const scrollTop = replacing ? this.$refs.reader?.scrollTop || 0 : savedScroll?.y || 0;
+      const scrollLeft = replacing ? this.$refs.reader?.scrollLeft || 0 : savedScroll?.x || 0;
+      this.documentTabs.open({ id: String(id), title: this.documentTabs.state.items.find(row => row.id === String(id))?.title || String(id) });
       this.selectedId = String(id); this.reading = true; this.readError = "";
       this.revision = null; this.revisionError = ""; this.checking = false;
       if (!replacing) { this.stopToc(); this.doc = null; this.headings = []; this.activeHeading = ""; }
@@ -117,10 +223,12 @@ export default {
           () => { if (gen === this._readGeneration) this.readRetrying = true; });
         if (gen !== this._readGeneration) return;
         this.doc = data;
+        this.documentTabs.update(String(id), { title: data.title });
         this.rememberDocument(data);
         const favorite = this.favorites.find(row => String(row.id) === String(data.id));
         if (favorite && favorite.title !== data.title) { favorite.title = data.title; this.saveFavorites(); }
-        this.$nextTick(() => { this.buildToc(); if (this.$refs.reader) this.$refs.reader.scrollTop = scrollTop;
+        this.$nextTick(() => { if (gen !== this._readGeneration) return;
+          this.buildToc(); if (this.$refs.reader) { this.$refs.reader.scrollTop = scrollTop; this.$refs.reader.scrollLeft = scrollLeft; }
           if (this._pendingAnchor) { this.jumpToAnchor(this._pendingAnchor); this._pendingAnchor=''; } this.updateToc(); });
       } catch (error) { if (gen === this._readGeneration && error.name !== 'AbortError') { this.readError = error.message; this.readFailure = error;
         if ([403, 404].includes(error.status)) { this.doc = null; this.headings = []; this.stopToc(); } } }
@@ -198,7 +306,9 @@ export default {
     linkClick(event) {
       const link = event.target.closest("a[href]"); if (!link) return;
       if (link.getAttribute("href").startsWith("#")) {
-        if (link.getAttribute("href").startsWith("#/confluence/")) return;
+        if (link.getAttribute("href").startsWith("#/confluence/")) {
+          event.preventDefault(); this.open(link.getAttribute('href').match(/^#\/confluence\/(\d+)/)?.[1]); return;
+        }
         event.preventDefault();
         let id; try { id = decodeURIComponent(link.getAttribute("href").slice(1)); } catch (_) { return; }
         this.jumpToAnchor(id); return;
@@ -208,7 +318,9 @@ export default {
     },
   },
   template: `
-    <section class="conf-workspace" :class="{ 'conf-compact': compact, 'conf-resizing': draggingPanel }" :style="layoutStyle" aria-label="Confluence 문서">
+    <section class="conf-view">
+    <OpenItemTabs v-if="documentTabs.state.items.length" :items="documentTabs.state.items" :active-id="documentTabs.state.activeId" kind="confluence" label="최근 열린 문서" panel-id="confluence-workspace" :disabled="tabNavigationPending" @activate="navigateDocument" @close="closeDocumentTab" />
+    <section id="confluence-workspace" class="conf-workspace" role="tabpanel" :class="{ 'conf-compact': compact, 'conf-resizing': draggingPanel }" :style="layoutStyle" aria-label="Confluence 문서">
       <ConfluencePanel v-if="!composing" :visible="showSidebar" :compact="compact" label="문서 탐색" @close="toggleSidebar" class="conf-panel conf-sidebar">
         <div class="conf-panel-title"><h1>Confluence</h1><button class="conf-fold" @click="toggleSidebar" aria-label="문서 탐색 접기" title="문서 탐색 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 5l-5 5 5 5"/></svg></button></div>
         <div class="conf-navigation-controls">
@@ -255,7 +367,7 @@ export default {
         <p v-if="revisionError" class="conf-error" role="alert">{{ revisionError }}</p>
         <div v-if="newer" class="conf-new-version" role="status">새 발행 버전 v{{ revision.latestPublishedVersion }}이 있습니다.<button class="btn" @click="read(doc.id, revision.latestPublishedVersion)">새 버전 보기</button></div>
         <p v-else-if="revision?.isLatest" class="conf-current" role="status">확인 시점의 최신 발행 버전입니다. {{ date(revision.checkedAt) }}</p>
-        <div ref="reader" class="conf-reader" tabindex="0" aria-label="문서 본문" :aria-busy="reading">
+        <div ref="reader" class="conf-reader" tabindex="0" aria-label="문서 본문" :aria-busy="reading" @scroll.passive="rememberTabScroll">
           <p v-if="doc?.macroWarnings?.length" class="conf-muted">일부 매크로는 원문 확인이 필요합니다. <button class="conf-more" @click="read(doc.id,null,true)" :disabled="reading">본문 다시 불러오기</button></p>
           <p v-if="reading" class="conf-muted" role="status">문서를 불러오는 중…</p>
           <article v-if="doc" class="conf-document"><nav v-if="doc.ancestors?.length" class="conf-breadcrumb" aria-label="문서 경로"><button v-for="item in doc.ancestors" :key="item.id" @click="open(item.id)">{{ item.title }}</button></nav><h1>{{ doc.title }}</h1><p class="conf-document-meta">v{{ version }} <span v-if="doc.version?.when">{{ date(doc.version.when) }} 수정</span><span>{{ author() }}</span><span v-if="checkedAt">최신 확인 {{ date(checkedAt) }}</span></p><div ref="documentBody" class="conf-document-body" v-html="doc.html" @click="linkClick"></div></article>
@@ -264,5 +376,5 @@ export default {
       </main>
       <div v-if="(composing || headings.length) && showToc && !compact" class="conf-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="목차 너비 조절" :aria-valuenow="tocWidth" aria-valuemin="180" :aria-valuemax="panelMax('toc')" @pointerdown="startPanelResize('toc', $event)" @keydown="resizePanelKey('toc', $event)"></div>
       <ConfluencePanel v-if="composing || headings.length" :visible="showToc" :compact="compact" label="이 문서의 목차" @close="toggleToc" id="conf-document-toc" class="conf-panel conf-toc"><div class="conf-panel-title"><h2>이 문서의 목차</h2><button class="conf-fold" @click="toggleToc" aria-label="목차 접기" title="목차 접기"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button></div><nav aria-label="본문 목차"><p v-if="!headings.length" class="conf-muted">본문에 헤딩을 추가하면 여기에 표시됩니다.</p><button v-for="heading in headings" :key="heading.id" :style="{'--level': heading.level - headingDepth}" :aria-current="activeHeading === heading.id ? 'location' : null" @click="jumpToHeading(heading.id)">{{ heading.title }}</button></nav></ConfluencePanel>
-    </section>`,
+    </section></section>`,
 };
