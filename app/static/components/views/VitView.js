@@ -314,7 +314,7 @@ export default {
     <template v-if="d">
       <!-- 상단 주요지표 — 전체·모듈별 (완료/전체). 모듈 본문이 도착하는 대로 개수→완료/전체 로 승격 -->
       <div class="chips">
-        <div class="chip" style="background:var(--accent);color:#fff;border-color:transparent">
+        <div class="chip" style="background:var(--accent);color:var(--on-accent);border-color:transparent">
           <b v-if="allLoaded">{{ allDone }}/{{ d.summary.total }}</b><b v-else>{{ d.summary.total }}</b> 현안 (PMO_VIT)
         </div>
         <div v-for="(m, i) in d.modules" :key="m.module" class="chip">

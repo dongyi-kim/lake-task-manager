@@ -1,287 +1,302 @@
 /* workload.css — 인력 워크로드 화면 고유 레이아웃 (행 그리드·두 막대·활동패널). 공통색은 tokens.css.
  * updated: 2026-07-08 */
-.wl-legend .sw.task { background: var(--wl-task); }
-.wl-legend .sw.subtask { background: var(--wl-subtask); }
-.wl-legend .sw.voc { background: var(--wl-voc); }
+.wl-view .wl-legend .sw.task { background: var(--wl-task); }
+.wl-view .wl-legend .sw.subtask { background: var(--wl-subtask); }
+.wl-view .wl-legend .sw.voc { background: var(--wl-voc); }
 
-.whead, .prow { display: grid; grid-template-columns: 150px 1fr 40px; align-items: center; gap: 14px; padding: 8px 16px; }
-.whead { padding: 6px 16px 5px; background: var(--panel-2); }
-.whead .hl { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
-.prow { border-top: 1px solid var(--border); }
-.prow:hover { background: rgba(127,127,127,.03); }
+.wl-view .whead,
+.wl-view .prow { display: grid; grid-template-columns: 150px 1fr 40px; align-items: center; gap: 14px; padding: 8px 16px; }
+.wl-view .whead { padding: 6px 16px 5px; background: var(--panel-2); }
+.wl-view .whead .hl { font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+.wl-view .prow { border-top: 1px solid var(--border); }
+.wl-view .prow:hover { background: color-mix(in srgb, var(--info) 3%, var(--panel)); }
 /* 사람 아이콘은 Avatar 컴포넌트가 담당(프사 없으면 .avt-df 기본 아이콘으로 폴백) */
-.pname { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.pname > b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kbadge { flex: none; font-size: 9.5px; font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: 4px; letter-spacing: .3px; }
-.kbadge.dev { color: var(--dev-fg); background: var(--dev-bg); }
-.kbadge.ops { color: var(--ops-fg); background: var(--ops-bg); }
+.wl-view .pname { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.wl-view .pname > b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wl-view .kbadge { flex: none; font-size: 9.5px; font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: 4px; letter-spacing: .3px; }
+.wl-view .kbadge.dev { color: var(--dev-fg); background: var(--dev-bg); }
+.wl-view .kbadge.ops { color: var(--ops-fg); background: var(--ops-bg); }
 
-.wbars { display: flex; gap: 18px; min-width: 0; }
-.wbars > .wside { flex: 1; min-width: 0; }        /* ProgressBar(.pbar-wrap) 또는 헤더 라벨 */
+.wl-view .wbars { display: flex; gap: 18px; min-width: 0; }
+.wl-view .wbars > .wside { flex: 1; min-width: 0; }        /* ProgressBar(.pbar-wrap) 또는 헤더 라벨 */
 /* 집계 조회 실패 — 0 으로 위장하지 않고 실패임을 드러낸다(원인 파악/재시도 유도) */
-.wbars.wl-fail { align-items: center; gap: 8px; }
-.wl-fail-t { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--today);
-  background: var(--panel-2); border: 1px dashed var(--today); border-radius: 8px; padding: 4px 10px; }
-.wl-retry { flex: none; border: 1px solid var(--today); border-radius: 7px; padding: 4px 9px;
+.wl-view .wbars.wl-fail { align-items: center; gap: 8px; }
+.wl-view .wl-fail-t { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--today);
+  background: var(--panel-2); border: 1px dashed var(--today); border-radius: 5px; padding: 4px 10px; }
+.wl-view .wl-retry { flex: none; border: 1px solid var(--today); border-radius: 5px; padding: 4px 9px;
   background: color-mix(in srgb, var(--today) 10%, var(--panel)); color: var(--today);
-  font-size: 11px; font-weight: 700; cursor: pointer; }
-.wl-retry:hover { background: color-mix(in srgb, var(--today) 18%, var(--panel)); }
+  font-size: 11px; font-weight: 700; cursor: pointer;
+  min-height: 26px; }
+.wl-view .wl-retry:hover { background: color-mix(in srgb, var(--today) 18%, var(--panel)); }
 /* 통계 도착 전 — 사람 by 사람 로딩 중이라는 자리표시(막대 영역에 옅게) */
-.wbars.wl-pending { align-items: center; }
-.wl-pending-t { flex: 1; font-size: 11.5px; color: var(--muted-2);
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px;
-  animation: wl-pulse 1.3s ease-in-out infinite; }
-@keyframes wl-pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+.wl-view .wbars.wl-pending { align-items: center; }
+.wl-view .wl-pending-t { flex: 1; font-size: 11.5px; color: var(--muted-2);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px; padding: 4px 10px;
+  animation: none; }
 /* 범례 스와치 — 단색=진행 중, 사선=할당됨(미착수). 색(hue)은 타입이므로 여기선 중립 회색으로 형태만 안내 */
-.wl-legend .sw.solid-sw { background: var(--muted); }
-.wl-legend .sw.hatch { border: 1px solid var(--border);
+.wl-view .wl-legend .sw.solid-sw { background: var(--muted); }
+.wl-view .wl-legend .sw.hatch { border: 1px solid var(--border);
   background: repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 5px), var(--panel-2); }
 
 /* 모듈 평균 — 헤더행 평균 수치 + 세로 가이드선. 선은 progress bar 채움(.pbar-seg) 뒤에 둔다
  * (빈 트랙 위에는 보이고, 색 채움은 선을 덮음 → 막대를 가로지르지 않게). 라벨(.mavg-num)은 맨 위. */
-.wl-people { position: relative; }
-.mavg-line { position: absolute; bottom: 0; width: 2px; z-index: 1; background: var(--muted); opacity: .55; pointer-events: none; }
-.mavg-line::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--muted); }
-.prow .pbar-seg { position: relative; z-index: 2; }   /* 채움이 가이드선을 덮음 */
-.mavg-num { position: absolute; transform: translate(-50%, -50%); z-index: 4; font-size: 10.5px; font-weight: 700; color: var(--text);
+.wl-view .wl-people { position: relative; }
+.wl-view .mavg-line { position: absolute; bottom: 0; width: 2px; z-index: 1; background: var(--muted); opacity: .55; pointer-events: none; }
+.wl-view .mavg-line::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--muted); }
+.wl-view .prow .pbar-seg { position: relative; z-index: 2; }   /* 채움이 가이드선을 덮음 */
+.wl-view .mavg-num { position: absolute; transform: translate(-50%, -50%); z-index: 4; font-size: 10.5px; font-weight: 700; color: var(--text);
             background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; white-space: nowrap; pointer-events: none; }
 
-.plus { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); border-radius: 7px; width: 30px; height: 26px; cursor: pointer; font-size: 14px; }
-.plus:hover { color: var(--text); }
+.wl-view .plus { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); border-radius: 5px; width: 30px; height: 26px; cursor: pointer; font-size: 14px; }
+.wl-view .plus:hover { color: var(--text); }
 /* position/z-index: 모듈 평균 세로선(.mavg-line, z-index:3)이 펼친 상세 위로 지나가지 않게 덮는다 */
-.act { position: relative; z-index: 5; padding: 8px 16px 14px 40px; background: var(--panel-2); border-top: 1px solid var(--border); }
-.tcols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }   /* [진행중·할당됨] | [완료] */
-@media (max-width: 760px) { .tcols { grid-template-columns: 1fr; } }
-.wtk.todo { border-top-style: dashed; }   /* 할당됨(미착수) = 점선 구분 */
-.sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
-.sec-t > b { color: var(--text); }
+.wl-view .act { position: relative; z-index: 5; padding: 10px 16px 14px 32px; background: var(--panel-3); border-top: 1px solid var(--border); }
+.wl-view .tcols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }   /* [진행중·할당됨] | [완료] */
+@media (max-width: 760px) { .wl-view .tcols { grid-template-columns: 1fr; } }
+.wl-view .wtk.todo { border-top-style: dashed; }   /* 할당됨(미착수) = 점선 구분 */
+.wl-view .sec-t { font-size: 11px; color: var(--muted); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .3px; }
+.wl-view .sec-t > b { color: var(--text); }
 /* 합친 열 안의 소구분 라벨(진행 중 / 할당됨) */
-.sub-lbl { font-size: 11px; color: var(--muted); font-weight: 700; margin: 12px 0 5px; letter-spacing: .2px; }
-.sub-lbl:first-of-type { margin-top: 2px; }
-.sub-lbl.todo { color: var(--muted); }
-.sub-lbl > b { color: var(--text); }
+.wl-view .sub-lbl { font-size: 11px; color: var(--muted); font-weight: 700; margin: 12px 0 5px; letter-spacing: .2px; }
+.wl-view .sub-lbl:first-of-type { margin-top: 2px; }
+.wl-view .sub-lbl.todo { color: var(--muted); }
+.wl-view .sub-lbl > b { color: var(--text); }
 
 /* 티켓 행 — 표 형태(라운딩/간격 없이 구분선으로만). 행 전체가 클릭 대상(.tkt → 인앱 다이얼로그).
    컬럼: [타입뱃지][번호][제목(가변)][일정 뱃지] */
-.wtk { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
+.wl-view .wtk { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
        padding: 6px 4px; border-top: 1px solid var(--border); cursor: pointer;
        text-decoration: none; color: inherit; }
-.sub-lbl + .wtk, .sec-t + .wtk { border-top: none; }   /* 라벨 바로 아래 첫 행은 구분선 생략 */
-.wtk:hover { background: rgba(127, 127, 127, .06); text-decoration: none; }
-.wtk:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.wtk .ky { color: var(--accent); font-weight: 700; font-size: 11.5px;
+.wl-view .sub-lbl + .wtk,
+.wl-view .sec-t + .wtk { border-top: none; }   /* 라벨 바로 아래 첫 행은 구분선 생략 */
+.wl-view .wtk:hover { background: rgba(127, 127, 127, .06); text-decoration: none; }
+.wl-view .wtk:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.wl-view .wtk .ky { color: var(--accent); font-weight: 700; font-size: 11.5px;
            font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: .2px; }
-.wtk.done { opacity: .85; }
-.wtk .tbadge { justify-self: start; }
-.wtk .ky { white-space: nowrap; }
-.wl-view .ticket-update-row.update-unread { box-shadow: inset 2px 0 var(--accent), inset 0 -1px var(--accent); }
+.wl-view .wtk.done { opacity: .85; }
+.wl-view .wtk .tbadge { justify-self: start; }
+.wl-view .wtk .ky { white-space: nowrap; }
+.wl-view .ticket-update-row.update-unread { box-shadow: inset 2px 0 var(--info), inset 0 -1px var(--info); }
 .wl-view .ticket-update-row.update-unread :is(.ky,.sm,.wl-risk-key,.wl-risk-title) { font-weight: 800; }
 .wl-view .ticket-update-row .tc-update-mark { position: static; width: 17px; height: 17px; margin-right: 4px; vertical-align: middle; }
 .wl-view .ticket-update-row .tc-update-mark svg { width: 12px; height: 12px; }
-.wtk .sm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-.wtk .sched { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; font-variant-numeric: tabular-nums; }
+.wl-view .wtk .sm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wl-view .wtk .sched { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; font-variant-numeric: tabular-nums; }
 
 /* 일정 뱃지 (Due / Finished) + 마감 임박도 칩(D-day) */
-.dbadge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 5px;
+.wl-view .dbadge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 5px;
           border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
-.dbadge.nodue { font-style: italic; opacity: .85; }
-.dbadge.fin { color: var(--st-done); border-color: var(--st-done); background: transparent; }
-.dchip { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 4px;
+.wl-view .dbadge.nodue { font-style: italic; opacity: .85; }
+.wl-view .dbadge.fin { color: var(--st-done); border-color: var(--st-done); background: transparent; }
+.wl-view .dchip { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 4px;
          font-size: 10.5px; font-weight: 800; line-height: 15px; white-space: nowrap; border: 1px solid currentColor; }
-.dchip.warn { color: var(--warn); background: var(--warn-bg); }
-.dchip.danger { color: var(--danger); background: var(--danger-bg); }
-.dbadge .ic { width: 12px; height: 12px; flex: none; }
-.dchip .ic { width: 10px; height: 10px; flex: none; }
+.wl-view .dchip.warn { color: var(--warn); background: var(--warn-bg); }
+.wl-view .dchip.danger { color: var(--danger); background: var(--danger-bg); }
+.wl-view .dbadge .ic { width: 12px; height: 12px; flex: none; }
+.wl-view .dchip .ic { width: 10px; height: 10px; flex: none; }
 
 /* ── 상세: Epic 분포 막대 + 3컬럼(할당됨 / 진행 중 / 최근 완료) ────────────── */
 /* 분포를 목록보다 위에 둔다 — "이 사람이 지금 어느 Epic 에 매여 있나"가 먼저 읽혀야 한다. */
-.wepic { margin: 2px 0 14px; padding: 10px 12px; background: var(--panel-2);
-  border: 1px solid var(--border); border-radius: 9px; }
-.wepic-h { display: flex; align-items: baseline; gap: 7px; font-size: 11px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .3px; margin-bottom: 7px; }
-.wepic-h > b { color: var(--text); font-size: 12.5px; }
-.wepic-h .mini { text-transform: none; letter-spacing: 0; font-size: 10.5px; }
-.wepic-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
-.wepic-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted);
+.wl-view .wepic { margin: 2px 0 12px; padding: 10px 12px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px; }
+.wl-view .wepic-h { display: flex; align-items: baseline; gap: 7px; font-size: 11px; color: var(--muted);
+  text-transform: none; letter-spacing: 0; margin-bottom: 7px; }
+.wl-view .wepic-h > b { color: var(--text); font-size: 12.5px; }
+.wl-view .wepic-h .mini { text-transform: none; letter-spacing: 0; font-size: 10.5px; }
+.wl-view .wepic-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
+.wl-view .wepic-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted);
   max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wepic-i > i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
-.wepic-i > b { color: var(--text); font-variant-numeric: tabular-nums; }
-.wepic-i.none > i { background: none !important; border: 1px dashed var(--border-hi); }
+.wl-view .wepic-i > i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.wl-view .wepic-i > b { color: var(--text); font-variant-numeric: tabular-nums; }
+.wl-view .wepic-i.none > i { background: none !important; border: 1px dashed var(--border-hi); }
 
 /* 3컬럼 — 상태 흐름 순서. 좁아지면 2 → 1 열로 접힌다.
    ★ 각 컬럼은 **자기 영역(패널)**을 가진다. 라벨만으로 나누면 컬럼 높이가 제각각일 때
    (완료 3건 vs 진행중 15건) 경계가 사라져 어느 열의 행인지 눈으로 안 잡힌다.
    상태색은 헤더에 진하게, 본문에는 아주 옅게만 — 행 안의 색(타입 뱃지·마감 칩)을 이기면 안 된다. */
-.tcols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
-@media (max-width: 1100px) { .tcols3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 700px) { .tcols3 { grid-template-columns: 1fr; } }
+.wl-view .tcols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1100px) { .wl-view .tcols3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .wl-view .tcols3 { grid-template-columns: 1fr; } }
 
-.tcol { min-width: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
-  background: var(--panel); --tc: var(--muted-2); }
-.tcol.c-open { --tc: var(--st-todo); }
-.tcol.c-inProgress { --tc: var(--st-prog); }
-.tcol.c-done7d { --tc: var(--st-done); }
+.wl-view .tcol { min-width: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  background: var(--panel-3); --tc: var(--muted-2); }
+.wl-view .tcol.c-open { --tc: var(--st-todo); }
+.wl-view .tcol.c-inProgress { --tc: var(--st-prog); }
+.wl-view .tcol.c-done7d { --tc: var(--st-done); }
 /* 본문 옅은 틴트 — 열끼리 구분은 되되 글자 대비는 유지되는 정도 */
-.tcol { background: color-mix(in srgb, var(--tc) 4%, var(--panel)); }
+.wl-view .tcol { background: var(--panel-3);
+  border-radius: 6px; }
 /* 헤더 — 상태색 띠 + 좌측 굵은 마커. 컬럼이 비어도 영역이 남는다 */
-.tcol > .sec-t { margin: 0; padding: 7px 10px 7px 9px; font-size: 11px; font-weight: 700;
-  color: var(--tc); letter-spacing: .3px; border-bottom: 1px solid var(--border);
+.wl-view .tcol > .sec-t { margin: 0; padding: 7px 10px 7px 9px; font-size: 12px; font-weight: 700;
+  color: var(--text); letter-spacing: 0; border-bottom: 1px solid var(--border);
   border-left: 3px solid var(--tc);
-  background: color-mix(in srgb, var(--tc) 13%, var(--panel)); }
-.tcol > .sec-t > b { color: var(--text); margin-left: 4px; font-variant-numeric: tabular-nums; }
-.tcol-body { padding: 2px 10px 8px; min-height: 46px; }
-.tcol .wtk { padding: 6px 2px; }
-.tcol .wtk:first-child { border-top: none; }
-.tcol .muted.mini { padding: 8px 2px; display: block; }
+  background: var(--panel-2); }
+.wl-view .tcol > .sec-t > b { color: var(--text); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.wl-view .tcol-body { padding: 4px 8px 8px; min-height: 46px; }
+.wl-view .tcol .wtk { padding: 6px;
+  background: var(--panel); }
+.wl-view .tcol .wtk:first-child { border-top: none; }
+.wl-view .tcol .muted.mini { padding: 8px 2px; display: block; }
 
 /* 행에 붙는 Epic 뱃지 — **내 Task(.mt-epic)와 동일 디자인**: 채운 시그니처색 배경 + 굵은 흰 글자.
    같은 Epic 은 어디서나 같은 색(categoryColor). 분포 막대 세그먼트도 같은 색이라 눈으로 이어진다. */
-.ebadge { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.wl-view .ebadge { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-size: 9.5px; font-weight: 700; letter-spacing: .1px; line-height: 15px;
-  color: #fff; background: var(--sig, var(--ty-epic)); border: 0; padding: 0 7px; border-radius: 3px; }
-/* 어두운 테마 팔레트는 밝아서 흰 글자가 안 읽힌다 — 글자를 어둡게(내 Task 와 동일) */
-:root[data-theme="dark"] .ebadge { color: #0b1015; }
-.ebadge.voc { --sig: var(--ty-story); }
+  color: var(--text); background: color-mix(in srgb, var(--sig, var(--ty-epic)) 10%, var(--panel));
+  border: 0; border-left: 3px solid var(--sig, var(--ty-epic)); padding: 0 7px; border-radius: 3px; }
+/* 범주색은 레일과 옅은 면으로 유지하고 글자는 공통 고대비 토큰을 사용한다. */
+.wl-view .ebadge.voc { --sig: var(--ty-story); }
 /* 'Epic 없음' 은 뱃지가 아니라 없음의 표시 — 채우지 않고 점선(내 Task .mt-epic.none 과 동일) */
-.ebadge.none { color: var(--muted-2); background: none; font-weight: 600;
+.wl-view .ebadge.none { color: var(--muted-2); background: none; font-weight: 600;
   border: 1px dashed var(--border-hi); padding: 0 6px; line-height: 13px; }
 
 /* 하단 중앙 플로팅 옵션 바 — '내 Task'(.mt-bar.float)와 같은 자리·모양.
    완료 성과 계산식 + 모듈 내 인력 정렬 기준을 여기서 고른다. */
-.wl-bar.float { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 50;
+.wl-view .wl-bar.float { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 50;
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap; max-width: calc(100vw - 32px);
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 8px 14px; box-shadow: var(--shadow); }
-:root[data-theme="dark"] .wl-bar.float { background: color-mix(in srgb, var(--panel) 92%, #000); }
-.wl-opt { display: inline-flex; align-items: center; gap: 8px; }
-.wl-opt-l { font-size: 10px; font-weight: 700; letter-spacing: .4px; color: var(--muted-2);
+:root[data-theme="dark"] .wl-view .wl-bar.float { background: color-mix(in srgb, var(--panel) 92%, #000); }
+.wl-view .wl-opt { display: inline-flex; align-items: center; gap: 8px; }
+.wl-view .wl-opt-l { font-size: 10px; font-weight: 700; letter-spacing: .4px; color: var(--muted-2);
   text-transform: none; white-space: nowrap; }
 /* 모듈 선택 드롭다운 — 세그먼트 버튼과 톤을 맞춘다 */
-.wl-modsel { font: inherit; font-size: 12px; font-weight: 600; color: var(--text);
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+.wl-view .wl-modsel { font: inherit; font-size: 12px; font-weight: 600; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px;
   padding: 5px 26px 5px 10px; cursor: pointer; max-width: 200px;
   appearance: none; -webkit-appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 9px center; }
-.wl-modsel:hover { border-color: var(--accent); }
-@media (max-width: 640px) { .wl-bar.float { gap: 8px 12px; padding: 7px 10px; } }
+  background-repeat: no-repeat; background-position: right 9px center;
+  min-height: 30px; }
+.wl-view .wl-modsel:hover { border-color: var(--accent); }
+@media (max-width: 640px) { .wl-view .wl-bar.float { gap: 8px 12px; padding: 7px 10px; } }
 .wl-view { padding-bottom: 20px; }
 
-.mini { font-size: 11px; }
+.wl-view .mini { font-size: 11px; }
 
 /* ══ 그라파나풍 단일 대시보드 — 평평한 패널(라운딩 최소·얇은 경계·조용한 헤더) ══ */
-.wl-ctl { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.wl-ctl .wl-modsel { max-width: 240px; font-size: 13px; font-weight: 700; padding: 6px 28px 6px 11px; }
+.wl-view .wl-ctl { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.wl-view .wl-ctl .wl-modsel { max-width: 240px; font-size: 13px; font-weight: 700; padding: 6px 28px 6px 11px; }
 
 /* Stat 타일 — 평평한 stat 패널(큰 숫자 + 작은 라벨) */
-.wl-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 8px; margin-bottom: 10px; }
-.wl-tile { background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 9px 12px; }
-.wl-tile-v { font-size: 24px; font-weight: 800; line-height: 1.05; color: var(--text); font-variant-numeric: tabular-nums; }
-.wl-tile-l { margin-top: 3px; font-size: 10.5px; color: var(--muted); }
-.wl-tile.warn .wl-tile-v { color: var(--danger); }
+.wl-view .wl-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.wl-view .wl-tile { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.wl-view .wl-tile-v { font-size: 22px; font-weight: 650; line-height: 1.05; color: var(--text); font-variant-numeric: tabular-nums; }
+.wl-view .wl-tile-l { margin-top: 3px; font-size: 12px; color: var(--muted); }
+.wl-view .wl-tile.warn .wl-tile-v { color: var(--danger); }
 
 /* 패널 그리드 (12칼럼) */
-.wl-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 8px; align-items: start; }
-.wl-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.wl-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; min-width: 0;
-  display: flex; flex-direction: column; }
-.wl-grid > .span12 { grid-column: span 12; }
-.wl-grid > .span8 { grid-column: span 8; }
-.wl-grid > .span6 { grid-column: span 6; }
-.wl-grid > .span4 { grid-column: span 4; }
-@media (max-width: 980px) { .wl-grid > .span8, .wl-grid > .span6, .wl-grid > .span4 { grid-column: span 12; } }
+.wl-view .wl-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; align-items: start; }
+.wl-view .wl-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.wl-view .wl-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; min-width: 0;
+  display: flex; flex-direction: column;
+  border-color: var(--border-hi); }
+.wl-view .wl-grid > .span12 { grid-column: span 12; }
+.wl-view .wl-grid > .span8 { grid-column: span 8; }
+.wl-view .wl-grid > .span6 { grid-column: span 6; }
+.wl-view .wl-grid > .span4 { grid-column: span 4; }
+@media (max-width: 980px) { .wl-view .wl-grid > .span8,
+.wl-view .wl-grid > .span6,
+.wl-view .wl-grid > .span4 { grid-column: span 12; } }
 /* 헤더 — 얇고 조용한 그라파나 패널 타이틀 바 */
-.wl-panel-h { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 6px 11px;
-  border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
-.wl-panel-h > b { font-size: 12px; font-weight: 700; color: var(--text); }
-.wl-panel-b { padding: 11px 12px; min-width: 0; }
+.wl-view .wl-panel-h { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);
+  background: var(--panel-2); }
+.wl-view .wl-panel-h > b { font-size: 14px; font-weight: 650; color: var(--text); }
+.wl-view .wl-panel-b { padding: 12px; min-width: 0; }
 /* 개인별 워크로드 본문 — 행이 자체 패딩 → 패딩 0 + 평균선 기준(position) */
-.wl-panel-b.wl-people { position: relative; padding: 0; }
+.wl-view .wl-panel-b.wl-people { position: relative; padding: 0; }
 /* 개인별 워크로드 전용 옵션 툴바(패널 안, 헤더 아래) */
-.wl-subopts { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; padding: 8px 11px;
+.wl-view .wl-subopts { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; padding: 8px 11px;
   border-bottom: 1px solid var(--border); background: var(--panel-2); }
 /* 패널 헤더 안 인라인 레전드(Task유형/Epic 색) */
-.wl-hlg { display: inline-flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; color: var(--muted); }
-.wl-hlg-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wl-hlg-i i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
-.wl-hlg-i .sw { width: 11px; height: 11px; border-radius: 2px; }
-.wl-hlg .sw.task { background: var(--wl-task); } .wl-hlg .sw.subtask { background: var(--wl-subtask); } .wl-hlg .sw.voc { background: var(--wl-voc); }
+.wl-view .wl-hlg { display: inline-flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; color: var(--muted); }
+.wl-view .wl-hlg-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-view .wl-hlg-i i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.wl-view .wl-hlg-i .sw { width: 11px; height: 11px; border-radius: 2px; }
+.wl-view .wl-hlg .sw.task { background: var(--wl-task); } .wl-view .wl-hlg .sw.subtask { background: var(--wl-subtask); } .wl-view .wl-hlg .sw.voc { background: var(--wl-voc); }
 
-.wl-stats-wait { padding: 18px; text-align: center; font-size: 13px; }
-.wl-stat-t { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 9px; display: flex; align-items: baseline; gap: 8px; }
-.wl-stat-t .mini { font-weight: 400; }
+.wl-view .wl-stats-wait { padding: 18px; text-align: center; font-size: 13px; }
+.wl-view .wl-stat-t { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 9px; display: flex; align-items: baseline; gap: 8px; }
+.wl-view .wl-stat-t .mini { font-weight: 400; }
 /* ① 모듈→Epic 범례 */
-.wl-epic-lg { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 9px; }
-.wl-epic-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); max-width: 100%; }
-.wl-epic-i i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-.wl-epic-i b { color: var(--muted); font-variant-numeric: tabular-nums; }
-.wl-epic-i.voc b, .wl-epic-i.none b { color: var(--muted-2); }
+.wl-view .wl-epic-lg { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 9px; }
+.wl-view .wl-epic-i { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); max-width: 100%; }
+.wl-view .wl-epic-i i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.wl-view .wl-epic-i b { color: var(--muted); font-variant-numeric: tabular-nums; }
+.wl-view .wl-epic-i.voc b,
+.wl-view .wl-epic-i.none b { color: var(--muted-2); }
 /* ② Epic→인력 지분 */
 /* Epic별 인력 지분 — 각 Epic 항목 사이 여백 + 연한 수평 구분선 */
-.wl-epr { margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-.wl-epr:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
-.wl-epr-h { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.wl-view .wl-epr { margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.wl-view .wl-epr:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
+.wl-view .wl-epr-h { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
 /* [색상박스] 에픽 이름 — 박스는 그 Epic 시그니처색 네모, 이름은 평문 */
-.wl-epr-sw { width: 12px; height: 12px; border-radius: 3px; flex: none;
+.wl-view .wl-epr-sw { width: 12px; height: 12px; border-radius: 3px; flex: none;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 14%, transparent); }
-.wl-epr-name { min-width: 0; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.wl-view .wl-epr-name { min-width: 0; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; font-weight: 700; color: var(--text); }
-.wl-warn-chip { font-size: 10px; font-weight: 700; color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent);
+.wl-view .wl-warn-chip { font-size: 10px; font-weight: 700; color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-radius: 999px; padding: 2px 7px; white-space: nowrap; }
-.wl-epr-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; }
-.wl-epr-p { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
-.wl-epr-p b { color: var(--text); font-variant-numeric: tabular-nums; }
+.wl-view .wl-epr-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; }
+.wl-view .wl-epr-p { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.wl-view .wl-epr-p b { color: var(--text); font-variant-numeric: tabular-nums; }
 /* ③ 매니저 모니터링 그리드 */
-.wl-mon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-.wl-mon { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; background: var(--panel); }
-.wl-mon-t { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 7px; display: flex; align-items: baseline; gap: 6px; }
-.wl-mon-t .mini { font-weight: 400; }
-.wl-mon-big { font-size: 13px; color: var(--text); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.wl-mon-big b { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.wl-mon-big.warn b { color: var(--danger); }
+.wl-view .wl-mon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.wl-view .wl-mon { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: var(--panel); }
+.wl-view .wl-mon-t { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 7px; display: flex; align-items: baseline; gap: 6px; }
+.wl-view .wl-mon-t .mini { font-weight: 400; }
+.wl-view .wl-mon-big { font-size: 13px; color: var(--text); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.wl-view .wl-mon-big b { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.wl-view .wl-mon-big.warn b { color: var(--danger); }
 /* 목록(버스팩터·Epic분산 등) — 항목 사이 연한 수평 구분선(간격은 최소) */
-.wl-mon-list { display: flex; flex-direction: column; margin-top: 6px; }
-.wl-mon-row { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text);
+.wl-view .wl-mon-list { display: flex; flex-direction: column; margin-top: 6px; }
+.wl-view .wl-mon-row { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text);
   padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
-.wl-mon-row:first-child { border-top: 0; padding-top: 1px; }
-.wl-mon-row i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
-.wl-mon-row b { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
-.wl-mon-row.warn b { color: var(--danger); }
-.wl-mon-row b.voc { color: var(--wl-voc); }   /* 'VoC + N Epic' — VoC 색으로 강조 */
+.wl-view .wl-mon-row:first-child { border-top: 0; padding-top: 1px; }
+.wl-view .wl-mon-row i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.wl-view .wl-mon-row b { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.wl-view .wl-mon-row.warn b { color: var(--danger); }
+.wl-view .wl-mon-row b.voc { color: var(--wl-voc); }   /* 'VoC + N Epic' — VoC 색으로 강조 */
 
 /* 마감 리스크 행 — 티켓번호 | 제목 | Epic뱃지 | D-day. 좁으면 Epic뱃지 → 제목 순으로 생략(컨테이너 쿼리). */
-.wl-risk-list { container-type: inline-size; display: flex; flex-direction: column; margin-top: 6px; }
-.wl-risk-row { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11.5px; cursor: pointer;
+.wl-view .wl-risk-list { container-type: inline-size; display: flex; flex-direction: column; margin-top: 6px; }
+.wl-view .wl-risk-row { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11.5px; cursor: pointer;
   padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
-.wl-risk-row:first-child { border-top: 0; padding-top: 1px; }
-.wl-risk-row:hover .wl-risk-title { color: var(--accent); }
-.wl-risk-key { flex: none; color: var(--accent); font-weight: 700; font-size: 11px;
+.wl-view .wl-risk-row:first-child { border-top: 0; padding-top: 1px; }
+.wl-view .wl-risk-row:hover .wl-risk-title { color: var(--accent); }
+.wl-view .wl-risk-key { flex: none; color: var(--info); font-weight: 700; font-size: 11px;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
-.wl-risk-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-/* 리스크 소속 뱃지 — 내 Task(.mt-epic)와 동일한 사각(3px) 솔리드로 통일(둥근 알약 폐기) */
-.wl-risk-epic { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.wl-view .wl-risk-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+/* 리스크 소속 뱃지 — 범주색 레일과 중립 글자로 테마별 가독성을 유지 */
+.wl-view .wl-risk-epic { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 9.5px; font-weight: 700; letter-spacing: .1px; line-height: 15px; padding: 0 7px;
-  border-radius: 3px; color: #fff; background: var(--ec, var(--accent)); }
-:root[data-theme="dark"] .wl-risk-epic { color: #0b1015; }
-.wl-risk-dd { flex: none; margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--danger); }
-.wl-risk-dd.warn { color: var(--today); }
-.wl-risk-dd.danger { color: var(--danger); }
+  border-radius: 3px; color: var(--text);
+  background: color-mix(in srgb, var(--ec, var(--accent)) 10%, var(--panel));
+  border-left: 3px solid var(--ec, var(--accent)); }
+.wl-view .wl-risk-dd { flex: none; margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--danger); }
+.wl-view .wl-risk-dd.warn { color: var(--today); }
+.wl-view .wl-risk-dd.danger { color: var(--danger); }
 /* 좁아지면: ① Epic 뱃지부터 숨기고 ② 그래도 좁으면 제목까지 숨긴다(번호·D-day 는 항상) */
-@container (max-width: 250px) { .wl-risk-epic { display: none; } }
-@container (max-width: 165px) { .wl-risk-title { display: none; } }
-.wl-mon-row.tkt { cursor: pointer; }
-.wl-mon-row.tkt:hover { color: var(--accent); }
-.ok { color: var(--good); font-weight: 600; }
+@container (max-width: 250px) { .wl-view .wl-risk-epic { display: none; } }
+@container (max-width: 165px) { .wl-view .wl-risk-title { display: none; } }
+.wl-view .wl-mon-row.tkt { cursor: pointer; }
+.wl-view .wl-mon-row.tkt:hover { color: var(--accent); }
+.wl-view .ok { color: var(--good); font-weight: 600; }
 
 /* 사용자 VoC 뱃지 — **내 Task(.mt-voc)와 동일한 생김새로 통일**: 외곽선 컨테이너 +
    head(VoC)는 솔리드, 분류 세그는 연한 틴트 + 구분선. 파싱 규칙도 voc.js 공용. */
-.ebadge.voc, .wl-risk-epic.voc { display: inline-flex; align-items: stretch; padding: 0; overflow: hidden;
+.wl-view .ebadge.voc,
+.wl-view .wl-risk-epic.voc { display: inline-flex; align-items: stretch; padding: 0; overflow: hidden;
   background: none; color: var(--text); font-size: 9.5px; font-weight: 700; line-height: 15px;
   border: 1px solid color-mix(in srgb, var(--ty-story) 55%, var(--border)); border-radius: 3px; }
-.ebadge.voc .vseg, .wl-risk-epic.voc .vseg { padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ebadge.voc .vseg.head, .wl-risk-epic.voc .vseg.head { background: var(--ty-story); color: #fff; flex: none; }
-:root[data-theme="dark"] .ebadge.voc .vseg.head,
-:root[data-theme="dark"] .wl-risk-epic.voc .vseg.head { color: #0b1015; }
-.ebadge.voc .vseg:not(.head), .wl-risk-epic.voc .vseg:not(.head) {
+.wl-view .ebadge.voc .vseg,
+.wl-view .wl-risk-epic.voc .vseg { padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.wl-view .ebadge.voc .vseg.head,
+.wl-view .wl-risk-epic.voc .vseg.head { background: var(--ty-story); color: #fff; flex: none; }
+:root[data-theme="dark"] .wl-view .ebadge.voc .vseg.head,
+:root[data-theme="dark"] .wl-view .wl-risk-epic.voc .vseg.head { color: #0b1015; }
+.wl-view .ebadge.voc .vseg:not(.head),
+.wl-view .wl-risk-epic.voc .vseg:not(.head) {
   background: color-mix(in srgb, var(--ty-story) 13%, transparent);
   color: var(--text); border-left: 1px solid color-mix(in srgb, var(--ty-story) 40%, var(--border)); }

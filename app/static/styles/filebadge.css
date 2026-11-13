@@ -18,11 +18,11 @@
 
 .file-badge, .fchip {
   display: inline-flex; align-items: center; gap: 6px; vertical-align: baseline;
-  max-width: 320px; padding: 2px 9px 2px 6px; border-radius: 7px;
+  max-width: 320px; padding: 2px 9px 2px 6px; border-radius: var(--radius-control, 5px);
   text-decoration: none; color: var(--text);
-  background: var(--panel); border: 1px solid var(--border);
+  background: var(--panel-2); border: 1px solid var(--border);
   font-family: ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
-  font-size: 11.5px; line-height: 17px;
+  font-size: 12px; line-height: 18px;
 }
 .file-badge:hover, .fchip:hover {
   border-color: color-mix(in srgb, var(--fb, var(--accent)) 45%, var(--border));
@@ -35,7 +35,7 @@
 .file-badge > .fb-n, .fchip > .fchip-n { flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 시각·용량 같은 곁다리는 이름보다 물러나야 한다 */
-.fchip > .fchip-m { flex: none; display: inline-flex; gap: 4px; font-size: 10px;
+.fchip > .fchip-m { flex: none; display: inline-flex; gap: 4px; font-size: 11px;
   color: var(--muted-2); font-variant-numeric: tabular-nums; }
 .fchip-m > i { font-style: normal; }
 /* 칩은 **고정폭**이다 — 목록에서 이름 끝·메타 시작이 줄마다 흔들리면 세로로 훑을 수 없다.
@@ -62,8 +62,7 @@
 /* ── 종류별 아이콘(mask) + 색 ───────────────────────────────────────────────
    기본은 '문서' 모양. 아래에서 확장자별로 갈아 끼운다. */
 .file-badge, .fchip {
-  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/><path d="M14 2v6h6" fill="none" stroke="white" stroke-width="1.6"/></svg>');
-}
+  --fb-ic: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/><path d="M14 2v6h6" fill="none" stroke="white" stroke-width="1.6"/></svg>'); border-radius: var(--radius-control, 5px); font-size: 12px; line-height: 18px; background: var(--panel-2); }
 /* 코드 — </> */
 :is(.file-badge, .fchip)[data-ext="js"], :is(.file-badge, .fchip)[data-ext="mjs"], :is(.file-badge, .fchip)[data-ext="cjs"],
 :is(.file-badge, .fchip)[data-ext="ts"], :is(.file-badge, .fchip)[data-ext="tsx"], :is(.file-badge, .fchip)[data-ext="jsx"],

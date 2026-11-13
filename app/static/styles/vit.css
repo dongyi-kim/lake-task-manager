@@ -1,166 +1,181 @@
 /* vit.css — 현안(PMO_VIT) 화면 고유 레이아웃 (행 그리드·진척바·상태카운트·[자세히] 트리·코멘트).
  * 공통 색/컴포넌트는 tokens.css/components.css. updated: 2026-07-08 */
 /* '완료 작업 안 보기' 토글은 우측하단 플로팅(.fab, base.css)으로 이동됨 */
-.vgroup { margin-bottom: 18px; }
-.vg-head { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; }
-.vg-head .dot { width: 12px; height: 12px; border-radius: 2px; }
-.vg-head b { font-size: 15px; } .vg-head .c { color: var(--muted); font-size: 12px; }
+.vit-view .vgroup { margin-bottom: 18px; }
+.vit-view .vg-head { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; }
+.vit-view .vg-head .dot { width: 12px; height: 12px; border-radius: 2px; }
+.vit-view .vg-head b { font-size: 15px; } .vit-view .vg-head .c { color: var(--muted); font-size: 12px; }
 /* 모듈별 현안 상태 집계 — 전체/진행중/완료 */
-.vg-head .mcounts { color: var(--muted); font-size: 11.5px; font-weight: 400; margin-left: 2px; }
-.vg-head .mcounts b { font-size: 12px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-.vg-head .mcounts b.t { color: var(--st-todo); } .vg-head .mcounts b.p { color: var(--st-prog); } .vg-head .mcounts b.d { color: var(--st-done); }
+.vit-view .vg-head .mcounts { color: var(--muted); font-size: 11.5px; font-weight: 400; margin-left: 2px; }
+.vit-view .vg-head .mcounts b { font-size: 12px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.vit-view .vg-head .mcounts b.t { color: var(--st-todo); } .vit-view .vg-head .mcounts b.p { color: var(--st-prog); } .vit-view .vg-head .mcounts b.d { color: var(--st-done); }
 
 /* 각진(워크로드식) 테마 — 이 화면 안의 뱃지·칩·pill·버튼을 **전부 반듯한 사각(2px)** 으로.
    .pill/.tbadge 등은 공통 컴포넌트라 .vit-view 로 스코프해 다른 화면(Task·WBS·다이얼로그)엔 영향 없음. */
-.vit-view .pill, .vit-view .tbadge, .vit-view .chip, .vit-view .xbtn,
-.vit-view .mini .act, .vit-view .tcard { border-radius: 2px; }
+.vit-view .pill,
+.vit-view .tbadge,
+.vit-view .chip,
+.vit-view .xbtn,
+.vit-view .mini .act,
+.vit-view .tcard { border-radius: 5px; }
 .vit-view .chip .sw { border-radius: 2px; }
 .vit-view .chip b em.cd { font-style: normal; color: var(--st-done); }   /* 완료 수는 완료색 */
 
 /* ── 데일리미팅 강화 ─────────────────────────────────────────────
    '오늘의 브리핑' 한 줄 요약 바 + 현안 행의 위험/움직임 신호 뱃지. 각진 테마(2px) 유지. */
-.vit-view .brief { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 13px; margin: 10px 0 6px;
-  padding: 8px 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; }
+.vit-view .brief { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin: 10px 0 6px;
+  padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
 .vit-view .brief .bt { font-weight: 700; font-size: 13px; }
 .vit-view .brief .bwin { color: var(--muted); font-size: 11px; }
 .vit-view .brief .bsep { width: 1px; height: 15px; background: var(--border); margin: 0 2px; }
 .vit-view .brief .bi { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: baseline; gap: 4px; }
-.vit-view .brief .bi b { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); }
+.vit-view .brief .bi b { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text); }
 .vit-view .brief .bi.done b { color: var(--done); }
-.vit-view .brief .bi.new b { color: var(--accent); }
+.vit-view .brief .bi.new b { color: var(--info); }
 .vit-view .brief .bi.late b { color: var(--danger); }
 .vit-view .brief .bi.stale b { color: var(--mock); }
 
 /* 위험/움직임 뱃지 — 지연(빨강)·정체(주황)·완료(초록)·신규(파랑). l1 담당자 옆·모듈 헤더에 붙는다. */
 .vit-view .rk { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 2px; flex: 0 0 auto;
   letter-spacing: .2px; white-space: nowrap; border: 1px solid; }
-.vit-view .rk.late  { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.vit-view .rk.late { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .vit-view .rk.stale { color: var(--mock);   border-color: color-mix(in srgb, var(--mock) 48%, transparent);   background: color-mix(in srgb, var(--mock) 13%, transparent); }
-.vit-view .rk.move  { color: var(--done);   border-color: color-mix(in srgb, var(--done) 45%, transparent);   background: color-mix(in srgb, var(--done) 12%, transparent); }
-.vit-view .rk.new   { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.vit-view .rk.move { color: var(--done);   border-color: color-mix(in srgb, var(--done) 45%, transparent);   background: color-mix(in srgb, var(--done) 12%, transparent); }
+.vit-view .rk.new { color: var(--info); border-color: color-mix(in srgb, var(--info) 45%, transparent); background: color-mix(in srgb, var(--info) 10%, transparent); }
 .vit-view .rk.sm { font-size: 9px; padding: 0 5px; font-weight: 600; }
-.vg-head .rk { align-self: center; }
+.vit-view .vg-head .rk { align-self: center; }
 
-.tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
-.vhead, .vrow { display: grid;
+.vit-view .tbl { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  border-color: var(--border-hi); }
+.vit-view .vhead,
+.vit-view .vrow { display: grid;
   grid-template-columns: minmax(240px,1.8fr) minmax(430px,4fr) 64px; gap: 14px; }
-.vhead { padding: 8px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
-.vrow { padding: 11px 16px; border-top: 1px solid var(--border); align-items: start; }
-.vrow:first-child { border-top: none; } .vrow:hover { background: rgba(127,127,127,.035); }
+.vit-view .vhead { padding: 10px 12px; font-size: 12px; color: var(--muted); text-transform: none; letter-spacing: 0; background: var(--panel-2); border-bottom: 1px solid var(--border); }
+.vit-view .vrow { padding: 12px; border-top: 1px solid var(--border); align-items: start; }
+.vit-view .vrow:first-child { border-top: none; } .vit-view .vrow:hover { background: color-mix(in srgb, var(--info) 3%, var(--panel)); }
 
 /* 티켓 컬럼 3줄: [제목(크게)|타입|번호] / [상태|기간상태뱃지|담당자] / [시작|Due] */
-.c-info .l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
-.c-info .l2 { display: flex; align-items: baseline; gap: 7px; margin-bottom: 5px; min-width: 0; cursor: pointer; }
-.c-info .l2:hover .summ { color: var(--accent); }
-.vit-view .ticket-update-row.update-unread { box-shadow: inset 0 -2px var(--accent); }
+.vit-view .c-info .l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
+.vit-view .c-info .l2 { display: flex; align-items: baseline; gap: 7px; margin-bottom: 5px; min-width: 0; cursor: pointer; }
+.vit-view .c-info .l2:hover .summ { color: var(--accent); }
+.vit-view .ticket-update-row.update-unread { box-shadow: inset 0 -2px var(--info); }
 .vit-view .ticket-update-row.update-unread :is(.summ,.sm,.key,.ky,.who,.asg) { font-weight: 800; }
 .vit-view .ticket-update-row .tc-update-mark { position: static; flex: 0 0 auto; width: 17px; height: 17px; align-self: center; }
 .vit-view .ticket-update-row .tc-update-mark svg { width: 12px; height: 12px; }
 .vit-view .ct-tkt .tc-update-mark { margin-right: 4px; }
 /* 제목만 크게 강조 — 타입·번호는 **서로 같은 크기**로 작게(제목의 보조 정보) */
-.c-info .l2 .summ { font-size: 17px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.c-info .l2 .ty { flex: 0 0 auto; font-weight: 700; font-size: 11.5px; }   /* 타입 = 타입색 텍스트(색은 인라인) */
-.c-info .l2 .key { flex: 0 0 auto; color: var(--muted); font-weight: 400; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.vit-view .c-info .l2 .summ { font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 22px; }
+.vit-view .c-info .l2 .ty { flex: 0 0 auto; font-weight: 700; font-size: 11.5px; }   /* 타입 = 타입색 텍스트(색은 인라인) */
+.vit-view .c-info .l2 .key { flex: 0 0 auto; color: var(--muted); font-weight: 400; font-size: 11.5px; font-variant-numeric: tabular-nums; }
 /* 기간상태뱃지 — 마감 있음(D-n)·초과(hot)·지연·정체가 같은 자리에 온다 */
 .vit-view .rk.dday { color: var(--muted); border-color: var(--border-hi); background: var(--panel-2); }
 .vit-view .rk.dday.hot { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.c-info .l1 .who { color: var(--muted); font-size: 11.5px; } .c-info .l1 .who::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
-.c-info .l3 { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 12px; font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }
-.c-info .l3 .dt { display: inline-flex; align-items: center; gap: 4px; }
-.c-info .l3 .dl { color: var(--muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: .3px; }
-.c-info .l3 .overdue { color: var(--danger); font-weight: 700; }
+.vit-view .c-info .l1 .who { color: var(--muted); font-size: 11.5px; } .vit-view .c-info .l1 .who::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
+.vit-view .c-info .l3 { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 12px; font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }
+.vit-view .c-info .l3 .dt { display: inline-flex; align-items: center; gap: 4px; }
+.vit-view .c-info .l3 .dl { color: var(--muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: .3px; }
+.vit-view .c-info .l3 .overdue { color: var(--danger); font-weight: 700; }
 
 /* 직계 하위 티켓 — 컬럼명은 상위 헤더(.ch-head)에, 각 티켓은 구분선으로만 나열(박스·내부헤더 없음).
  * .ch-head 와 .ctr 은 동일 서브그리드라 같은 위치에 정렬됨. 행 클릭 시 Jira 이동, 많으면 스크롤 */
 /* 하위 티켓 표 — 헤더(ch-head)와 행(ctr)의 컬럼 x 를 정확히 맞춘다. 행은 rail(8)+gap(10)=18px
    만큼 안쪽에서 시작하므로 헤더에 18px 선두 스페이서를 둬 세로선이 위→아래로 안 끊기게 잇는다. */
-.c-children .ctr {
-  display: grid; grid-template-columns: 84px minmax(110px,2.4fr) 58px 58px minmax(58px,1fr); gap: 0; align-items: stretch; }
-.vhead .ch-head {
+.vit-view .c-children .ctr {
+  display: grid; grid-template-columns: 84px minmax(110px,2.4fr) 58px 58px minmax(58px,1fr); gap: 0; align-items: stretch;
+  min-height: 28px; }
+.vit-view .vhead .ch-head {
   display: grid; grid-template-columns: 18px 84px minmax(110px,2.4fr) 58px 58px minmax(58px,1fr); gap: 0; align-items: center; }
-.vhead .ch-head > span { padding: 0 8px; }
-.vhead .ch-head > span:nth-child(n+3) { border-left: 1px solid var(--border); }
+.vit-view .vhead .ch-head > span { padding: 0 8px; }
+.vit-view .vhead .ch-head > span:nth-child(n+3) { border-left: 1px solid var(--border); }
 /* 하위 티켓 = [세로 진척 바][목록]. 목록이 Open→진행중→해결 순이라 바 구간과 행 묶음이 일치.
    단 바는 '완료 작업 안 보기'와 무관하게 항상 전체 기준(진척도는 표시 옵션에 안 흔들려야 함) */
-.c-kids { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
-.c-kids .c-children { flex: 1; min-width: 0; }
+.vit-view .c-kids { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
+.vit-view .c-kids .c-children { flex: 1; min-width: 0; }
 /* 채움은 --fill-*(그래프용). --st-*(글자용)은 어두운 색끼리 뭉쳐 구간이 안 갈린다. */
-.cv-rail { flex: none; width: 8px; align-self: stretch; display: flex; flex-direction: column;
+.vit-view .cv-rail { flex: none; width: 8px; align-self: stretch; display: flex; flex-direction: column;
   border-radius: 2px; overflow: hidden; background: var(--track); }
-.cv-seg { display: block; width: 100%; min-height: 0; flex-basis: 0; }
-.cv-seg.s-todo { background: var(--fill-todo); }
-.cv-seg.s-prog { background: var(--fill-prog); }
-.cv-seg.s-done { background: var(--fill-done); }
+.vit-view .cv-seg { display: block; width: 100%; min-height: 0; flex-basis: 0; }
+.vit-view .cv-seg.s-todo { background: var(--fill-todo); }
+.vit-view .cv-seg.s-prog { background: var(--fill-prog); }
+.vit-view .cv-seg.s-done { background: var(--fill-done); }
 /* 구간 경계 — 같은 계열이라도 얇은 분리선으로 확실히 끊어준다 */
-.cv-seg + .cv-seg { box-shadow: 0 -1px 0 var(--panel); }
+.vit-view .cv-seg + .cv-seg { box-shadow: 0 -1px 0 var(--panel); }
 
-.c-children { max-height: 220px; overflow-y: auto; }
+.vit-view .c-children { max-height: 220px; overflow-y: auto; }
 /* 테이블 셀 구조 — 행 padding 0, 셀마다 내부 padding + 세로 구분선. 상태 칸은 색으로 꽉 채운다. */
-.c-children .ctr { padding: 0; border-top: 1px solid var(--border); font-size: 12px; text-decoration: none; color: inherit; cursor: pointer; min-height: 26px; }
-.c-children .ctr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.c-children .ctr:first-child { border-top: none; }
-.c-children .ctr:hover { background: rgba(127,127,127,.05); }
-.c-children .ctr > * { display: flex; align-items: center; padding: 3px 8px; min-width: 0; }
-.c-children .ctr > * + * { border-left: 1px solid var(--border); }
-.c-children .ct-tkt { gap: 6px; }
-.c-children .ct-tkt .sm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.c-children .ct-tkt .ty { flex: 0 0 auto; color: var(--muted); font-size: 10px; }   /* 타입 = 제목 뒤 텍스트 */
-.c-children .dt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.c-children .asg { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vit-view .c-children .ctr { padding: 0; border-top: 1px solid var(--border); font-size: 12px; text-decoration: none; color: inherit; cursor: pointer; min-height: 28px; }
+.vit-view .c-children .ctr:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.vit-view .c-children .ctr:first-child { border-top: none; }
+.vit-view .c-children .ctr:hover { background: rgba(127,127,127,.05); }
+.vit-view .c-children .ctr > * { display: flex; align-items: center; padding: 3px 8px; min-width: 0; }
+.vit-view .c-children .ctr > * + * { border-left: 1px solid var(--border); }
+.vit-view .c-children .ct-tkt { gap: 6px; }
+.vit-view .c-children .ct-tkt .sm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.vit-view .c-children .ct-tkt .ty { flex: 0 0 auto; color: var(--muted); font-size: 10px; }   /* 타입 = 제목 뒤 텍스트 */
+.vit-view .c-children .dt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.vit-view .c-children .asg { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 상태 = 뱃지 아님, 칸을 상태색으로 꽉 채운 셀(연한 채움 + 상태색 글자). 현안·하위 티켓 공통. */
 .vit-view .scell { font-weight: 700; font-size: 10.5px; white-space: nowrap; letter-spacing: .2px; }
-.vit-view .scell.s-todo { background: color-mix(in srgb, var(--st-todo) 15%, var(--panel)); color: var(--st-todo); }
-.vit-view .scell.s-prog { background: color-mix(in srgb, var(--st-prog) 15%, var(--panel)); color: var(--st-prog); }
-.vit-view .scell.s-done { background: color-mix(in srgb, var(--st-done) 16%, var(--panel)); color: var(--st-done); }
+.vit-view .scell.s-todo { background: color-mix(in srgb, var(--st-todo) 7%, var(--panel)); color: var(--st-todo); }
+.vit-view .scell.s-prog { background: color-mix(in srgb, var(--st-prog) 7%, var(--panel)); color: var(--st-prog); }
+.vit-view .scell.s-done { background: color-mix(in srgb, var(--st-done) 7%, var(--panel)); color: var(--st-done); }
 
 
-.mini { font-size: 11.5px; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mini .d { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
-.mini .act { font-size: 9.5px; font-weight: 700; padding: 1.5px 6px; border-radius: 3px; margin-right: 5px;
+.vit-view .mini { font-size: 11.5px; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vit-view .mini .d { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+.vit-view .mini .act { font-size: 9.5px; font-weight: 700; padding: 1.5px 6px; border-radius: 3px; margin-right: 5px;
   background: color-mix(in srgb, currentColor 14%, transparent);
   border: 1px solid color-mix(in srgb, currentColor 34%, transparent); }
-.mini .act.created { background: var(--st-prog); }
-.mini .act.done, .mini .act.resolved { background: var(--done); }
-.mini .sm { color: var(--muted); } .mini.muted { color: var(--muted); }
+.vit-view .mini .act.created { background: var(--st-prog); }
+.vit-view .mini .act.done,
+.vit-view .mini .act.resolved { background: var(--done); }
+.vit-view .mini .sm { color: var(--muted); } .vit-view .mini.muted { color: var(--muted); }
 
-.c-x { text-align: right; }
-.xbtn { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); border-radius: 4px; font-size: 11px; padding: 3px 7px; cursor: pointer; white-space: nowrap; }
-.xbtn:hover { color: var(--text); }
+.vit-view .c-x { text-align: right; }
+.vit-view .xbtn { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); border-radius: 5px; font-size: 11px; padding: 3px 7px; cursor: pointer; white-space: nowrap;
+  min-height: 26px; }
+.vit-view .xbtn:hover { color: var(--text); }
 
-.detail { grid-column: 1 / -1; margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 9px; }
+.vit-view .detail { grid-column: 1 / -1; margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 9px; }
 /* 트리 컬럼은 최소폭 유지(항목 없어도) → 코멘트가 범람하지 않게. 코멘트 컬럼은 0까지 축소 허용 */
-.dcols { display: grid; grid-template-columns: minmax(240px, 1.3fr) minmax(0, 1fr); gap: 24px; }
-@media (max-width: 1000px) { .dcols { grid-template-columns: 1fr; } }
-.sec-t { font-size: 11px; color: var(--muted); margin: 0 0 5px; }
+.vit-view .dcols { display: grid; grid-template-columns: minmax(240px, 1.3fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 1000px) { .vit-view .dcols { grid-template-columns: 1fr; } }
+.vit-view .sec-t { font-size: 11px; color: var(--muted); margin: 0 0 5px; }
 /* 코멘트: 이름 · 날짜/시간 · 내용 을 한 흐름으로, 최대 2줄 클램프. (HTML 태그는 스크립트에서 평문 추출) */
-.cmt { font-size: 12px; padding: 4px 0; border-top: 1px solid var(--border); line-height: 1.45;
-       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
-.cmt .au { color: var(--text); font-weight: 600; margin-right: 5px; }
-.cmt .dt { color: var(--muted); font-size: 11px; margin-right: 6px; font-variant-numeric: tabular-nums; }
-.cmt .tx { color: var(--text); }
+.vit-view .cmt { font-size: 12px; padding: 4px 0; border-top: 1px solid var(--border); line-height: 1.45;
+       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: keep-all;
+  overflow-wrap: anywhere; }
+.vit-view .cmt .au { color: var(--text); font-weight: 600; margin-right: 5px; }
+.vit-view .cmt .dt { color: var(--muted); font-size: 11px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.vit-view .cmt .tx { color: var(--text); }
 
 /* 소속 티켓 트리: 각 티켓 = 하나의 라운딩 박스(카드) [타입·번호·이름·상태]. 레벨별 계단식 들여쓰기 + 안내선 */
-.tnode { display: flex; align-items: stretch; font-size: 12px; min-height: 34px; }
-.tnode.tkt { cursor: pointer; }
-.tnode.tkt:hover .tcard { border-color: var(--accent); }
-.tnode .typc { display: flex; align-items: stretch; flex: 0 0 auto; }   /* 안내선 (레벨 들여쓰기) */
-.tcard { display: inline-flex; align-items: center; gap: 7px; align-self: center; min-width: 0;
-         padding: 4px 10px; border: 1px solid var(--border); border-radius: 3px; background: var(--panel-2); }
-.tcard .tbadge { flex: 0 0 auto; }
-.tcard .ky { flex: 0 0 auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.tcard .sm { flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.tcard .asg { flex: 0 0 auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
-.tcard .asg::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
-.tcard .pill { flex: 0 0 auto; }
-.tnode .pg { align-self: center; margin-left: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
-.tg { flex: 0 0 auto; width: 22px; align-self: stretch; position: relative; }   /* 레벨당 들여쓰기 폭 */
-.tg.v::before, .tg.node::before { content: ""; position: absolute; left: 9px; top: 0; bottom: 0; border-left: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }
-.tg.node.last::before { bottom: auto; height: 50%; }
-.tg.node::after { content: ""; position: absolute; left: 9px; right: 0; top: 50%; border-top: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }   /* 엘보 → 카드까지 닿음 */
+.vit-view .tnode { display: flex; align-items: stretch; font-size: 12px; min-height: 34px; }
+.vit-view .tnode.tkt { cursor: pointer; }
+.vit-view .tnode.tkt:hover .tcard { border-color: var(--accent); }
+.vit-view .tnode .typc { display: flex; align-items: stretch; flex: 0 0 auto; }   /* 안내선 (레벨 들여쓰기) */
+.vit-view .tcard { display: inline-flex; align-items: center; gap: 7px; align-self: center; min-width: 0;
+         padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
+  border-color: var(--border-hi); }
+.vit-view .tcard .tbadge { flex: 0 0 auto; }
+.vit-view .tcard .ky { flex: 0 0 auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.vit-view .tcard .sm { flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.vit-view .tcard .asg { flex: 0 0 auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.vit-view .tcard .asg::before { content: "\1F464"; opacity: .55; margin-right: 3px; font-size: 10px; }
+.vit-view .tcard .pill { flex: 0 0 auto; }
+.vit-view .tnode .pg { align-self: center; margin-left: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.vit-view .tg { flex: 0 0 auto; width: 22px; align-self: stretch; position: relative; }   /* 레벨당 들여쓰기 폭 */
+.vit-view .tg.v::before,
+.vit-view .tg.node::before { content: ""; position: absolute; left: 9px; top: 0; bottom: 0; border-left: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }
+.vit-view .tg.node.last::before { bottom: auto; height: 50%; }
+.vit-view .tg.node::after { content: ""; position: absolute; left: 9px; right: 0; top: 50%; border-top: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); }   /* 엘보 → 카드까지 닿음 */
 
 /* 행 전체가 클릭 대상인 블록들 — 전역 .tkt:hover 밑줄이 행 전체에 걸리지 않게 */
-.c-children .ctr:hover, .c-info .l2:hover, .tnode.tkt:hover { text-decoration: none; }
+.vit-view .c-children .ctr:hover,
+.vit-view .c-info .l2:hover,
+.vit-view .tnode.tkt:hover { text-decoration: none; }
 
 /* 탭마다 두는 강제 새로고침 줄 — 오른쪽 끝에. 자주 쓰는 것이 아니라 '막혔을 때' 쓰는 것이라
    눈에 먼저 들어올 필요는 없지만, 찾을 때 늘 같은 자리에 있어야 한다. */
-.vtools { display: flex; justify-content: flex-end; margin: 6px 0 2px; }
+.vit-view .vtools { display: flex; justify-content: flex-end; margin: 6px 0 2px; }

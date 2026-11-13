@@ -30,7 +30,7 @@ def static_server():
         def log_message(self, *_args):
             pass
 
-    server = StaticServer(("127.0.0.1", 0), partial(Handler, directory=str(STATIC_ROOT)))
+    server = StaticServer(("127.0.0.1", int(os.environ.get("LTM_TEST_PORT", "0"))), partial(Handler, directory=str(STATIC_ROOT)))
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     yield f"http://127.0.0.1:{server.server_port}"

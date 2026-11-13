@@ -59,12 +59,12 @@ export default {
   <div class="mt-card two" :class="[{ tkt: link },
        { mine: card.mine || !dim, rel: dim && !card.mine, done: done, urgent: urgent,
          'update-unread': link && isUnread(card) }]"
-       :data-key="link ? card.key : null">
+       :data-key="link ? card.key : null" :role="link ? 'button' : null" :tabindex="link ? 0 : null">
     <TicketUpdateMark v-if="link && isUnread(card)" />
     <div class="tc-l1">
       <TypeBadge :type="card.type" />
       <span class="mt-key">{{ card.key }}</span>
-      <span class="mt-title">{{ dispTitle }}</span>
+      <span class="mt-title" :title="dispTitle">{{ dispTitle }}</span>
     </div>
     <div class="tc-l2">
       <PriIcon :rank="card.priRank" :name="card.pri" />
