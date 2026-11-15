@@ -41,6 +41,8 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     assert.deepEqual(vm.peopleOptions.map(p=>p.name),['Same name (a)','Same name (b)']);
     assert.equal(vm.selectionLabel('people'),'Same name (a)');
     assert.equal(vm.summaryLabel(0),'미확인');
+    assert.equal(vm.ticketLabel('L-1'),'Work (L-1)');
+    assert.equal(vm.evidenceLabel('ev1'),'Work (L-1)');
     vm.run.status='cancelled';assert.equal(vm.canResume,false);vm.run.status='partial';
     vm.closed={w:true}; vm.query='work'; vm.highlightKind='task';vm.highlightValue='L-1';
     assert.equal(vm.rows.length,1); // display folding stays as chosen
@@ -71,11 +73,15 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     const choices=nodes.filter(n=>n.type==='input' && n.props?.type==='checkbox' && n.props?.checked !== undefined);
     assert.equal(choices.length,2);assert.equal(choices[0].props.checked,true);
     choices[1].props.onChange();assert.deepEqual(vm.people,['a','b']);
+    vm.mode='feed';nodes.length=0;visit(render.call(vm,vm,[]));
+    const feedTicket=nodes.find(n=>n.props?.class==='tr-feed-ticket');
+    assert.ok(feedTicket.children.some(n=>n.type==='strong' && n.children==='Work'));
+    assert.ok(feedTicket.children.some(n=>n.type==='small' && n.children==='L-1'));
     // Missing parents still expose all collected child evidence from the report.
     vm.run={...source,id:'orphan',issues:[{key:'S-1',summary:'Recovered evidence',type:'Sub-Task',isSubtask:true,parentKey:'T-404',coverage:{historyComplete:true,commentsComplete:true}}],
       events:[{id:'child-comment',issueKey:'S-1',kind:'comment',date:'2026-11-01T00:00:00Z',body:'Completed migration'}],
       tree:[{id:'orphan-sub',issueKey:'S-1',name:'Recovered evidence',kind:'Sub-Task'}]};
-    vm.selectReport(vm.report.items[0]);
+    vm.mode='report';vm.selectReport(vm.report.items[0]);
     assert.equal(vm.reportEvidenceOpen,true);assert.equal(vm.selected.key,'T-404');
     assert.equal(vm.selectedEvents[0].id,'child-comment');
     '''.replace('STATIC',json.dumps(static))

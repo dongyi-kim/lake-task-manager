@@ -22,6 +22,11 @@ export function dateError(start, end, now = new Date()) {
   return '';
 }
 export const normalize = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '');
+export function readableTicketTitle(title, key) {
+  const text = String(title || '').trim();
+  return text && normalize(text) !== normalize(key) ? text : '제목 미확인';
+}
+export function ticketLabel(key, title) { return readableTicketTitle(title,key) + (key ? ' ('+key+')' : ''); }
 export const issueKeyOf = node => node.issueKey || (/^[A-Z][A-Z0-9_]*-\d+$/i.test(node.key || '') ? node.key : '');
 export function descendantKeys(node) {
   const keys = new Set();

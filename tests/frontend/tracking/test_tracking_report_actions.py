@@ -27,7 +27,8 @@ def test_report_pins_filters_copy_and_plain_text_render():
         {key:'S-1',summary:'증분 적재 완료',parentKey:'T-1',isSubtask:true,coverage,type:'Sub-Task'},
         {key:'V-1',summary:'테이블 문의',voc:true,vocCategory:'질의 - 데이터',coverage,type:'Task'}],
       events:[{id:'done',issueKey:'S-1',kind:'completed',date:'2026-11-12T09:00:00Z'},
-        {id:'comment',issueKey:'T-1',kind:'comment',date:'2026-11-13T09:00:00Z',body:'<script>untrusted</script>'}]};
+        {id:'comment',issueKey:'T-1',kind:'comment',date:'2026-11-13T09:00:00Z',body:'<script>untrusted</script>'},
+        {id:'sub-comment',issueKey:'S-1',kind:'comment',date:'2026-11-13T10:00:00Z',body:'하위 작업 원문'}]};
     const report=buildTrackingReport(run);
     const vm={...view.data(),run,report,selectedKey:'T-1',matchKeys:['S-1'],hasMatch:true,filterMatches:false,$emit(){}};
     for(const [key,fn] of Object.entries(view.methods))vm[key]=fn.bind(vm);
@@ -43,6 +44,7 @@ def test_report_pins_filters_copy_and_plain_text_render():
     const nodes=[];function visit(node){if(!node||typeof node!=='object')return;nodes.push(node);if(Array.isArray(node.children))node.children.forEach(visit)}
     visit(render.call(vm,vm,[]));
     assert.ok(nodes.some(n=>n.children==='<script>untrusted</script>'));
+    assert.ok(nodes.some(n=>n.children==='증분 적재 완료 (S-1)'));
     assert.ok(!nodes.some(n=>n.props?.innerHTML));
     vm.pin(task);assert.equal(vm.items.length,0);
     '''.replace('STATIC', json.dumps(static))

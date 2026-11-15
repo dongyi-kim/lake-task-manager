@@ -109,3 +109,11 @@ def test_virtual_voc_epic_highlight_keeps_category_and_matching_tickets():
       const rows=m.trackingRows(run,{highlight:{kind:'epic',value:'voc:category:a'},matchedOnly:true});
       assert.deepEqual(rows.map(row=>row.id),['voc','voc:category:a','v1']);
     """)
+
+
+def test_ticket_labels_lead_with_title_and_do_not_treat_a_key_as_a_title():
+    run_js("""
+      assert.equal(m.ticketLabel('DL-12','주문 적재 검증'),'주문 적재 검증 (DL-12)');
+      assert.equal(m.ticketLabel('DL-12',' DL-12 '),'제목 미확인 (DL-12)');
+      assert.equal(m.readableTicketTitle(null,'DL-12'),'제목 미확인');
+    """)

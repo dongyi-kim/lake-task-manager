@@ -195,10 +195,41 @@ def test_copy_child_completion_history_distinguishes_reopen_and_recompletion():
         event('done3','S-3','completed','2026-11-15T01:00:00Z')]);
       const text=m.reportText(m.buildTrackingReport(source));
       const lines=text.split('\n');
-      const first=lines.find(line=>line.startsWith('- 하위 완료 이력: [S-1]'));
-      const second=lines.find(line=>line.startsWith('- 하위 완료 이력: [S-2]'));
-      const third=lines.find(line=>line.startsWith('- 하위 완료 이력: [S-3]'));
+      const first=lines.find(line=>line.startsWith('- 하위 완료 이력: S-1 title (S-1)'));
+      const second=lines.find(line=>line.startsWith('- 하위 완료 이력: S-2 title (S-2)'));
+      const third=lines.find(line=>line.startsWith('- 하위 완료 이력: S-3 title (S-3)'));
       assert.match(first,/마지막 확인 이력: 재오픈/);
       assert.match(second,/재오픈 후 완료 확인/);
       assert.ok(third);assert.ok(!third.includes('재오픈'));
+    """)
+
+
+def test_copy_all_ticket_references_start_with_titles_including_sources_and_comments():
+    run_js(r"""
+      const input=run([issue('T-1',{summary:'결제 승인 개선'}),
+        issue('S-1',{summary:'한도 검증 추가',type:'Sub-Task',parentKey:'T-1'})],[
+          event('parent','T-1','created','2026-11-15T01:00:00Z'),
+          event('done','S-1','completed','2026-11-15T02:00:00Z'),
+          event('comment','S-1','comment','2026-11-15T03:00:00Z',{commentId:'1',body:'검증 완료'})]);
+      const text=m.reportText(m.buildTrackingReport(input));
+      const lines=text.split('\n');
+      assert.ok(lines.includes('결제 승인 개선 (T-1)'));
+      assert.ok(lines.includes('- 하위 완료 이력: 한도 검증 추가 (S-1)'));
+      const sources=lines.find(line=>line.startsWith('- 근거 티켓:'));
+      assert.ok(sources.includes('결제 승인 개선 (T-1)'));
+      assert.ok(sources.includes('한도 검증 추가 (S-1)'));
+      assert.ok(lines.some(line=>line.startsWith('  > 한도 검증 추가 (S-1) Alice')));
+      assert.ok(!text.includes('[T-1]'));assert.ok(!text.includes('[S-1]'));
+    """)
+
+
+def test_copy_quiet_target_lists_and_missing_titles_are_explicitly_named():
+    run_js(r"""
+      const report=m.buildTrackingReport(run([issue('T-1',{summary:'상위 점검'}),
+        issue('S-1',{summary:'S-1',type:'Sub-Task',parentKey:'T-1'})],[]));
+      const text=m.reportText(report);
+      const targets=text.split('\n').find(line=>line.startsWith('- 확인 대상:'));
+      assert.ok(targets.includes('상위 점검 (T-1)'));
+      assert.ok(targets.includes('제목 미확인 (S-1)'));
+      assert.ok(!targets.includes('T-1, S-1'));
     """)

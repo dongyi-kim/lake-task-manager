@@ -1,5 +1,5 @@
 // Report projections over a saved run. No collection, network, DOM, or current-status inference.
-import { eventText, issueKeyOf } from './trackingModel.js';
+import { eventText, issueKeyOf, ticketLabel } from './trackingModel.js';
 
 const rank = {review:0,completed:1,changed:2,quiet:3};
 const kindOf = value => String(value || '').toLowerCase().replace(/[-_\s]/g,'');
@@ -179,7 +179,9 @@ export function reportText(report, {request={},asOf='',keys} = {}) {
   if (report?.summary?.provisional) lines.push('잠정 보고: 일부 근거 미확인');
   if (!items.length) lines.push('','선택한 업무 없음');
   for (const item of items) {
-    lines.push('','['+item.key+'] '+item.title,'- '+item.headline);
+    const titles = new Map([[item.key,item.title],...item.children.map(child=>[child.key,child.title])]);
+    const label = key => ticketLabel(key,titles.get(key));
+    lines.push('',label(item.key),'- '+item.headline);
     if (item.paths.length) lines.push('- 업무 경로: '+item.paths.join(' | '));
     for (const child of item.children.filter(value=>item.completedKeys.includes(value.key))) {
       let note = '';
@@ -188,15 +190,15 @@ export function reportText(report, {request={},asOf='',keys} = {}) {
         note = latest?.kind === 'reopened' ? ' · 마지막 확인 이력: 재오픈' :
           latest?.kind === 'completed' ? ' · 재오픈 후 완료 확인' : ' · 재오픈 이력도 있음';
       }
-      lines.push('- 하위 완료 이력: ['+child.key+'] '+child.title+note);
+      lines.push('- 하위 완료 이력: '+label(child.key)+note);
     }
     const sourceKeys = distinct(item.events.map(event=>event.issueKey));
-    lines.push('- '+(sourceKeys.length ? '근거 티켓: '+sourceKeys.join(', ') : '확인 대상: '+item.keys.join(', ')));
+    lines.push('- '+(sourceKeys.length ? '근거 티켓: '+sourceKeys.map(label).join('; ') : '확인 대상: '+item.keys.map(label).join('; ')));
     for (const comment of item.comments.slice(0,2)) {
       const author = comment.actorName || comment.author?.name || comment.actorId || '작성자 미확인';
       const when = comment.editedAt || at(comment) || '시점 미확인';
       const note = comment.isEdited ? '수정된 댓글 · 마지막 관측 본문' : '댓글 · 관측 본문';
-      lines.push('  > ['+comment.issueKey+'] '+author+' · '+when+' · '+note+': '+excerpt(eventText(comment)));
+      lines.push('  > '+label(comment.issueKey)+' '+author+' · '+when+' · '+note+': '+excerpt(eventText(comment)));
     }
   }
   return lines.join('\n');

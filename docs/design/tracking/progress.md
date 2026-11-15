@@ -44,3 +44,9 @@ Plan: docs/design/tracking/plan.md; base 7e8e9efc; branch feat/tracking.
 - Separate synthetic browser scenario verifies two VOC categories, prefix removal, preserved ordinary prefix, virtual Epic filtering and tree rows. No server data modified by that scenario.
 - Live mock collection for ETL, 2026-10-01 through 2026-11-15: complete, 137 context/target issues including 7 VOC. November-only fixture has no updated ETL VOC, so it correctly has none. Tailscale health returned 200.
 - Browser plugin unavailable; used existing Python Playwright/Chromium. ui-skills CLI unavailable (`npx` absent); applied installed frontend-design guidance and existing LTM design tokens. Desktop only, as requested.
+
+## Ticket-name correction
+
+- Existing snapshots already contained titles; date feed, cross-ticket evidence, comment attribution and copied source lists were rendering only keys. Shared title/label helpers now render title first and key as secondary context. Unknown titles say `제목 미확인` rather than presenting the key as a title.
+- Applied to report headings, child changes, tree rows, highlighting choices, AI evidence references, missing-source rows and all copied ticket references. Original evidence and VOC display grouping preserved; no new collection.
+- Related frontend/static tests: **399 passed**. Tailscale browser verified all 330 date-feed references had titles, 8 child-comment source labels and 2 cross-ticket evidence labels included names, no JS errors/overflow, and no additional Tracking request.
