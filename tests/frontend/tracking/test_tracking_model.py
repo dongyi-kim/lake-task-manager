@@ -98,3 +98,14 @@ def test_context_ancestors_do_not_make_complete_target_rollups_unknown():
       run.issues[1].coverage.historyComplete=false;
       assert.equal(m.trackingRows(run)[0].counts.historyComplete,false);
     """)
+
+
+def test_virtual_voc_epic_highlight_keeps_category_and_matching_tickets():
+    run_js("""
+      const run={issues:[{key:'V-1'},{key:'V-2'}],events:[],tree:[{id:'voc',kind:'wbs',virtual:true,name:'사용자 VOC',children:[
+        {id:'voc:category:a',kind:'Epic',virtual:true,name:'적재 - 신규',children:[{id:'v1',issueKey:'V-1',kind:'Task'}]},
+        {id:'voc:category:b',kind:'Epic',virtual:true,name:'질의 - 확인',children:[{id:'v2',issueKey:'V-2',kind:'Task'}]},
+      ]}]};
+      const rows=m.trackingRows(run,{highlight:{kind:'epic',value:'voc:category:a'},matchedOnly:true});
+      assert.deepEqual(rows.map(row=>row.id),['voc','voc:category:a','v1']);
+    """)

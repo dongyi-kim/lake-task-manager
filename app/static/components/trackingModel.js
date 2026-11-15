@@ -80,7 +80,7 @@ export function trackingRows(run, {query = '', highlight = null, matchedOnly = f
     let highlightMatch = true;
     if (highlight?.value) {
       if (highlight.kind === 'person') highlightMatch = issue?.assigneeId === highlight.value || events.some(e => e.actorId === highlight.value);
-      else if (highlight.kind === 'epic') highlightMatch = key === highlight.value || path.some(p => issueKeyOf(p) === highlight.value);
+      else if (highlight.kind === 'epic') highlightMatch = key === highlight.value || (node.virtual && node.id === highlight.value) || path.some(p => issueKeyOf(p) === highlight.value || (p.virtual && p.id === highlight.value));
       else highlightMatch = key === highlight.value || path.some(p => issueKeyOf(p) === highlight.value);
     }
     const children = (node.children || []).map(n => prepare(n, [...path,node]));

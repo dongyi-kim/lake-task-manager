@@ -215,3 +215,75 @@ def test_resume_can_finish_when_resolved_parent_proves_ticket_outside_module(tmp
     assert run['coverage']['missing'] == []
     assert run['summary']['totalEvents'] == 0
     assert len(provider.calls) == calls + 1
+
+
+@pytest.mark.parametrize('assignee,expected_status', [({'name': 'a'}, 'complete'), (None, 'partial')])
+def test_module_voc_current_assignee_survives_both_prune_and_publish_without_extra_reads(tmp_path, assignee, expected_status):
+    class VocProvider(Provider):
+        def get_json(self, path, params=None):
+            result = super().get_json(path, params)
+            if path.endswith('/search'):
+                result['issues'][0]['fields'].update(components=[{'name': 'Configured VOC'}],
+                                                     epic=None, assignee=assignee)
+            return result
+
+    provider = VocProvider()
+    m = manager(tmp_path, provider)
+    m.client.s.voc_component = 'Configured VOC'
+    run = m.create({'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': ['M']}, background=False)
+    assert run['status'] == expected_status
+    assert {issue['key'] for issue in run['issues']} == {'P-1'}
+    assert run['summary']['created'] == run['summary']['comments'] == 1
+    assert run['coverage']['issuesTotal'] == 1
+    discovery = [params for path, params in provider.calls if path.endswith('/search') and 'project in' in params.get('jql', '')]
+    assert 'assignee' in discovery[0]['fields'].split(',')
+    assert len(provider.calls) == 4  # Existing status, metadata, batch source, and comment source only.
+    assert bool([gap for gap in run['coverage']['missing'] if gap['source'] == 'moduleScope']) == (assignee is None)
+
+
+def test_voc_module_supplement_preserves_explicit_historical_person_filter(tmp_path):
+    class VocProvider(Provider):
+        def get_json(self, path, params=None):
+            result = super().get_json(path, params)
+            if path.endswith('/search'):
+                result['issues'][0]['fields'].update(components=[{'name': 'Configured VOC'}], epic=None)
+            if path.endswith('/comment'):
+                result['comments'].append({'id': '2', 'created': '2026-11-11T11:00:00+0900',
+                    'author': {'name': 'b'}, 'body': 'Selected outsider activity'})
+                result['total'] = 2
+            return result
+
+    m = manager(tmp_path, VocProvider())
+    m.client.s.voc_component = 'Configured VOC'
+    m.people_loader = lambda: {'M': ['a'], 'Other': ['b']}
+    run = m.create({'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': ['M'], 'people': ['b']}, background=False)
+    assert run['status'] == 'complete'
+    assert run['summary']['created'] == 0
+    assert run['summary']['comments'] == 1
+    assert {event['actorId'] for event in run['events']} == {'b'}
+    assert run['issues'][0]['assigneeId'] == 'a'
+
+
+@pytest.mark.parametrize('components,epic', [(['Configured VOC', 'Other'], None), (['Configured VOC'], 'P-200')])
+def test_voc_other_module_mapping_is_pruned_before_sources_even_when_assignee_matches(tmp_path, components, epic):
+    class MappedVocProvider(Provider):
+        def get_json(self, path, params=None):
+            if path.endswith('/search'):
+                assert 'project in' in params['jql'], 'Explicitly unrelated VoC must not hydrate heavy sources.'
+            result = super().get_json(path, params)
+            if path.endswith('/search'):
+                result['issues'][0]['fields'].update(components=[{'name': name} for name in components], epic=epic)
+            return result
+
+    provider = MappedVocProvider()
+    m = manager(tmp_path, provider)
+    m.client.s.voc_component = 'Configured VOC'
+    m.people_loader = lambda: {'M': ['a'], 'Other': ['b']}
+    m.plan_loader = lambda: {'wbs': [{'module': 'Other', 'name': 'Other delivery', 'epics': [{'key': 'P-200'}]}]}
+    run = m.create({'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': ['M']}, background=False)
+    assert run['status'] == 'complete'
+    assert run['coverage']['candidatesDiscovered'] == 1
+    assert run['coverage']['issuesTotal'] == 0
+    assert run['summary']['totalEvents'] == 0
+    assert run['issues'] == []
+    assert len(provider.calls) == 2  # Status metadata plus candidate metadata only.

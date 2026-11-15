@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from app.auth.base import PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable, background_upstream
 from app.infra.settings import is_manager, load_people, load_plan
+from app.domain.progress import VOC_COMPONENT
 from app.tracking.analysis import KST, analyze_issue, build_result, identity_aliases, instant, period_bounds, person
 from app.tracking.source import IncompleteSource, TrackingSource
 from app.tracking.scope import module_candidates
@@ -56,7 +57,8 @@ class TrackingManager:
         return {"people": [{"id": uid, "name": name, "modules": [m for m, ids in people.items() if uid in ids]} for uid, name in names.items()],
                 "modules": [{"id": m, "name": m, "people": list(ids)} for m, ids in people.items()],
                 "defaults": {"startDate": (today - timedelta(days=6)).isoformat(), "endDate": today.isoformat(), "people": [], "modules": []},
-                "timezone": "Asia/Seoul", "aiEnabled": bool(ai_enabled), "aiReason": ai_reason}
+                "timezone": "Asia/Seoul", "aiEnabled": bool(ai_enabled), "aiReason": ai_reason,
+                "vocComponent": getattr(self.client.s, "voc_component", None) or VOC_COMPONENT}
 
     def validate(self, body):
         today = datetime.now(KST).date()
@@ -190,6 +192,10 @@ class TrackingManager:
         fields = ",".join(dict.fromkeys(["summary", "issuetype", "status", "assignee", "creator", "reporter", "created", "updated", "parent", "components", "subtasks", self.client.s.epic_link_field_id, "comment"]))
         plan = self.plan_loader()
         selected_modules = set(request["modules"])
+        module_scope_options = {"voc_component": getattr(self.client.s, "voc_component", None) or VOC_COMPONENT,
+                                "module_people": self.people_loader(),
+                                "configured_epics": {e.get("key") or e.get("ticket") for task in plan.get("wbs", [])
+                                                     for e in task.get("epics", [])}}
         allowed_epics = {e.get("key") or e.get("ticket") for task in plan.get("wbs", [])
                          if not selected_modules or task["module"] in selected_modules for e in task.get("epics", [])}
 
@@ -217,7 +223,7 @@ class TrackingManager:
             if selected_modules:
                 scope_rows = [all_raw[key] for key in cp.get("candidateKeys", []) if key in all_raw]
                 scoped, _, uncertain = module_candidates(scope_rows, selected_modules, allowed_epics,
-                                                        self.client.s.epic_link_field_id, all_raw)
+                                                        self.client.s.epic_link_field_id, all_raw, **module_scope_options)
                 scoped_keys = {raw["key"] for raw in scoped}
                 cp["moduleScopeUnknown"] = sorted(uncertain)
                 active = [issue for issue in active if issue["key"] in scoped_keys]
@@ -282,7 +288,8 @@ class TrackingManager:
                 lower = (start - timedelta(days=1)).date().isoformat()
                 base_jql = "project in (%s) AND updated >= %s" % (",".join(quote(p) for p in projects), quote(lower))
                 query_cp = cp["queries"].setdefault("candidates", {})
-                discovery_fields = ",".join(["updated", "components", "parent", "issuetype", self.client.s.epic_link_field_id])
+                discovery_fields = ",".join(["updated", "components", "parent", "issuetype", self.client.s.epic_link_field_id] +
+                                            (["assignee"] if selected_modules else []))
                 capability_key = source.key("capability", "historicalPeopleSelector")
                 capability = self.store.source(capability_key)
                 selected_people = request["people"]
@@ -323,7 +330,7 @@ class TrackingManager:
                     cp["scopeParentMissing"] = []
                     while True:
                         scoped, needed, uncertain = module_candidates(discovered, selected_modules, allowed_epics,
-                                                                     self.client.s.epic_link_field_id, parents)
+                                                                     self.client.s.epic_link_field_id, parents, **module_scope_options)
                         needed = sorted(needed - attempted)
                         if not needed:
                             break
@@ -436,7 +443,8 @@ class TrackingManager:
                         if absent:
                             cp.setdefault("hierarchyMissing", []).extend(sorted(absent))
                 if selected_modules:
-                    _, _, uncertain = module_candidates(rows, selected_modules, allowed_epics, self.client.s.epic_link_field_id, cp["issues"])
+                    _, _, uncertain = module_candidates(rows, selected_modules, allowed_epics, self.client.s.epic_link_field_id,
+                                                        cp["issues"], **module_scope_options)
                     cp["moduleScopeUnknown"] = sorted(uncertain)
                 publish(True)
                 if cp.get("hierarchyMissing"):

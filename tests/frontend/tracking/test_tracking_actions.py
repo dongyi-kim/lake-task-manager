@@ -71,6 +71,13 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     const choices=nodes.filter(n=>n.type==='input' && n.props?.type==='checkbox' && n.props?.checked !== undefined);
     assert.equal(choices.length,2);assert.equal(choices[0].props.checked,true);
     choices[1].props.onChange();assert.deepEqual(vm.people,['a','b']);
+    // Missing parents still expose all collected child evidence from the report.
+    vm.run={...source,id:'orphan',issues:[{key:'S-1',summary:'Recovered evidence',type:'Sub-Task',isSubtask:true,parentKey:'T-404',coverage:{historyComplete:true,commentsComplete:true}}],
+      events:[{id:'child-comment',issueKey:'S-1',kind:'comment',date:'2026-11-01T00:00:00Z',body:'Completed migration'}],
+      tree:[{id:'orphan-sub',issueKey:'S-1',name:'Recovered evidence',kind:'Sub-Task'}]};
+    vm.selectReport(vm.report.items[0]);
+    assert.equal(vm.reportEvidenceOpen,true);assert.equal(vm.selected.key,'T-404');
+    assert.equal(vm.selectedEvents[0].id,'child-comment');
     '''.replace('STATIC',json.dumps(static))
     result = subprocess.run([node,'--input-type=module','-e',script],capture_output=True,text=True,encoding='utf-8')
     assert result.returncode == 0, result.stderr

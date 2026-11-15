@@ -31,3 +31,16 @@ Plan: docs/design/tracking/plan.md; base 7e8e9efc; branch feat/tracking.
 - Browser: light 1600px / dark 1360px, no JS errors or horizontal overflow, folding/highlighting/filter/feed switching made no Tracking API requests, existing TicketDialog opened.
 - [Final local benchmark](performance.md): 15 people, 100 active + 9,900 archived tickets, 50ms injected/request. Cold/warm separated; all compared core events matched the fixture oracle.
 - Production Jira/SSO latency and actual LLM calls remain unmeasured. No push, merge, or release performed.
+
+## Report UX follow-up
+
+- Default report view replaces event-count reading with Task-level outcomes, completed child titles, recent report/comment excerpts, current assignee/status, and evidence links. Existing tree/date views retained.
+- Dashboard separates period completion history, newly created tickets, comments, field changes, and evidence-backed review items. Partial counts remain provisional; no inferred progress percentage.
+- AI synthesis area remains visible in an unconfigured state. No automatic AI call. Pins persist locally; copying reports includes scope/time/partial status and ticket-specific reopen/recompletion evidence.
+- Real VOC flag/configured component only: virtual `사용자 VOC` WBS → `[대분류 - 소분류]` virtual Epic → stripped display title. Original summaries, saved run, events and totals preserved. Virtual Epic highlight/filter supported; ordinary prefixed tasks remain unchanged.
+- Otherwise unmapped VOC may use current assignee's configured module membership. Explicit module/WBS/parent mapping takes precedence; missing assignee proof remains uncertain. Lightweight discovery includes assignee without a separate REST call.
+- Independent review fixes: synthetic missing-parent briefs open all child evidence; partial review counts do not show definitive zero; copied completion lines retain reopen state; assignee supplement does not override explicit other-module mapping.
+- Final related tests: **441 passed** (Tracking backend/UI + static assets). Browser: real dev data at 1600/1360px, light/dark, pin persistence, copy, evidence pane, tree/feed switching, no JS errors or horizontal overflow. Interaction loop made **0 extra Tracking requests**.
+- Separate synthetic browser scenario verifies two VOC categories, prefix removal, preserved ordinary prefix, virtual Epic filtering and tree rows. No server data modified by that scenario.
+- Live mock collection for ETL, 2026-10-01 through 2026-11-15: complete, 137 context/target issues including 7 VOC. November-only fixture has no updated ETL VOC, so it correctly has none. Tailscale health returned 200.
+- Browser plugin unavailable; used existing Python Playwright/Chromium. ui-skills CLI unavailable (`npx` absent); applied installed frontend-design guidance and existing LTM design tokens. Desktop only, as requested.
