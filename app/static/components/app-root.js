@@ -8,6 +8,7 @@ import HomeView from "./views/HomeView.js";
 import AgentView from "./views/AgentView.js";
 import DevToolsView from "./views/DevToolsView.js";
 import ConfluenceView from "./views/ConfluenceView.js";
+import TrackingView from "./tracking-view.js";
 import FloatingRefresh from "./ui/FloatingRefresh.js";
 import AddTicketFab from "./ui/AddTicketFab.js";
 import FormulaCallout from "./ui/FormulaCallout.js";
@@ -32,7 +33,7 @@ import { installAuthActivityProbe } from "../lib/authActivity.js";
 // 새 대화를 시작한다(입력 전달은 HomeView → sessionStorage → AgentView).
 // #/guide 는 예전 주소를 살리는 별칭이다(북마크를 깨지 않는다).
 const ROUTES = { home: HomeView, guide: HomeView, ai: AgentView, wbs: WbsView, vit: VitView,
-                 workload: WorkloadView, mytasks: MyTasksView, devtools: DevToolsView, confluence: ConfluenceView };
+                 workload: WorkloadView, mytasks: MyTasksView, tracking: TrackingView, devtools: DevToolsView, confluence: ConfluenceView };
 // 로컬 앱의 모든 화면은 설치 사용자에게 열려 있다. Jira 권한은 실제 조회/쓰기에서 확인한다.
 const TABS = [
   // ✨ 는 **AI 탭에만** 붙는다(사용자 요청) — 새로 생긴 기능이라 눈이 먼저 가야 한다.
@@ -43,6 +44,7 @@ const TABS = [
   { k: "vit", label: "현안 (PMO_VIT)" },
   { k: "workload", label: "인력 워크로드" },
   { k: "mytasks", label: "Task" },
+  { k: "tracking", label: "Tracking" },
   { k: "confluence", label: "Confluence" },
 ];
 function currentRoute() { return location.hash.replace("#/", "").split(/[/?]/)[0] || "home"; }
@@ -256,7 +258,7 @@ export default {
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>
         <!-- 좌하단 플로팅 강제 새로고침 — 데이터 화면에서만(개발 도구·티켓 단독 페이지 제외) -->
-        <FloatingRefresh v-if="route !== 'devtools' && route !== 'confluence'" />
+        <FloatingRefresh v-if="route !== 'devtools' && route !== 'confluence' && route !== 'tracking'" />
       </template>
       <TicketMenu />
       <LoginOverlay />
