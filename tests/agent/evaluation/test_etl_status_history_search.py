@@ -61,15 +61,17 @@ def endpoints():
         store.issues = {row["key"]: row for row in (public_rows() if rows is None else rows)}
         store.denied_issue_keys = set(denied)
         store.reindex()
+        app = make_app(store=store)
+        install_query_compat(app)
+        # Layer fixture timestamps over the app's final evidence serializer.
         original_fields = store.serializer.issue_fields
         def fields(row, base_url=""):
             return {**original_fields(row, base_url), **row.get("_timestamps", {})}
         store.serializer.issue_fields = fields
-        app = make_app(store=store)
-        install_query_compat(app)
         if delegate_hook:
             route = next(route for route in app.router.routes
-                         if getattr(route, "path", None) == "/rest/api/2/search")
+                         if getattr(route, "path", None) == "/rest/api/2/search"
+                         and "GET" in getattr(route, "methods", ()))
             original = route.endpoint
             def observed(request, **kwargs):
                 delegate_hook(request, kwargs)
@@ -261,6 +263,8 @@ def test_interleaved_searches_keep_request_views_and_raw_wire_separate(endpoints
 
 
 def test_install_is_per_app_idempotent_and_uninstall_restores_original_route(endpoints):
+    baseline, *_ = endpoints(install=False)
+    original_response = search(baseline, 'status WAS Reopened').json()
     client, store, app, registration = endpoints()
     assert registration is not None
     route_count = len(app.router.routes)
@@ -270,8 +274,11 @@ def test_install_is_per_app_idempotent_and_uninstall_restores_original_route(end
     assert keys(search(client, 'status WAS Reopened')) == ["DL-2"]
     registration.uninstall()
     assert len(app.router.routes) == route_count - 1
+    assert registration.route not in app.router.routes
     assert app.state.store is store
-    assert keys(search(client, 'status WAS Reopened')) == ["DL-1", "DL-2", "DL-3", "DL-4", "DL-5", "DL-9"]
+    restored = search(client, 'status WAS Reopened')
+    assert keys(restored) == ["DL-2"]
+    assert restored.json() == original_response
 
 
 def test_public_kst_actor_and_each_users_own_timezone_are_exposed(endpoints):
