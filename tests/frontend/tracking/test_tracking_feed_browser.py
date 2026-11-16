@@ -109,7 +109,10 @@ def test_each_grouping_applies_search_highlight_and_renders_foldable_comments(tr
     assert event_ids(area) == ['edited-comment', 'sub-completed', 'sub-created']
     page.get_by_role('button', name='강조 해제', exact=True).click()
     assert sorted(event_ids(area)) == sorted(EVENT_ORDER)
-    page.get_by_role('button', name='Task 댓글 렌더링 업무 업무 요약 보기', exact=True).click()
+    page.get_by_role('navigation', name='업무 계층과 보고 범위', exact=True).get_by_role(
+        'button', name='소속 Epic 없음 펼치기', exact=True,
+    ).click()
+    page.get_by_role('button', name='업무 댓글 렌더링 업무 업무 요약 보기', exact=True).click()
     assert sorted(event_ids(area)) == sorted(['edited-comment', 'sub-completed', 'rich-comment', 'plain-comment', 'sub-created'])
     expect(area.locator('.tr-feed-ticket-heading').filter(has_text='TASK-2')).to_have_count(0)
     for next_mode in ['none', 'ticket', 'date-ticket']:

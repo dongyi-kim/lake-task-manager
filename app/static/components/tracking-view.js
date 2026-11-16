@@ -3,6 +3,7 @@ import { kstToday, dateRange, dateError, trackingRows, isTerminalTrackingRow, co
 import TrackingReport from './tracking-report.js';
 import { buildTrackingReport } from './trackingReportModel.js';
 import { projectTrackingVoc } from './trackingVocModel.js';
+import { projectTrackingHierarchy } from './trackingHierarchyModel.js';
 import TrackingOverview from './tracking-overview.js';
 import { buildTrackingOverview, trackingRowSummary } from './trackingOverviewModel.js';
 import { buildTrackingScope } from './trackingScopeModel.js';
@@ -38,7 +39,7 @@ export default {
     busy() { return this.pending || running(this.run); },
     validation() { return dateError(this.startDate,this.endDate); },
     highlight() { return this.highlightValue ? {kind:this.highlightKind,value:this.highlightValue} : null; },
-    displayRun() { return projectTrackingVoc(this.run,{vocComponent:this.options.vocComponent}); },
+    displayRun() { return projectTrackingHierarchy(projectTrackingVoc(this.run,{vocComponent:this.options.vocComponent})); },
     scope() {
       const base = this.scopeId.startsWith('tracking-report:') && this.reportScopeParentId
         ? buildTrackingScope(this.displayRun,this.reportScopeParentId).run : this.displayRun;
@@ -99,7 +100,12 @@ export default {
       if (this.highlightKind === 'person') return this.peopleOptions;
       const seen = new Set();
       return this.allRows.filter(row => (row.key || (row.virtual && row.kind === 'epic')) && !seen.has(row.key || row.id) && seen.add(row.key || row.id) &&
-        (this.highlightKind === 'epic' ? row.kind === 'epic' : row.kind !== 'epic')).map(row => ({id:row.key || row.id,name:row.virtual ? 'VOC · '+row.title : ticketLabel(row.key,row.title)}));
+        (this.highlightKind === 'epic' ? row.kind === 'epic' : row.kind !== 'epic')).map(row => {
+          const context = row.path.map(node => node.name || node.summary || node.key).filter(Boolean).join(' / ');
+          const name = row.epicUnassigned ? row.title+' · '+(context || '전체')
+            : row.virtual ? 'VOC · '+row.title : ticketLabel(row.key,row.title);
+          return {id:row.key || row.id,name};
+        });
     },
     pickerOptions() {
       const values = this.picker === 'people' ? this.peopleOptions : this.options[this.picker] || [];
@@ -414,7 +420,7 @@ export default {
           <TrackingReport v-if="mode === 'report'" :key="run.id" :report="scopedReport" :run="run" :groups="scope.groups" :scope-id="scopeId" :scope-label="scopeLabel" :selected-key="reportEvidenceOpen ? selected?.key : ''" :match-keys="[...matchKeys]" :has-match="!!(query || highlight)" :filter-matches="matchedOnly" @select="selectReport" @evidence="focusEvidence" @scope="selectScope" />
           <div v-else-if="mode === 'tree'" class="tr-table-scroll"><table class="tr-table"><colgroup><col class="tr-title-col"><col class="tr-assignee-col"><col v-for="i in 4" :key="i" class="tr-count-col"></colgroup><thead><tr><th scope="col">업무</th><th scope="col">현재 담당</th><th scope="col">생성</th><th scope="col">완료</th><th scope="col">댓글</th><th scope="col" title="확보한 이력 기준">변경</th></tr></thead><tbody>
             <tr v-for="row in rows" :key="row.id" :class="['tr-row','tr-kind-'+row.kind,{'tr-selected':selectedId === row.id,'tr-highlighted':row.highlighted,'tr-search-match':row.matched && query}]" @click="selectRow(row)">
-              <td><div class="tr-tree-label" :style="{'--tr-depth':row.depth}"><button v-if="row.children.length" class="tr-fold" @click.stop="fold(row)" :aria-expanded="!closed[row.id] || (matchedOnly && !!(query || highlight))" :aria-label="row.title + (closed[row.id] ? ' 펼치기' : ' 접기')"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="13" height="13" rx="1"/><path d="M4.5 8h7"/><path v-if="closed[row.id] && !(matchedOnly && (query || highlight))" d="M8 4.5v7"/></svg></button><span v-else class="tr-fold-space"></span><span class="tr-type" :class="'tr-type-'+row.kind">{{ row.virtual ? (row.kind === 'wbs' ? '가상 WBS' : '가상 Epic') : kindLabel(row.kind) }}</span><button class="tr-row-title" @click.stop="selectRow(row)" :title="rowTitle(row)">{{ row.key ? ticketTitle(row.key) : row.title }}<span v-if="row.key" class="tr-row-key">{{ row.key }}</span></button><span v-if="closed[row.id] && row.children.length" class="tr-child-count">하위 {{ row.keys.size }}</span></div></td>
+              <td><div class="tr-tree-label" :style="{'--tr-depth':row.depth}"><button v-if="row.children.length" class="tr-fold" @click.stop="fold(row)" :aria-expanded="!closed[row.id] || (matchedOnly && !!(query || highlight))" :aria-label="row.title + (closed[row.id] ? ' 펼치기' : ' 접기')"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="13" height="13" rx="1"/><path d="M4.5 8h7"/><path v-if="closed[row.id] && !(matchedOnly && (query || highlight))" d="M8 4.5v7"/></svg></button><span v-else class="tr-fold-space"></span><span class="tr-type" :class="'tr-type-'+row.kind">{{ row.epicUnassigned ? '미소속' : row.virtual ? (row.kind === 'wbs' ? '가상 WBS' : '가상 Epic') : kindLabel(row.kind) }}</span><button class="tr-row-title" @click.stop="selectRow(row)" :title="rowTitle(row)">{{ row.key ? ticketTitle(row.key) : row.title }}<span v-if="row.key" class="tr-row-key">{{ row.key }}</span></button><span v-if="closed[row.id] && row.children.length" class="tr-child-count">하위 {{ row.keys.size }}</span></div></td>
               <td><button v-if="row.issue?.assigneeId" class="tr-person" :class="{'tr-person-on':highlightKind === 'person' && highlightValue === row.issue.assigneeId}" @click.stop="highlightKind = 'person'; highlightValue = row.issue.assigneeId">{{ row.issue.assigneeName || row.issue.assigneeId }}</button><span v-else class="tr-muted">–</span></td>
               <td>{{ countLabel(row.counts.created,!!row.issue || row.counts.uniqueIssues > 0) }}</td><td class="tr-completed">{{ countLabel(row.counts.completed,row.counts.historyComplete) }}</td><td :class="{'tr-unknown':!row.counts.commentsComplete}">{{ countLabel(row.counts.comments,row.counts.commentsComplete) }}</td><td :class="{'tr-unknown':!row.counts.historyComplete}">{{ countLabel(row.counts.fieldChanges,row.counts.historyComplete) }}</td>
             </tr>

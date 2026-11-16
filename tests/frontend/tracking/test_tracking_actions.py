@@ -48,7 +48,9 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     vm.closed={w:true}; vm.query='work'; vm.highlightKind='task';vm.highlightValue='L-1';
     assert.equal(vm.rows.length,1); // display folding stays as chosen
     assert.equal(vm.feedEvents.length,1); // activity feed must be independent of tree folding
-    vm.matchedOnly=true;assert.equal(vm.rows.length,2);
+    vm.matchedOnly=true;assert.equal(vm.rows.length,3); // WBS → unassigned Epic → matching ticket
+    assert.equal(vm.rows[1].epicUnassigned,true);
+    assert.deepEqual(vm.rows.filter(row=>row.key).map(row=>row.key),['L-1']);
     assert.equal(calls.length,1); // all display actions are local
     vm.selectEvent(source.events[0]);assert.equal(vm.selectedId,'t');assert.equal(vm.selectedEventId,'ev1');
     let firstResolve;
