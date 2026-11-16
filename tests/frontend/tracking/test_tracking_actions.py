@@ -47,7 +47,7 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     vm.run.status='cancelled';assert.equal(vm.canResume,false);vm.run.status='partial';
     vm.closed={w:true}; vm.query='work'; vm.highlightKind='task';vm.highlightValue='L-1';
     assert.equal(vm.rows.length,1); // display folding stays as chosen
-    assert.equal(vm.feedGroups[0].events.length,1); // date feed must be independent of tree folding
+    assert.equal(vm.feedEvents.length,1); // activity feed must be independent of tree folding
     vm.matchedOnly=true;assert.equal(vm.rows.length,2);
     assert.equal(calls.length,1); // all display actions are local
     vm.selectEvent(source.events[0]);assert.equal(vm.selectedId,'t');assert.equal(vm.selectedEventId,'ev1');
@@ -77,10 +77,8 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     assert.equal(choices.length,2);assert.equal(choices[0].props.checked,true);
     choices[1].props.onChange();assert.deepEqual(vm.people,['a','b']);
     vm.selectScope('');vm.mode='feed';nodes.length=0;visit(render.call(vm,vm,[]));
-    assert.ok(nodes.some(n=>n.props?.event?.id==='ev1')); // Feed uses the same rich, foldable comment as details.
-    const feedTicket=nodes.find(n=>n.props?.class==='tr-feed-ticket');
-    assert.ok(feedTicket.children.some(n=>n.type==='strong' && n.children==='Work'));
-    assert.ok(feedTicket.children.some(n=>n.type==='small' && n.children==='L-1'));
+    const feed=nodes.find(n=>n.props?.events?.some(event=>event.id==='ev1'));
+    assert.equal(feed.props['ticket-names'].get('L-1'),'Work'); // Feed receives evidence and readable titles together.
     // Missing parents still expose all collected child evidence from the report.
     vm.run={...source,id:'orphan',issues:[{key:'S-1',summary:'Recovered evidence',type:'Sub-Task',isSubtask:true,parentKey:'T-404',coverage:{historyComplete:true,commentsComplete:true}}],
       events:[{id:'child-comment',issueKey:'S-1',kind:'comment',date:'2026-11-01T00:00:00Z',body:'Completed migration'}],
@@ -125,7 +123,7 @@ def test_scoped_event_evidence_keeps_the_selected_shared_ticket_branch():
     assert.equal(vm.scopeId,'b');assert.equal(vm.reportEvidenceOpen,true);
     assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['T-1','S-2']);
     assert.deepEqual(vm.selectedBrief.keys,['T-1','S-2']);
-    vm.mode='feed';vm.selectEvent(vm.feedGroups[0].events.find(e=>e.issueKey==='T-1'));
+    vm.mode='feed';vm.selectEvent(vm.feedEvents.find(e=>e.issueKey==='T-1'));
     assert.equal(vm.selectedId,'b-t');
     assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['T-1','S-2']);
     // A deliberate navigator evidence action remains independent of report scope.
@@ -169,7 +167,7 @@ def test_scoped_views_keep_ancestor_search_and_epic_highlight_matches():
       assert.ok(vm.scopedReport.items.every(item=>item.keys.some(key=>vm.matchKeys.has(key))));
       assert.deepEqual(vm.rows.map(row=>row.key),['T-1','S-1']);
       assert.deepEqual(vm.rows.map(row=>row.depth),[0,1]);
-      assert.deepEqual(vm.feedGroups.flatMap(group=>group.events).map(event=>event.issueKey),['T-1','S-1']);
+      assert.deepEqual(vm.feedEvents.map(event=>event.issueKey),['T-1','S-1']);
       assert.equal(vm.scopeActivity.uniqueIssues,2);assert.equal(vm.scopeActivity.comments,2);
       assert.equal(vm.overview.totals.comments,2);
     }
@@ -178,7 +176,7 @@ def test_scoped_views_keep_ancestor_search_and_epic_highlight_matches():
     // Closing an ancestor in the full navigator cannot hide this isolated scope.
     vm.closed={w:true,e:true};verify();
     vm.query='No matching ancestor';
-    assert.deepEqual(vm.rows,[]);assert.deepEqual(vm.feedGroups,[]);
+    assert.deepEqual(vm.rows,[]);assert.deepEqual(vm.feedEvents,[]);
     assert.ok(vm.scopedReport.items.every(item=>item.keys.every(key=>!vm.matchKeys.has(key))));
     // Search filters the list; saved-scope aggregates retain their independent totals.
     assert.equal(vm.scopeActivity.comments,2);assert.equal(vm.overview.totals.comments,2);

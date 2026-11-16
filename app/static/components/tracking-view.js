@@ -9,6 +9,7 @@ import { buildTrackingScope } from './trackingScopeModel.js';
 import TrackingNavigator from './tracking-navigator.js';
 import TrackingSplitter from './tracking-splitter.js';
 import TrackingComment from './tracking-comment.js';
+import TrackingFeed from './tracking-feed.js';
 
 const AI_SUMMARY_TEMPLATE = `
   <div class="tr-ai-result" :class="{'tr-ai-placeholder':!ai && !aiPending}" aria-live="polite">
@@ -25,7 +26,7 @@ const running = run => ['queued','running'].includes(run?.status);
 const basePath = '/api/tracking/runs';
 export default {
   name: 'TrackingView',
-  components: { TrackingReport, TrackingOverview, TrackingNavigator, TrackingSplitter, TrackingComment },
+  components: { TrackingReport, TrackingOverview, TrackingNavigator, TrackingSplitter, TrackingComment, TrackingFeed },
   data() {
     return { ...dateRange(), options:{people:[],modules:[]}, optionsLoaded:false, optionsError:'', people:[],modules:[],personNames:{},
       run:null,recent:[],recentId:'',pending:false,error:'',pollError:'',query:'',highlightKind:'person',highlightValue:'',
@@ -79,10 +80,10 @@ export default {
         (!this.matchedOnly || (!this.query && !this.highlight) || this.matchKeys.has(e.issueKey)));
     },
     evidenceGroups() { return groupEvents(this.selectedEvents); },
-    feedGroups() {
+    feedEvents() {
       const rows = this.rowsInScope();
       const keys = new Set(rows.filter(r => !this.matchedOnly || r.matched || (!this.query && !this.highlight)).map(r => r.key).filter(Boolean));
-      return groupEvents((this.run?.events || []).filter(event => keys.has(event.issueKey)));
+      return (this.run?.events || []).filter(event => keys.has(event.issueKey));
     },
     matchKeys() { return new Set(trackingRows(this.displayRun,{query:this.query,highlight:this.highlight}).filter(r => r.matched).map(r => r.key)); },
     peopleOptions() {
@@ -418,7 +419,7 @@ export default {
               <td>{{ countLabel(row.counts.created,!!row.issue || row.counts.uniqueIssues > 0) }}</td><td class="tr-completed">{{ countLabel(row.counts.completed,row.counts.historyComplete) }}</td><td :class="{'tr-unknown':!row.counts.commentsComplete}">{{ countLabel(row.counts.comments,row.counts.commentsComplete) }}</td><td :class="{'tr-unknown':!row.counts.historyComplete}">{{ countLabel(row.counts.fieldChanges,row.counts.historyComplete) }}</td>
             </tr>
           </tbody></table><div v-if="!rows.length" class="tr-empty">{{ query || highlight ? '일치하는 활동이 없습니다. 검색어나 강조 대상을 바꿔 보세요.' : (provisional ? '아직 확인된 업무가 없습니다. 수집 상태와 확인 범위를 확인하세요.' : '선택한 기간과 대상의 활동이 없습니다.') }}</div></div>
-          <div v-else class="tr-feed"><section v-for="group in feedGroups" :key="group.date"><h3>{{ dateLabel(group.date) }} <small>한국 시간</small></h3><article v-for="event in group.events" :key="event.id" :class="['tr-feed-event',{'tr-feed-match':matchKeys.has(event.issueKey),'tr-feed-selected':selectedEventId === event.id}]"><time>{{ timeLabel(event.date) }}</time><span class="tr-event-kind" :class="'tr-event-'+event.kind">{{ eventLabel(event) }}</span><div class="tr-feed-content"><button class="tr-feed-ticket" @click="selectEvent(event)"><strong>{{ ticketTitle(event.issueKey) }}</strong><small>{{ event.issueKey }}</small></button><TrackingComment v-if="['comment','commentEdited'].includes(event.kind)" :event="event" /><span v-else class="tr-feed-body">{{ eventText(event) }}</span></div><span class="tr-muted">{{ event.actorName || event.actorId || '작성자 미확인' }}</span></article></section><div v-if="!feedGroups.length" class="tr-empty">표시할 기간 내 활동이 없습니다.</div></div>
+          <TrackingFeed v-else :events="feedEvents" :ticket-names="ticketNames" :selected-id="selectedEventId" :match-keys="[...matchKeys]" @select="selectEvent" />
         </div>
         <section v-if="reportEvidenceOpen" id="tracking-detail" ref="evidencePane" class="tr-evidence tr-evidence-inline" role="tabpanel" aria-labelledby="tracking-detail-tab">
           <p class="tr-evidence-scope-label">{{ dateLabel(run.request?.startDate) }} – {{ dateLabel(run.request?.endDate) }} · {{ !selectedId ? '전체 업무의 근거' : evidenceSource === 'report' ? '요약 업무의 근거' : selected?.children?.length ? '선택 계층과 하위 업무의 근거' : '선택 업무의 근거' }}</p>

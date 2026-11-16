@@ -16,6 +16,7 @@ from app.domain.progress import VOC_COMPONENT
 from app.tracking.analysis import KST, analyze_issue, build_result, identity_aliases, instant, period_bounds, person
 from app.tracking.source import IncompleteSource, TrackingSource
 from app.tracking.presentation import present_comments
+from app.tracking.activity import project_activity
 from app.tracking.scope import module_candidates
 from app.tracking.storage import TrackingStore, encode
 
@@ -108,7 +109,7 @@ class TrackingManager:
 
     def list(self):
         owner, scope = self.authorize()
-        return self.store.recent(owner, scope)
+        return [project_activity(snapshot) for snapshot in self.store.recent(owner, scope)]
 
     def _start(self, run_id, *, background):
         with self.lock:
@@ -155,6 +156,7 @@ class TrackingManager:
 
     def record_summary(self, run_id, result):
         snapshot, cp = self._owned(run_id)
+        snapshot["_activitySummaryEventIds"] = sorted(event["id"] for event in project_activity(snapshot).get("events") or [])
         snapshot["aiSummary"] = result
         usage = result.get("usage") or {}
         snapshot["metrics"]["llmTokens"] += int(usage.get("totalTokens") or 0)
