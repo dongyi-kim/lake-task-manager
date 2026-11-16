@@ -123,7 +123,7 @@ export function groupEvents(events) {
 export const EVENT_LABELS = {created:'생성',completed:'완료',reopened:'재오픈',comment:'댓글',commentEdited:'댓글 수정',fieldChanged:'변경'};
 export const RUN_LABELS = {queued:'대기 중',running:'수집 중',complete:'수집 완료',partial:'일부 확인',paused:'일시 중단',cancelled:'수집 취소'};
 export function eventText(event) {
-  if (event.kind === 'comment' || event.kind === 'commentEdited') return String(event.body || event.excerpt || '본문 미확인');
+  if (event.kind === 'comment' || event.kind === 'commentEdited') return String(event.bodyText ?? (event.body || event.excerpt || '')) || '본문 미확인';
   const field = ({status:'상태',assignee:'담당자',duedate:'마감일',summary:'제목',description:'설명',priority:'우선순위',labels:'라벨',resolution:'해결'})[event.field] || event.field || '';
   if (event.from != null || event.to != null) return [field, String(event.from ?? '미지정'), '→', String(event.to ?? '미지정')].filter(Boolean).join(' ');
   return EVENT_LABELS[event.kind] || event.kind || '활동';

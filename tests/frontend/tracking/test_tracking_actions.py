@@ -77,6 +77,7 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     assert.equal(choices.length,2);assert.equal(choices[0].props.checked,true);
     choices[1].props.onChange();assert.deepEqual(vm.people,['a','b']);
     vm.selectScope('');vm.mode='feed';nodes.length=0;visit(render.call(vm,vm,[]));
+    assert.ok(nodes.some(n=>n.props?.event?.id==='ev1')); // Feed uses the same rich, foldable comment as details.
     const feedTicket=nodes.find(n=>n.props?.class==='tr-feed-ticket');
     assert.ok(feedTicket.children.some(n=>n.type==='strong' && n.children==='Work'));
     assert.ok(feedTicket.children.some(n=>n.type==='small' && n.children==='L-1'));

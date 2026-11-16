@@ -86,8 +86,6 @@
 .tr-brief-section-label { display: block; margin-bottom: 5px; font-size: 11px; color: var(--muted); font-weight: 650; }
 .tr-brief-comment { display: block; border: 0; width: 100%; padding: 0; background: transparent; text-align: left; }
 .tr-brief-comment + .tr-brief-comment { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-hi); }
-.tr-brief-comment p { margin: 0; font-size: 13px; line-height: 1.55; word-break: keep-all; overflow-wrap: anywhere; white-space: pre-wrap;  }
-.tr-brief-comment:hover p { color: var(--accent); }
 .tr-brief-comment > span { display: flex; gap: 10px; color: var(--muted); font-size: 11px; margin-top: 5px; flex-wrap: wrap; }
 .tr-brief-changes { margin: 10px 0; padding: 0; list-style: none; }
 .tr-brief-changes li { display: flex; gap: 12px; margin: 5px 0; }

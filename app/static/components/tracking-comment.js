@@ -1,3 +1,5 @@
+import { eventText } from './trackingModel.js';
+
 // bodyHtml is produced by the server's shared Jira renderer and sanitizer.
 let nextCommentId = 0;
 
@@ -22,7 +24,7 @@ export default {
   },
   computed: {
     bodyHtml() { return this.event.bodyHtml || ''; },
-    bodyText() { return this.event.body || this.event.excerpt || ''; },
+    bodyText() { return eventText(this.event); },
   },
   watch: {
     expanded() { this.$nextTick(() => this.updateFocusability()); },
