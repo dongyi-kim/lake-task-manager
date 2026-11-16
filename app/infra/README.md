@@ -18,4 +18,6 @@
 - `settings.py` 경로 상수(STATIC_DIR/APP_ROOT/BASE_DIR)는 `__file__` 기준이다 — 이 파일을 옮기면 반드시 재검증.
 - Jira 캐시 키와 mutation 의존성은 `app/jira`가 소유한다. 수명은 `cache_policy.py`에서 공통 판정하고, source timestamp는 읽기·조립·설정 변경으로 연장하지 않는다.
 - `cache_display`는 수정 후 재조회 실패에 대비한 표시용 이전 값이다. 신규 authoritative 조회와 권한 판단은 이 테이블을 사용하지 않으며, 삭제/권한 상실에는 함께 제거한다.
+- 일반 무효화는 `cache_invalidated`에 기록하고 payload·원본 시각을 유지한다. 새 성공 응답이 기존 값을 교체하며, strict/LIVE 조회는 무효화된 값을 재사용하지 않는다.
+- 물리 정리는 원본 보존 기간과 마지막 사용 후 30일이 모두 지난 값만 대상으로 한다. 용량 목표 때문에 보존 기간 안의 payload를 삭제하지 않는다.
 - dev 진단은 **기본 꺼짐**. prod 배포는 `dev_tools: []`(AGENTS.md §12).

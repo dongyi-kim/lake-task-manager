@@ -453,7 +453,7 @@ def test_joined_live_flight_rechecks_mutation_generation(cache):
     assert store.get("comments:mock:DL-1") == ["after-mutation"]
 
 
-def test_payload_budget_uses_access_order_without_erasing_local_ui_state(cache):
+def test_payload_budget_preserves_cold_retained_values_and_local_ui_state(cache):
     store, now = cache
     store.PAYLOAD_BUDGET = 26
     store.set("user:mock:first", "12345678", 600)
@@ -463,7 +463,7 @@ def test_payload_budget_uses_access_order_without_erasing_local_ui_state(cache):
     assert store.get("user:mock:first")
     store.mark_ticket_viewed("actor", "DL-1", 123)
     store.set("user:mock:third", "ABCDEFGH", 600)
-    assert store.get("user:mock:second") is None
+    assert store.get("user:mock:second") == "abcdefgh"
     assert store.get("user:mock:first") == "12345678"
     assert store.get("user:mock:third") == "ABCDEFGH"
     assert store.ticket_read_states("actor", ["DL-1"]) == {"DL-1": 123}
@@ -485,10 +485,10 @@ def test_budget_tracks_overwrites_display_archiving_and_database_reopen(tmp_path
         now[0] += 1
         store.set("user:third", "ABCDEFGH", 600)
         assert len(store.get_many(["user:first", "user:second", "user:third"])) == 3
-        store.invalidate("user:first")  # Move payload to display storage without duplicating its bytes.
+        store.invalidate("user:first")  # Authority marker leaves its source payload intact.
         now[0] += 1
-        store.set("user:first", "123456789012", 600)  # 14 + 10 + 10 requires one eviction.
-        assert store.get("user:second") is None
+        store.set("user:first", "123456789012", 600)
+        assert store.get("user:second") == "abcdefgh"
         now[0] += 1
         assert store.get("user:third") == "ABCDEFGH"
     finally:
@@ -499,7 +499,7 @@ def test_budget_tracks_overwrites_display_archiving_and_database_reopen(tmp_path
         reopened.PAYLOAD_BUDGET = 26
         now[0] += 1
         reopened.set("user:fourth", "한", 600)  # UTF-8 JSON payload is 5 bytes.
-        assert reopened.get("user:first") is None
+        assert reopened.get("user:first") == "123456789012"
         assert reopened.get("user:third") == "ABCDEFGH"
         assert reopened.get("user:fourth") == "한"
     finally:

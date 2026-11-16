@@ -945,6 +945,7 @@ def api_status():
     st["needLogin"] = need_login
     st["loginAttempt"] = _login_requests.status("jira")
     st["workspaceRevision"] = _local_mcp.workspace_config.revision()
+    st["ticketRevision"] = _client._jql_policy.ticket_revision()
     return JSONResponse(st)
 
 

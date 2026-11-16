@@ -1,12 +1,10 @@
 // FloatingRefresh.js — 좌하단 플로팅 '강제 새로고침' 버튼.
 //
 // 새로고침 버튼이 탭마다 제각각(어디는 ↻ 둘, 어디는 인라인 '강제 새로고침')이라 무엇이
-// 캐시를 비우는 것인지 헷갈렸다. **하나로 통일**한다 — 화면 어디에 있든 좌하단 같은 자리,
-// 같은 아이콘. 누르면 지금 보고 있는 화면이 캐시를 비우고 처음부터 다시 받는다.
+// 최신 정보를 받는 동작을 하나로 통일한다. 기존 화면과 캐시는 유지한다.
 //
 // 각 뷰를 직접 알지 않는다(뷰는 keep-alive 로 갈아 끼워진다). 전역 이벤트로 부탁하고,
-// 지금 화면의 뷰가 자기 hardRefresh 를 돌린 뒤 끝났다고 알린다. 아무도 못 받으면(그런 화면이면)
-// 8초 뒤 스스로 멈춘다 — 영영 도는 아이콘은 '멈춘 것' 으로 읽힌다.
+// 공통 API가 한 번 갱신을 요청하고 현재 화면의 조회가 끝나면 완료를 알린다.
 //
 // ★ 다시 받기 **전에 인증부터 확인**한다. 사용자가 이 버튼을 누르는 상황의 절반은 "화면이 안
 //   뜬다" 인데 그 원인이 대개 끊긴 세션이다. 그대로 다시 받으면 같은 실패를 반복할 뿐이라
@@ -19,7 +17,7 @@ export default {
   name: "FloatingRefresh",
   data() { return { busy: false, phase: "" }; },   // phase: '' | 'auth'(인증 중 — 말풍선 문구가 다르다)
   mounted() {
-    window.addEventListener("force-refresh-done", this._done = () => { this.busy = false; this.phase = ""; });
+    window.addEventListener("force-refresh-done", this._done = e => { this.busy = false; this.phase = ""; if (e.detail?.error) this._toast("error", "새로고침에 실패했습니다", e.detail.error.message); });
   },
   unmounted() {
     window.removeEventListener("force-refresh-done", this._done);
@@ -36,7 +34,6 @@ export default {
       if (!ok) { this.busy = false; return; }
       window.dispatchEvent(new CustomEvent("force-refresh"));
       clearTimeout(this._t);
-      this._t = setTimeout(() => { this.busy = false; }, 8000);   // 아무도 안 받으면 스스로 멈춘다
     },
 
     /** 지금 받아도 되는 상태인가. 아니면 고칠 수 있는 만큼 고치고, 안 되면 이유를 말한다. */
@@ -87,7 +84,7 @@ export default {
   template: `
   <button class="fab-refresh" :class="{ busy, auth: phase === 'auth' }" @click="go"
           :title="phase === 'auth' ? '인증하는 중…'
-                  : (busy ? '다시 받는 중…' : '강제 새로고침 — 인증을 확인하고 캐시를 비운 뒤 처음부터 다시 받습니다')"
+                  : (busy ? '다시 받는 중…' : '새로고침 — 기존 화면을 유지하면서 최신 정보를 받습니다')"
           aria-label="강제 새로고침">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
          stroke-linecap="round" stroke-linejoin="round">

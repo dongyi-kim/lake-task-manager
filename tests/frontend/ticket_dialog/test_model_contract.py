@@ -55,6 +55,7 @@ def test_ticket_dialog_model_keeps_sort_and_timeline_behavior():
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert json.loads(completed.stdout) == {
         "children": ["DL-1", "DL-2"],

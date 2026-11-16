@@ -50,6 +50,8 @@ export default {
     tick() {
       api.raw("/api/status").then((s) => {
         if (!s) return;
+        // The central API store baselines the first token and refreshes views on later writes.
+        if (s.ticketRevision) api.ticketRevisionUpdated(s.ticketRevision);
         if (s.workspaceRevision) {
           const changed = this._workspaceRevision && this._workspaceRevision !== s.workspaceRevision;
           this._workspaceRevision = s.workspaceRevision;

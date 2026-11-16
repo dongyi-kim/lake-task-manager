@@ -253,7 +253,15 @@ window.addEventListener('storage', e => {
   if (e.key === 'ltm-cache-policy' && e.newValue) { try { applyPrefs(JSON.parse(e.newValue)); } catch (_) {} }
 });
 // 쓰기 후 그 티켓 관련 GET memo 를 비워 다음 조회가 최신을 읽게 한다(코멘트·첨부·타임라인 등).
-function evict(sub) { for (const k of Array.from(_memo.keys())) if (k.includes(sub)) _memo.delete(k); }
+function evict(sub) { for (const k of Array.from(_memo.keys())) if (k.includes(sub)) _memo.invalidate(k); }
+function forgetTicket(key) {
+  const encoded = encodeURIComponent(key);
+  for (const path of Array.from(_memo.keys())) {
+    if (!path.split('?')[0].split('/').includes(encoded)) continue;
+    _memo.delete(path);
+    window.dispatchEvent(new CustomEvent('api-cache-updated', { detail: { path, value: null, removed: true } }));
+  }
+}
 // 하위/형제/조상 **목록**은 **다른 티켓의** 것도 이 티켓 변화에 낡는다(부모 키를 프론트가 모름).
 // 상태·담당·제목 변경, 하위 생성/삭제 후엔 이 목록 memo 를 통째로 비워, **부모 다이얼로그의 자식
 // 목록**(리포트된 버그: 하위 상태 바꿨는데 부모의 자식목록엔 반영 안 됨)이 최신을 받게 한다.
@@ -343,9 +351,41 @@ function transitionReq(key, body) {
 function idle(fn) { (window.requestIdleCallback || ((f) => setTimeout(f, 250)))(fn); }
 function warmGet(u) { try { get(u).catch(() => {}); } catch (e) { /* noop */ } }
 
+let ticketRevision = null, refreshPending = null;
+function ticketRevisionUpdated(revision) {
+  if (typeof revision !== 'string' || !revision) return;
+  const previous = ticketRevision;
+  ticketRevision = revision;
+  if (previous === null || previous === revision) return;
+  _memo.invalidateAll();
+  window.dispatchEvent(new CustomEvent('tickets-updated', { detail: { revision } }));
+}
+function refreshAll() {
+  if (refreshPending) return refreshPending;
+  refreshPending = req('/api/refresh', { method: 'POST' }).then(async result => {
+    _memo.invalidateAll();
+    const pending = [];
+    window.dispatchEvent(new CustomEvent('data-refresh', {
+      detail: { waitUntil: promise => pending.push(Promise.resolve(promise)) },
+    }));
+    await Promise.all(pending);
+    return result;
+  }).finally(() => { refreshPending = null; });
+  return refreshPending;
+}
+window.addEventListener('force-refresh', () => {
+  refreshAll().then(() => window.dispatchEvent(new CustomEvent('force-refresh-done')),
+    error => window.dispatchEvent(new CustomEvent('force-refresh-done', { detail: { error } })));
+});
+// Local edits reach the current tab immediately; the status revision additionally
+// covers writes from MCP, HTTP and other tabs. Neither path discards display data.
+window.addEventListener('ticket-changed', () => _memo.invalidateAll());
+
 export const api = {
   health: () => req("/api/health").then(health => { rememberDraftContext(health); return health; }),                                    // 로그인 상태 — memo 제외
   raw: (path, opts) => req(path, opts),                                // memo 없이 매번 조회(설정 메뉴 등)
+  readCached: (path, opts) => get(path, opts),
+  replaceCached: (path, value) => _memo.replace(path, value),
   evict: (key) => evict(encodeURIComponent(key)),                      // 이 티켓 관련 memo 비우기(강제 새로고침)
   workspaceConfigUpdated: (revision, kind = 'all') => {
     ['/api/wbs', '/api/vit', '/api/workload'].forEach(evict);
@@ -380,7 +420,8 @@ export const api = {
   cached: (path) => _memo.peek(path),
   cacheMetadata: (path) => _memo.metadata(path),
   cacheRevision: (path) => _memo.revision(path),
-  refresh: () => req("/api/refresh", { method: "POST" }).then((r) => { _memo.clear(); return r; }),
+  refresh: refreshAll,
+  ticketRevisionUpdated,
   wbs: () => get("/api/wbs"),
   epicTree: (key) => get("/api/epic/" + encodeURIComponent(key) + "/tree"),
   vit: () => get("/api/vit"),
@@ -398,7 +439,7 @@ export const api = {
     return get(path).then((result) => {
       // 부분 실패는 호환상 HTTP 200 + error:true다. 성공 Promise를 memo에 남기면 화면의
       // 사람별 재시도가 같은 실패 객체만 되받고 Jira에는 두 번째 요청조차 가지 않는다.
-      if (result && (result.error || (result.partial && result.retryable))) _memo.delete(path);
+      if (result && (result.error || (result.partial && result.retryable))) _memo.invalidate(path);
       return result;
     });
   },
@@ -407,7 +448,7 @@ export const api = {
       + "?days=" + (days || 7) + "&assignedWindow=" + encodeURIComponent(assignedWindow || "all");
     return get(path).then((rows) => {
       if (Array.isArray(rows) && rows.some((row) => row && row.epicResolution
-          && row.epicResolution.retryable)) _memo.delete(path);
+          && row.epicResolution.retryable)) _memo.invalidate(path);
       return rows;
     });
   },
@@ -418,7 +459,7 @@ export const api = {
     return get(path).then((result) => {
       // The backend intentionally leaves a failed Jira/Confluence source uncached. Mirror that
       // here so reopening the row can retry it instead of replaying a partial Promise forever.
-      if (result && result.partial) _memo.delete(path);
+      if (result && result.partial) _memo.invalidate(path);
       return result;
     });
   },
@@ -443,10 +484,11 @@ export const api = {
   myTasksEpics: (syncId) => req("/api/mytasks/sync/" + encodeURIComponent(syncId) + "/epics"),
   // Epic 메타의 장기 캐시는 서버가 소유한다. 부분 성공(HTTP 200)을 브라우저 promise memo에
   // 영구 고정하면 누락 key를 다시 시도할 수 없으므로 이 보강 요청은 매번 서버 캐시를 확인한다.
-  myTasksEpicMeta: (keys) => {
+  myTasksEpicMeta: (keys, revalidate = false) => {
     const normalized = Array.from(new Set((keys || [])
       .map((key) => String(key || "").trim().toUpperCase()).filter(Boolean))).sort();
-    return req("/api/mytasks/epics?keys=" + encodeURIComponent(normalized.join(",")));
+    return req("/api/mytasks/epics?keys=" + encodeURIComponent(normalized.join(","))
+      + (revalidate ? "&revalidate=1" : ""));
   },
   search: (q, scope, only) => req("/api/search?q=" + encodeURIComponent(q)
     + "&scope=" + encodeURIComponent(scope || "scoped")
@@ -553,9 +595,9 @@ export const api = {
   bulkValidate: (body) => jsonReq("/api/bulk/validate", "POST", body),
   bulkCreateContext: () => req("/api/bulk/create-context", { cache: "no-store" }),
   bulkCreate: (body) => jsonReq("/api/bulk/create", "POST", body, { mutation: true })
-    .then((r) => { _memo.clear(); return r; }),
-  createTask: (body) => jsonReq("/api/task", "POST", body, { mutation: true }).then((r) => { _memo.clear(); return r; }),
-  createEpic: (body) => jsonReq("/api/epic", "POST", body, { mutation: true }).then((r) => { _memo.clear(); return r; }),
+    .then((r) => { _memo.invalidateAll(); return r; }),
+  createTask: (body) => jsonReq("/api/task", "POST", body, { mutation: true }).then((r) => { _memo.invalidateAll(); return r; }),
+  createEpic: (body) => jsonReq("/api/epic", "POST", body, { mutation: true }).then((r) => { _memo.invalidateAll(); return r; }),
   // Epic 에 넣을 수 있는 **Task** 후보(Sub-Task 의 상위 피커). 진짜 Epic 목록은 options("epics").
   parentTaskCandidates: (q) => req("/api/parent-task-candidates?limit=25&q=" + encodeURIComponent(q || "")),
   createChild: (key, body) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/child",
@@ -569,7 +611,7 @@ export const api = {
   setAssignee: (key, assignee) => jsonReq("/api/ticket/" + encodeURIComponent(key) + "/assignee",
                                           "PUT", { assignee }).then((r) => { evict(key); evictLists(); return r; }),
   deleteTicket: (key) => req("/api/ticket/" + encodeURIComponent(key), { method: "DELETE" })
-                           .then((r) => { evict(key); evictLists(); return r; }),
+                           .then((r) => { forgetTicket(key); evictLists(); return r; }),
   transitions: (key) => req("/api/ticket/" + encodeURIComponent(key) + "/transitions"),
   doTransition: transitionReq,                                                           // 본인 댓글 판정
   // 빈 쿼리(팝업 첫 오픈)의 기본 추천 목록은 **memo** — 담당/보고 picker 를 다시 열 때 즉시.

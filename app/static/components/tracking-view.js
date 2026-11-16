@@ -133,16 +133,32 @@ export default {
   mounted() {
     this._epoch = 0;
     this._authRecovered = () => {
-      if (!this.active) return;
+      if (!this.active) { this._authDirty = true; return; }
       if (!this.optionsLoaded || this.optionsError) this.initialize();
       else if (this.pollError && this.run) this.openRun(this.run.id,false);
     };
+    this._cacheUpdated = event => {
+      const {path,value} = event.detail || {};
+      if (!value || value.error || value.partial) return;
+      if (path === '/api/tracking/options') this.applyOptions(value);
+      else if (path === basePath) this.recent = value.runs || this.recent;
+      else if (path === basePath+'/'+encodeURIComponent(this.run?.id || '') && !running(this.run)) this.adoptRun(value);
+    };
     window.addEventListener('auth-ok',this._authRecovered);
+    window.addEventListener('api-cache-updated',this._cacheUpdated);
     this.initialize();
   },
-  activated() { this.active = true; this.schedulePoll(); },
+  activated() {
+    this.active = true;
+    if (this._authDirty) { this._authDirty = false; this._authRecovered(); }
+    this.schedulePoll();
+  },
   deactivated() { this.active = false; clearTimeout(this._pollTimer); },
-  unmounted() { this.active = false; this._epoch++; clearTimeout(this._pollTimer); window.removeEventListener('auth-ok',this._authRecovered); },
+  unmounted() {
+    this.active = false; this._epoch++; clearTimeout(this._pollTimer);
+    window.removeEventListener('auth-ok',this._authRecovered);
+    window.removeEventListener('api-cache-updated',this._cacheUpdated);
+  },
   methods: {
     countLabel,eventText,
     rowsInScope(closed = {}) {
@@ -167,12 +183,23 @@ export default {
     dateLabel(value) { if (!value || value === '날짜 미확인') return value || '미확인'; return value.replace(/^(\d{4})-(\d{2})-(\d{2}).*$/, '$1.$2.$3'); },
     timeLabel(value) { const d = new Date(value); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('ko-KR',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',hour12:false}) : ''; },
     timestamp(value) { const d = new Date(value); return Number.isFinite(d.getTime()) ? d.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : '미확인'; },
+    applyOptions(value) {
+      const first = !this.optionsLoaded;
+      this.options = value || {people:[],modules:[]}; this.optionsLoaded = true; this.optionsError = '';
+      const defaults = this.options.defaults;
+      if (first && !this.run && defaults) {
+        this.startDate = defaults.startDate || this.startDate; this.endDate = defaults.endDate || this.endDate;
+        this.people = defaults.people || []; this.modules = defaults.modules || [];
+      }
+    },
     async initialize() {
-      const results = await Promise.allSettled([api.raw('/api/tracking/options'),api.raw(basePath)]);
+      const cached = api.cached('/api/tracking/options');
+      if (cached) this.applyOptions(cached);
+      const recent = api.cached(basePath);
+      if (recent?.runs) this.recent = recent.runs;
+      const results = await Promise.allSettled([api.readCached('/api/tracking/options'),api.readCached(basePath)]);
       if (results[0].status === 'fulfilled') {
-        this.options = results[0].value || {people:[],modules:[]}; this.optionsLoaded = true; this.optionsError = '';
-        const defaults = this.options.defaults;
-        if (!this.run && defaults) { this.startDate = defaults.startDate || this.startDate; this.endDate = defaults.endDate || this.endDate; this.people = defaults.people || []; this.modules = defaults.modules || []; }
+        this.applyOptions(results[0].value);
       } else this.optionsError = results[0].reason?.message || '대상 목록을 불러오지 못했습니다.';
       if (results[1].status === 'fulfilled') {
         this.recent = results[1].value?.runs || [];
@@ -221,7 +248,13 @@ export default {
     async openRun(id,restore = true) {
       if (!id) return;
       const epoch = ++this._epoch; clearTimeout(this._pollTimer); this.pending = true; this.error = ''; this.aiPending = false;
-      try { const run = await api.raw(basePath+'/'+encodeURIComponent(id)); if (epoch === this._epoch) this.adoptRun(run,restore); }
+      const path = basePath+'/'+encodeURIComponent(id), cached = api.cached(path);
+      if (cached && !running(cached)) this.adoptRun(cached,restore);
+      try {
+        // Reopening a stored result never starts historical collection. Running/retry reads stay live.
+        const run = await (restore && !running(cached) ? api.readCached(path) : api.raw(path));
+        if (epoch === this._epoch) this.adoptRun(run,restore);
+      }
       catch (error) { if (epoch === this._epoch) this.error = error.message || '실행을 열지 못했습니다.'; }
       finally { if (epoch === this._epoch) this.pending = false; }
     },
@@ -237,7 +270,11 @@ export default {
     async runAction(action) {
       if (this.pending || !this.run) return;
       const id = this.run.id, epoch = ++this._epoch; this.pending = true; this.error = ''; clearTimeout(this._pollTimer);
-      try { const run = await api.raw(basePath+'/'+encodeURIComponent(id)+'/'+action,{method:'POST'}); if (epoch === this._epoch) this.adoptRun(run); }
+      try {
+        const run = await api.raw(basePath+'/'+encodeURIComponent(id)+'/'+action,{method:'POST'});
+        this.cacheStoredRun(run);
+        if (epoch === this._epoch) this.adoptRun(run);
+      }
       catch (error) { if (epoch === this._epoch) { this.error = error.message || '실행 상태를 변경하지 못했습니다.'; this.schedulePoll(); } }
       finally { if (epoch === this._epoch) this.pending = false; }
     },
@@ -275,15 +312,26 @@ export default {
     openTicket(key) { if (key) window.dispatchEvent(new CustomEvent('lake-open-ticket',{detail:{key}})); },
     clearHighlight() { this.highlightValue = ''; },
     summaryLabel(value) { return value == null || (!value && this.provisional) ? '미확인' : String(value) + (this.provisional ? '+' : ''); },
+    cacheStoredRun(run) {
+      if (!run?.id) return;
+      api.replaceCached(basePath+'/'+encodeURIComponent(run.id), run);
+      const list = api.cached(basePath);
+      if (list?.runs) api.replaceCached(basePath, { ...list,
+        runs: [run, ...list.runs.filter(item => item.id !== run.id)].slice(0,20) });
+    },
     async summarize() {
       if (!this.run || this.aiPending || !this.options.aiEnabled) return;
       const id = this.run.id, epoch = this._epoch; this.aiPending = true; this.aiError = '';
+      const source = { ...this.run, metrics: { ...this.run.metrics } };
       try {
         const result = await api.raw(basePath+'/'+encodeURIComponent(id)+'/summary',{method:'POST',timeoutMs:120000});
+        const stored = { ...source, aiSummary: result,
+          metrics: { ...source.metrics, llmTokens: (source.metrics.llmTokens || 0)+(result.usage?.totalTokens || 0) } };
+        this.cacheStoredRun(stored);
         if (this.run?.id === id && this._epoch === epoch) {
           this.ai = result;
           this.run.aiSummary = result;
-          this.run.metrics = {...this.run.metrics,llmTokens:(this.run.metrics?.llmTokens || 0)+(result.usage?.totalTokens || 0)};
+          this.run.metrics = stored.metrics;
         }
       }
       catch (error) { if (this.run?.id === id && this._epoch === epoch) this.aiError = error.message || 'AI 요약을 만들지 못했습니다.'; }

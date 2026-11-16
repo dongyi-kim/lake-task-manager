@@ -233,7 +233,11 @@ export default {
       await this.finishFormDraft(true);
       this.transitionMutationId = "";
       this.pendingTransitionPayload = null;
-      this.$emit("done");
+      // A confirmed write already tells us its target; a second detail read may fail separately.
+      const view = { key: this.ticket, status: payload.targetStatusName,
+        statusCategory: payload.targetStatusCategory };
+      if (r && Object.prototype.hasOwnProperty.call(r, "resolved")) view.resolved = r.resolved;
+      this.$emit("done", view);
       // 후처리: 이 전이가 부모 상태 규칙을 촉발하면(하위 완료/진행중/재열림) 상위도 바꿀지 물어본다.
       if (r && r.cascade) window.dispatchEvent(new CustomEvent("cascade-prompt", { detail: r.cascade }));
     },
