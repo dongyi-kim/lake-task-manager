@@ -1,6 +1,8 @@
 """Stored Tracking comments render safely without fetching Jira again."""
 from copy import deepcopy
 
+import pytest
+
 from test_backend_manager import Provider, manager
 
 
@@ -48,4 +50,36 @@ def test_get_prefers_already_collected_rendered_body_and_still_sanitizes(tmp_pat
         rendered_body='<p>Already <em>rendered</em></p><script>bad()</script>')
     html = m.get("saved")["events"][0].get("bodyHtml", "")
     assert html == "<p>Already <em>rendered</em></p>"
+    assert provider.calls == []
+
+
+@pytest.mark.parametrize(("body", "body_format", "expected"), [
+    ('<p>Lake <b>ready</b>!</p><p>Next<br>line &amp; more</p>'
+     '<pre><code>&lt;div&gt; &amp; x &lt; 3</code></pre><script>unsafe()</script>',
+     "html", 'Lake ready!\nNext\nline & more\n<div> & x < 3'),
+    ('*Ready*\n\n{code:html}\n<div> & x < 3\n{code}',
+     "wiki", 'Ready\n<div> & x < 3'),
+    ('<section>Ready</section><article>Next</article><dl><dt>Owner</dt><dd>Kim</dd></dl>'
+     '<table><caption>Result</caption><tr><td>Done</td></tr></table>',
+     "html", 'Ready\nNext\nOwner\nKim\nResult\nDone'),
+])
+def test_plain_comment_projection_preserves_visible_text_and_original_sources(tmp_path, body, body_format, expected):
+    m, provider = saved_run(tmp_path, body=body, body_format=body_format)
+    stored_before = m.store.read("saved")
+
+    run = m.get("saved")
+
+    assert run["events"][0]["bodyText"] == expected
+    assert run["issues"][0]["events"][0]["bodyText"] == expected
+    assert run["events"][0]["body"] == body
+    assert run["events"][0]["excerpt"] == body
+    assert m.store.read("saved") == stored_before
+    assert provider.calls == []
+
+
+def test_plain_comment_projection_uses_the_collected_sanitized_rendering(tmp_path):
+    m, provider = saved_run(tmp_path, body="unsupported wiki macro",
+        rendered_body='<p>Already <em>rendered</em></p><script>unsafe()</script>')
+
+    assert m.get("saved")["events"][0]["bodyText"] == "Already rendered"
     assert provider.calls == []

@@ -131,7 +131,8 @@
 .tr-feed-event:hover { background: var(--panel-2); }
 .tr-feed-event time { color: var(--muted-2); font-size: 11px; font-variant-numeric: tabular-nums; flex: none; }
 .tr-feed-content { flex: 1; min-width: 0; }
-.tr-feed-ticket { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.tr-feed-ticket { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; padding: 0; border: 0; background: transparent; color: var(--text); text-align: left; }
+.tr-feed-ticket:hover strong { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .tr-feed-ticket strong { font-size: 13px; font-weight: 650; line-height: 1.5; word-break: keep-all; overflow-wrap: anywhere; }
 .tr-feed-ticket small { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .tr-feed-body { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); line-height: 1.6; }

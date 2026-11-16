@@ -16,6 +16,12 @@ def test_comment_folding_counts_rendered_lines_and_resets_for_new_evidence():
     result = subprocess.run([node, "--input-type=module", "-e", """
       import assert from 'node:assert/strict';
       const {default: component, commentLineLayout} = await import(MODULE);
+      const {eventText} = await import(new URL('./trackingModel.js', MODULE));
+      for (const kind of ['comment', 'commentEdited']) {
+        assert.equal(eventText({kind, body:'', excerpt:'Stored preview'}), 'Stored preview');
+        assert.equal(eventText({kind, body:'<script>bad()</script>', bodyText:''}), '본문 미확인');
+        assert.equal(eventText({kind, body:'<p>Ready</p>', bodyText:'Ready'}), 'Ready');
+      }
       // Multiple inline fragments and table cells on a row are one rendered line.
       assert.deepEqual(commentLineLayout([
         {top:0,bottom:20}, {top:0,bottom:20}, {top:26,bottom:46}

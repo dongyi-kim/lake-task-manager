@@ -75,8 +75,9 @@ def summarize_snapshot(snapshot: dict) -> dict:
     issues = snapshot.get("issues") or []
     payload = {key: snapshot.get(key) for key in ("request", "asOf", "summary", "coverage")}
     payload["issues"] = [{"key": issue["key"], "summary": issue.get("summary", "")} for issue in issues]
-    # Rich HTML is a display projection of body, not additional evidence.
-    payload["events"] = [{key: value for key, value in event.items() if key != "bodyHtml"} for event in events]
+    # Display projections of body are not additional evidence.
+    payload["events"] = [{key: value for key, value in event.items() if key not in ("bodyHtml", "bodyText")}
+                         for event in events]
     # Reject before tokenization/model initialization; never silently drop evidence.
     if len(json.dumps(payload, ensure_ascii=False)) > 100_000:
         raise SummaryInputError("요약할 근거가 많습니다. 기간이나 대상을 좁혀 조회해 주세요.")

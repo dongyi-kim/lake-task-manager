@@ -2,6 +2,7 @@ import { eventText, readableTicketTitle, ticketLabel } from './trackingModel.js'
 import { reportText } from './trackingReportModel.js';
 import { trackingRowSummary } from './trackingOverviewModel.js';
 import { groupTrackingReport } from './trackingGroupingModel.js';
+import TrackingComment from './tracking-comment.js';
 
 const PIN_KEY = 'ltm.tracking.report.pins';
 const GROUPING_KEY = 'ltm.tracking.report.grouping';
@@ -31,6 +32,7 @@ const CATEGORIES = [
 
 export default {
   name:'TrackingReport',
+  components:{TrackingComment},
   props:{report:Object,run:Object,selectedKey:String,matchKeys:Array,filterMatches:Boolean,hasMatch:Boolean,
     groups:{type:Array,default:null},scopeId:{type:String,default:''},scopeLabel:{type:String,default:'전체 업무'}},
   emits:['select','evidence','scope'],
@@ -109,7 +111,7 @@ export default {
           </div>
           <div v-if="expanded[item.key]" class="tr-brief-expanded"><div class="tr-brief-outcome"><span class="tr-brief-label">{{ categoryLabel(rowSummary(item).category) }}</span><strong>{{ rowSummary(item).headline }}</strong><span v-if="item.transition" class="tr-brief-transition">{{ item.transition.from }} → {{ item.transition.to }}</span></div>
           <ul v-if="completedChildren(item).length" class="tr-brief-deliveries"><li v-for="key in completedChildren(item).slice(0,expanded[item.key] ? undefined : 2)" :key="key"><span aria-hidden="true">✓</span><button @click="$emit('evidence',item.events.find(e => e.issueKey === key && e.kind === 'completed')?.id)">{{ issueTitle(item,key) }}</button><small>{{ key }}</small><small v-if="item.reopenedKeys.includes(key)">재오픈 이력도 있음</small></li><li v-if="!expanded[item.key] && completedChildren(item).length > 2" class="tr-muted">외 {{ completedChildren(item).length-2 }}건의 하위 완료 이력</li></ul>
-          <div v-if="item.comments.length" class="tr-brief-comments"><span class="tr-brief-section-label">최근 보고·논의</span><button v-for="comment in comments(item)" :key="comment.id" class="tr-brief-comment" @click="$emit('evidence',comment.id)"><p>{{ eventText(comment) }}</p><span>{{ comment.actorName || comment.actorId || '작성자 미확인' }}<time>{{ date(comment.date) }}</time><span v-if="comment.isEdited || comment.latestObservedEdit || comment.kind === 'commentEdited'">관측된 수정본</span><span v-if="comment.issueKey !== item.key" class="tr-comment-source">{{ issueLabel(item,comment.issueKey) }}</span></span></button></div>
+          <div v-if="item.comments.length" class="tr-brief-comments"><span class="tr-brief-section-label">최근 보고·논의</span><article v-for="comment in comments(item)" :key="comment.id" class="tr-brief-comment"><TrackingComment :event="comment" /><span>{{ comment.actorName || comment.actorId || '작성자 미확인' }}<time>{{ date(comment.date) }}</time><span v-if="comment.isEdited || comment.latestObservedEdit || comment.kind === 'commentEdited'">관측된 수정본</span><span v-if="comment.issueKey !== item.key" class="tr-comment-source">{{ issueLabel(item,comment.issueKey) }}</span><button class="tr-inline" @click="$emit('evidence',comment.id)">상세 보기</button></span></article></div>
           <ul v-else-if="changeEvents(item).length" class="tr-brief-changes"><li v-for="event in changeEvents(item)" :key="event.id"><button @click="$emit('evidence',event.id)"><span class="tr-change-ticket">{{ issueLabel(item,event.issueKey) }}</span><span>{{ eventText(event) }}</span></button><time>{{ date(event.date) }}</time></li></ul>
           <p v-else class="tr-brief-no-evidence">{{ item.uncertain ? '수집되지 않은 근거가 있어 기간 내 진행 내용을 확정할 수 없습니다.' : '이 기간에 수집된 활동 없음. 실제 작업 여부는 이 정보만으로 판단할 수 없습니다.' }}</p>
           <footer class="tr-brief-footer"><span>{{ item.issue?.assigneeName || item.issue?.assignee?.name || '담당 미확인' }}</span><span v-if="item.children.length">하위 {{ item.children.length }}개 업무 묶음</span><span v-if="item.uncertain" class="tr-brief-uncertain">근거 일부 미확인</span><button v-if="item.comments.length > 2 || completedChildren(item).length > 2" @click="toggle(item)" :aria-expanded="!!expanded[item.key]">{{ expanded[item.key] ? '간략히' : '내용 더 보기' }}</button><button class="tr-brief-evidence" @click="$emit('select',item)">활동 근거 {{ item.events.length }}건 보기</button></footer>
