@@ -13,6 +13,7 @@ const eventsOf = item => [...(item.events || [])].sort(recentFirst);
 const completedChildren = item => [...new Set(item.completedKeys || [])].filter(key=>key !== item.key);
 const recentComment = item => [...(item.comments || [])]
   .sort((a,b)=>time(b.editedAt || at(b))-time(a.editedAt || at(a)) || recentFirst(a,b))[0];
+const createdComments = item => (item.comments || []).filter(comment=>comment.createdEvent || comment.kind === 'comment').length;
 const dateLabel = value => {
   if (!Number.isFinite(Date.parse(value))) return '시점 미확인';
   const date = kstToday(new Date(value));
@@ -100,7 +101,11 @@ export function trackingRowSummary(item) {
       headline = created ? '기간 내 업무 생성' : '하위 업무 '+childCreated+'건 생성';
       evidence = events.find(event=>event.kind === 'created');
     } else if ((item.comments || []).length) {
-      headline = '기간 내 댓글 '+item.comments.length+'건 확인';
+      const created = createdComments(item), editedOnly = item.comments.length-created;
+      headline = '기간 내 '+[
+        created ? '댓글 '+created+'건' : '',
+        editedOnly ? '댓글 수정 '+editedOnly+'건' : '',
+      ].filter(Boolean).join(' · ')+' 확인';
       const comment = recentComment(item);
       evidence = comment;
       detail.push(commentDetail(comment));
@@ -142,7 +147,7 @@ export function buildTrackingOverview(report) {
     newRoots:items.filter(item=>(item.createdKeys || []).includes(item.key)).length,
     newTickets:new Set(items.flatMap(item=>item.createdKeys || [])).size,
     fieldChanges:items.reduce((count,item)=>count+(item.events || []).filter(event=>event.kind === 'fieldChanged').length,0),
-    comments:items.reduce((count,item)=>count+(item.comments || []).length,0),
+    comments:items.reduce((count,item)=>count+createdComments(item),0),
     reopenedRoots:items.filter(item=>(item.reopenedKeys || []).includes(item.key)).length,
     review:items.filter(item=>rows.get(item.key).attention).length,
     provisional:!!report?.summary?.provisional || items.some(item=>item.uncertain)};

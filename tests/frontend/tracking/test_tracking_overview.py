@@ -120,6 +120,42 @@ def test_comments_are_explicit_recent_comment_excerpts_and_edits_count_once():
     """)
 
 
+def test_edited_only_comments_preserve_body_without_counting_new_comments():
+    run_js("""
+      const input=report([issue('T-1')],[
+        event('edited','T-1','commentEdited','2026-11-15T02:00:00Z',{
+          commentId:'old',body:'기존 댓글의 최신 수정 내용'})]);
+      const overview=m.buildTrackingOverview(input), row=m.trackingRowSummary(input.items[0]);
+      assert.equal(overview.totals.comments,0);
+      assert.equal(row.headline,'기간 내 댓글 수정 1건 확인');
+      assert.match(row.detail,/기존 댓글의 최신 수정 내용/);
+      assert.equal(row.evidenceId,'edited');
+      assert.equal(row.category,'changed');assert.deepEqual(overview.highlights,[]);
+      // A raw comment remains compatible when no grouped createdEvent is supplied.
+      assert.equal(m.buildTrackingOverview({items:[{...input.items[0],comments:[
+        {kind:'comment',body:'원문'}]}]}).totals.comments,1);
+    """)
+
+
+def test_mixed_comments_separate_new_and_edited_only_without_double_counting():
+    run_js("""
+      const input=report([issue('T-1')],[
+        event('created','T-1','comment','2026-11-15T01:00:00Z',{
+          commentId:'new',body:'기간 내 새 댓글'}),
+        event('new-edited','T-1','commentEdited','2026-11-15T02:00:00Z',{
+          commentId:'new',body:'기간 내 새 댓글도 수정됨'}),
+        event('old-edited','T-1','commentEdited','2026-11-15T03:00:00Z',{
+          commentId:'old',body:'기간 전에 작성한 댓글의 최신 본문'})]);
+      const overview=m.buildTrackingOverview(input), row=m.trackingRowSummary(input.items[0]);
+      assert.equal(input.items[0].comments.length,2);
+      assert.equal(overview.totals.comments,1);
+      assert.equal(row.headline,'기간 내 댓글 1건 · 댓글 수정 1건 확인');
+      assert.match(row.detail,/기간 전에 작성한 댓글의 최신 본문/);
+      assert.equal(row.evidenceId,'old-edited');
+      assert.deepEqual(overview.highlights,[]);
+    """)
+
+
 def test_highlights_name_distinct_roots_and_choose_recent_completion_progress_and_review():
     run_js("""
       const input=report([issue('T-1',{statusCategory:'done'}),issue('T-2',{statusCategory:'done'}),
