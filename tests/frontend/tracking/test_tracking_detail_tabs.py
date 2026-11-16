@@ -1,4 +1,4 @@
-"""Selected hierarchy nodes share summary/detail navigation without new queries."""
+"""Selected hierarchy nodes share briefing/evidence navigation without new queries."""
 import json
 import shutil
 import subprocess
@@ -8,7 +8,7 @@ import pytest
 from support.paths import REPO_ROOT
 
 
-def test_summary_detail_tabs_cover_ancestors_leaves_and_shared_paths():
+def test_briefing_evidence_navigation_covers_ancestors_leaves_and_shared_paths():
     node = shutil.which('node')
     if not node:
         pytest.skip('Node.js is not installed')
@@ -32,27 +32,27 @@ def test_summary_detail_tabs_cover_ancestors_leaves_and_shared_paths():
     vm.selectScope('e');
     assert.equal(vm.selectedId,'e');
     assert.equal(vm.summaryDisabled,false);
-    vm.selectTab('detail');
+    vm.inspectReference('e');
     assert.equal(vm.reportEvidenceOpen,true);
     assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['T-1','S-1','S-2']);
     vm.query='S-1';vm.matchedOnly=true;
     assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['S-1']);
+    assert.deepEqual(vm.allSelectedEvents.map(e=>e.issueKey),['T-1','S-1','S-2']);
     vm.query='';vm.matchedOnly=false;
-    vm.selectTab('summary');
+    vm.closeReferenceDetail();
     assert.equal(vm.reportEvidenceOpen,false);assert.equal(vm.scopeId,'e');
-    vm.selectRow(vm.allRows.find(row=>row.id==='t'));
-    vm.selectTab('summary');
+    vm.selectScope('t');
     assert.equal(vm.scopeId,'t');
     assert.deepEqual(vm.scopedReport.items.flatMap(item=>item.keys).sort(),['S-1','T-1']);
     vm.selectScope('s');
     assert.equal(vm.summaryDisabled,true);assert.equal(vm.reportEvidenceOpen,true);
-    vm.selectTab('summary');
-    assert.equal(vm.reportEvidenceOpen,true);
     assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['S-1']);
-    vm.selectScope('');vm.selectTab('detail');
+    vm.closeReferenceDetail();
+    assert.equal(vm.scopeId,'t');assert.equal(vm.reportEvidenceOpen,false);
+    vm.selectScope('');vm.inspectReference('');
     assert.equal(vm.summaryDisabled,false);assert.equal(vm.selectedId,'');
     assert.equal(vm.selectedEvents.length,3);
-    vm.selectTab('summary');assert.equal(vm.reportEvidenceOpen,false);
+    vm.closeReferenceDetail();assert.equal(vm.reportEvidenceOpen,false);
     // A missing parent may appear under two scopes; its summary must retain the chosen one.
     vm.run={...run,events:run.events.filter(e=>e.issueKey!=='T-1'),issues:[
       {...run.issues[1],type:'Sub-Task',parentKey:'T-1'},
@@ -61,10 +61,12 @@ def test_summary_detail_tabs_cover_ancestors_leaves_and_shared_paths():
         {id:'b',kind:'wbs',name:'B',children:[ticket('b-s','S-2')]}]};
     vm.selectScope('a');vm.selectReport(vm.scopedReport.items[0]);
     assert.equal(vm.selected.id,'tracking-report:T-1');
-    vm.selectTab('summary');
+    vm.closeReferenceDetail();
     assert.equal(vm.scope.valid,true);
+    assert.equal(vm.scopeId,'a');
     assert.deepEqual(vm.scopedReport.items[0].keys.slice().sort(),['S-1','T-1']);
-    vm.selectTab('detail');assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['S-1']);
+    vm.selectReport(vm.scopedReport.items[0]);
+    assert.deepEqual(vm.allSelectedEvents.map(e=>e.issueKey),['S-1']);
 
     '''.replace('STATIC', json.dumps(static))
     result = subprocess.run([node, '--input-type=module', '-e', script],

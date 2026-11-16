@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 
+from app.tracking.completion import current_completion
+
 KST = timezone(timedelta(hours=9))
 COUNT_KINDS = {"created": "created", "completed": "completed", "reopened": "reopened",
                "comment": "comments", "commentEdited": "commentEdits", "fieldChanged": "fieldChanges"}
@@ -180,6 +182,9 @@ def analyze_issue(raw, comments, start, end, selected_people, status_categories,
              "scopeUncertain": bool(selected and (not history_complete or unresolved) and not (assigned or actor)),
              "coverage": {"historyComplete": history_complete, "commentsComplete": comments_complete,
                           "complete": not missing}}
+    completion = current_completion(raw, status_categories, history_complete)
+    if completion is not None:
+        issue["currentCompletion"] = completion
     return issue, events, missing
 
 

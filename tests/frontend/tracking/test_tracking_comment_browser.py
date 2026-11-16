@@ -60,10 +60,10 @@ def tracking_browser(request):
     # changing the compact comment/grouping fixtures above.
     if isinstance(getattr(request, 'param', None), dict):
         run.update(request.param)
-    styles = ["tokens", "base", "ticket", "tracking", "tracking-report", "tracking-overview", "tracking-scope", "tracking-comment"]
+    styles = ["tokens", "base", "ticket", "tracking", "tracking-report", "tracking-overview", "tracking-scope", "tracking-comment", "tracking-reference", "tracking-reference-panels", "tracking-briefing"]
     html = '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>Tracking comment regression</title>'
     html += ''.join(f'<link rel="stylesheet" href="/styles/{name}.css">' for name in styles)
-    html += '''</head><body><div id="app"></div><script type="module">
+    html += '''</head><body><div id="app" class="wrap"></div><script type="module">
       import {createApp} from '/vendor/vue.esm-browser.prod.js';
       import TrackingView from '/components/tracking-view.js';
       createApp(TrackingView).mount('#app');
@@ -100,11 +100,19 @@ def tracking_browser(request):
         browser = launch_chromium(driver)
         try:
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page.set_default_timeout(5000)
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.on('console', lambda message: errors.append(message.text) if message.type == 'error' else None)
             page.route('**/*', respond)
             page.goto('http://tracking.test/')
-            playwright.expect(page.locator('.tr-brief').first).to_be_visible()
+            try:
+                playwright.expect(page.locator('.tracking-reference .rf-workspace').first).to_be_visible()
+            except AssertionError as error:
+                raise AssertionError(f'{error}\nConsole: {errors}\nUnexpected requests: {unexpected}') from error
+            if not isinstance(getattr(request, 'param', None), dict):
+                page.get_by_role('navigation', name='업무 계층 탐색').get_by_role(
+                    'button', name='소속 Epic 없음 범위 선택', exact=True,
+                ).click()
             yield page, api_requests, unexpected, errors
         finally:
             browser.close()
@@ -112,13 +120,13 @@ def tracking_browser(request):
 
 def open_surface(page, surface):
     if surface == 'summary':
-        page.get_by_role('button', name='내용 펼치기', exact=True).click()
-        return page.locator('.tr-brief-comments')
+        page.get_by_role('button', name='내용 펼치기', exact=True).first.click()
+        return page.locator('.tb-row-expanded')
     if surface == 'feed':
         page.get_by_role('button', name='날짜별 활동', exact=True).click()
         return page.locator('.tr-feed')
-    page.get_by_role('tab', name=re.compile('상세')).click()
-    return page.locator('#tracking-detail')
+    page.locator('.tb-row[data-key="TASK-1"] .tb-evidence .tb-text').click()
+    return page.locator('.tp-evidence')
 
 
 def assert_folded_comment(comment):
@@ -147,7 +155,7 @@ def test_rich_comment_renders_and_folds_without_opening_evidence(tracking_browse
     assert not re.search(r'<(?:p|table)\b', area.inner_text())
     assert page.locator('button button, button a, a button').count() == 0
     requests_before = list(reads)
-    summary_state = page.get_by_role('tab', name='요약', exact=True).get_attribute('aria-selected')
+    evidence_count = page.locator('.tp-evidence').count()
     toggle = assert_folded_comment(comment)
     toggle.click()
     expect(comment.get_by_role('button', name='댓글 접기', exact=True)).to_have_attribute('aria-expanded', 'true')
@@ -155,18 +163,18 @@ def test_rich_comment_renders_and_folds_without_opening_evidence(tracking_browse
     assert comment.locator('.tr-comment-clip').evaluate('el => el.clientHeight >= el.scrollHeight - 1')
     comment.get_by_role('link', name='댓글 참고 링크', exact=True).click()
     expect(page).to_have_url('http://tracking.test/#comment-reference')
-    expect(page.get_by_role('tab', name='요약', exact=True)).to_have_attribute('aria-selected', summary_state)
+    expect(page.locator('.tp-evidence')).to_have_count(evidence_count)
     if surface != 'detail':
-        expect(page.locator('#tracking-detail')).to_have_count(0)
+        expect(page.locator('.tp-evidence')).to_have_count(0)
     comment.get_by_role('button', name='댓글 접기', exact=True).click()
     assert_folded_comment(comment)
     if surface == 'summary':
-        page.locator('.tr-brief-evidence').click()
+        page.locator('.tb-row[data-key="TASK-1"] .tb-evidence .tb-text').click()
     elif surface == 'feed':
         area.locator('.tr-feed-event').filter(has=page.locator('table')).locator('.tr-feed-ticket').click()
     if surface != 'detail':
-        expect(page.locator('#tracking-detail')).to_be_visible()
-        expect(page.get_by_role('tab', name=re.compile('상세'))).to_have_attribute('aria-selected', 'true')
+        expect(page.locator('.tp-evidence')).to_be_visible()
+        expect(page.get_by_role('complementary', name='상세 근거')).to_be_visible()
     assert reads == requests_before
     assert not unexpected
     assert not errors
@@ -176,7 +184,7 @@ def test_summary_preview_is_plain_text_and_plain_comment_keeps_line_folding(trac
     from playwright.sync_api import expect
 
     page, reads, unexpected, errors = tracking_browser
-    preview = page.locator('.tr-brief-preview')
+    preview = page.locator('.tb-comment-preview')
     expect(preview).to_contain_text('첫 번째 보고 문장')
     assert not re.search(r'<(?:p|table)\b', preview.inner_text())
     requests_before = list(reads)
@@ -187,5 +195,33 @@ def test_summary_preview_is_plain_text_and_plain_comment_keeps_line_folding(trac
     expect(plain.get_by_role('button', name='댓글 접기', exact=True)).to_have_attribute('aria-expanded', 'true')
     expect(plain).not_to_have_class(re.compile(r'\bis-collapsed\b'))
     assert reads == requests_before
+    assert not unexpected
+    assert not errors
+
+
+@pytest.mark.parametrize('action', ['이전 조회', 'AI 요약', '보고서 복사', '수집 범위와 비용'])
+def test_secondary_actions_open_native_dialogs_without_collecting(tracking_browser, action):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    before = list(reads)
+    trigger = page.get_by_role('button', name=re.compile('^' + re.escape(action)))
+    trigger.click()
+    dialog = page.get_by_role('dialog')
+    expect(dialog).to_be_visible()
+    assert dialog.evaluate('element => element.tagName === "DIALOG" && element.open')
+    if action == '보고서 복사':
+        expect(dialog.get_by_role('textbox', name='보고서 내용')).to_have_value(re.compile('댓글 렌더링 업무'))
+    elif action == 'AI 요약':
+        expect(dialog).to_contain_text('전체 조회 결과')
+        expect(dialog.get_by_role('button', name='AI 요약 생성', exact=True)).to_be_disabled()
+    elif action == '수집 범위와 비용':
+        expect(dialog).to_contain_text('Jira REST 호출')
+    else:
+        expect(dialog).to_contain_text('다시 수집하지 않습니다.')
+    dialog.get_by_role('button', name='닫기', exact=True).click()
+    expect(dialog).not_to_be_visible()
+    expect(trigger).to_be_focused()
+    assert reads == before
     assert not unexpected
     assert not errors
