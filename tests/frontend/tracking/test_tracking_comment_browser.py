@@ -56,6 +56,10 @@ def tracking_browser(request):
             {"id": "other-change", "issueKey": "TASK-2", "kind": "fieldChanged", "date": "2026-11-13T08:00:00Z",
              "field": "priority", "from": "Low", "to": "High", "actorName": "별도 담당자"},
         ])
+    # Other saved-run regressions can opt into their own hierarchy without
+    # changing the compact comment/grouping fixtures above.
+    if isinstance(getattr(request, 'param', None), dict):
+        run.update(request.param)
     styles = ["tokens", "base", "ticket", "tracking", "tracking-report", "tracking-overview", "tracking-scope", "tracking-comment"]
     html = '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>Tracking comment regression</title>'
     html += ''.join(f'<link rel="stylesheet" href="/styles/{name}.css">' for name in styles)
