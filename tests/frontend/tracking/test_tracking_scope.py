@@ -159,3 +159,29 @@ def test_empty_and_invalid_selections_fail_closed_and_cycle_graphs_terminate():
       assert.deepEqual(buildTrackingScope(null).groups,[]);
       assert.equal(buildTrackingScope(run([], [wbs('empty',[])]),'empty').report.items.length,0);
     """)
+
+
+def test_report_only_parent_scope_preserves_children_without_shared_branch_leaks():
+    run_js("""
+      const input=run([issue('T-1'),issue('S-1',{type:'Sub-Task',parentKey:'T-1'}),
+        issue('S-2',{type:'Sub-Task',parentKey:'T-1'}),issue('T-9')],[
+        wbs('w',[epic('e',[ticket('s','S-1',[ticket('unrelated','T-9')], 'Sub-Task')])]),
+        wbs('other',[ticket('shared','S-1',[], 'Sub-Task')])],undefined,
+        {status:'partial',coverage:{complete:false,missing:[{issueKey:'T-9',source:'history'}]}});
+      const before=JSON.stringify(input), scope=buildTrackingScope(input,'tracking-report:T-1');
+      assert.equal(scope.valid,true);
+      assert.equal(scope.node.id,'tracking-report:T-1');
+      assert.deepEqual(scope.breadcrumbs.map(b=>b.id),['tracking-report:T-1']);
+      assert.deepEqual(scope.run.issues.map(i=>i.key),['T-1','S-1','S-2']);
+      assert.deepEqual(scope.run.events.map(e=>e.issueKey),['T-1','S-1','S-2']);
+      assert.deepEqual(scope.report.items.map(i=>i.keys),[['T-1','S-1','S-2']]);
+      assert.equal(scope.run.tree[0].children.find(n=>n.issueKey==='S-1').id,'s');
+      assert.ok(!JSON.stringify(scope.run.tree).includes('T-9'));
+      assert.equal(scope.report.summary.provisional,true);
+      assert.deepEqual(scope.run.coverage.missing,input.coverage.missing);
+      assert.equal(JSON.stringify(input),before);
+      assert.equal(buildTrackingScope(input,'tracking-report:missing').valid,false);
+      const absent=buildTrackingScope(run([issue('S-1',{type:'Sub-Task',parentKey:'M-1'})]),'tracking-report:M-1');
+      assert.equal(absent.valid,true);
+      assert.deepEqual(absent.report.items.map(i=>i.keys),[['M-1','S-1']]);
+    """)

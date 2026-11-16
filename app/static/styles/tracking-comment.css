@@ -1,0 +1,20 @@
+/* Reuse TicketDialog's sanitized rich-content styles inside compact evidence. */
+.tr-comment { min-width: 0; }
+.tr-comment-clip { overflow: hidden; }
+.tr-comment-body { display: flow-root; min-width: 0; font-size: 13px; line-height: 1.6;
+  color: var(--text); overflow-wrap: anywhere; word-break: normal; }
+.tr-comment-body > :first-child { margin-top: 0; }
+.tr-comment-body > :last-child { margin-bottom: 0; }
+.tr-comment-body p { font-size: inherit; line-height: inherit; white-space: normal; }
+.tr-comment-plain { white-space: pre-wrap; }
+.tr-comment-body pre { max-width: 100%; white-space: pre; overflow-x: auto;
+  overflow-wrap: normal; word-break: normal; }
+.tr-comment-body table { display: block; max-width: 100%; overflow-x: auto; }
+.tr-comment-body th, .tr-comment-body td { overflow-wrap: normal; word-break: normal; }
+.tr-comment-body img { max-width: 100%; }
+.tr-comment-body input { pointer-events: none; }
+.tr-comment-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 32px;
+  margin: 4px 0 0; padding: 2px 0; border: 0; border-radius: 3px; background: transparent;
+  color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.tr-comment-toggle:hover { text-decoration: underline; text-underline-offset: 3px; }
+.tr-comment-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

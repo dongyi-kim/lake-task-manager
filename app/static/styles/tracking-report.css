@@ -2,8 +2,6 @@
 .tr-workspace.tr-workspace-report,
 .tr-workspace.tr-report-wide { grid-template-columns: minmax(0, 1fr) 254px; align-items: start; gap: 16px; }
 .tr-workspace-report > .tr-results { border-color: var(--border); }
-.tr-workspace-report > .tr-evidence { position: fixed; top: 58px; right: 0; width: 500px; height: calc(100dvh - 58px); max-height: calc(100dvh - 58px); min-height: 0; z-index: 35; border-radius: 3px 0 0 0; border-right: 0; padding: 16px 20px 12px; box-shadow: -8px 0 32px #0002; }
-.tr-evidence-close { align-self: flex-end; margin: 0 0 10px; }
 .tr-report { min-width: 0; }
 .tr-report-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 14px; min-height: 38px; }
 .tr-report-head h2 { font-size: 14px; font-weight: 700; margin: 0; white-space: nowrap; }
