@@ -43,9 +43,26 @@ def test_report_pins_filters_copy_and_plain_text_render():
     const render=compile(view.template,{decodeEntities:raw=>raw,onError(error){throw error}});
     const nodes=[];function visit(node){if(!node||typeof node!=='object')return;nodes.push(node);if(Array.isArray(node.children))node.children.forEach(visit)}
     visit(render.call(vm,vm,[]));
+    assert.ok(!nodes.some(n=>n.children==='<script>untrusted</script>')); // Comments stay folded in the scan view.
+    assert.ok(nodes.some(n=>n.props?.['aria-expanded']===false));
+    vm.toggle(task);nodes.length=0;visit(render.call(vm,vm,[]));
     assert.ok(nodes.some(n=>n.children==='<script>untrusted</script>'));
     assert.ok(nodes.some(n=>n.children==='증분 적재 완료 (S-1)'));
     assert.ok(!nodes.some(n=>n.props?.innerHTML));
+    const {default:overviewView}=await import(STATIC+'/components/tracking-overview.js');
+    const {buildTrackingOverview}=await import(STATIC+'/components/trackingOverviewModel.js');
+    const overviewVm={overview:buildTrackingOverview(report),section:'highlights',$emit(){}};
+    for(const [key,fn] of Object.entries(overviewView.methods))overviewVm[key]=fn.bind(overviewVm);
+    const overviewRender=compile(overviewView.template,{decodeEntities:raw=>raw,onError(error){throw error}});
+    nodes.length=0;visit(overviewRender.call(overviewVm,overviewVm,[]));
+    assert.ok(nodes.some(n=>n.children==='주요 적재 개발'));
+    assert.ok(!nodes.some(n=>n.props?.innerHTML));
+    const changed=buildTrackingReport({...run,events:[...run.events,
+      {id:'created',issueKey:'S-1',kind:'created',date:'2026-11-11T09:00:00Z'},
+      {id:'field',issueKey:'T-1',kind:'fieldChanged',field:'assignee',from:'A',to:'B',date:'2026-11-11T09:00:00Z'}]});
+    const changedOverview=buildTrackingOverview(changed);
+    assert.equal(changedOverview.totals.newTickets,1);assert.equal(changedOverview.totals.newRoots,0);
+    assert.equal(changedOverview.totals.fieldChanges,1);
     vm.pin(task);assert.equal(vm.items.length,0);
     '''.replace('STATIC', json.dumps(static))
     result = subprocess.run([node, '--input-type=module', '-e', script], capture_output=True,

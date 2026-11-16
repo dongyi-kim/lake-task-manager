@@ -3,12 +3,24 @@ import { kstToday, dateRange, dateError, trackingRows, countLabel, groupEvents, 
 import TrackingReport from './tracking-report.js';
 import { buildTrackingReport } from './trackingReportModel.js';
 import { projectTrackingVoc } from './trackingVocModel.js';
+import TrackingOverview from './tracking-overview.js';
+import { buildTrackingOverview, trackingRowSummary } from './trackingOverviewModel.js';
+
+const AI_SUMMARY_TEMPLATE = `
+  <div class="tr-ai-result" :class="{'tr-ai-placeholder':!ai && !aiPending}" aria-live="polite">
+    <div class="tr-ai-heading"><strong>AI 업무 요약</strong><button v-if="mode === 'report'" class="tr-button" @click="summarize" :disabled="!options.aiEnabled || aiPending || busy" :title="options.aiReason || '수집된 근거만 요약합니다'">{{ aiPending ? '요약 중…' : options.aiEnabled ? 'AI 요약 생성' : '사용 불가' }}</button></div>
+    <p v-if="!ai && !aiPending && options.aiEnabled" class="tr-ai-description">수집된 성과·진행·확인 사항을 보고 문장으로 정리합니다.</p>
+    <details v-if="!ai && !aiPending && !options.aiEnabled" class="tr-ai-reason"><summary>연결 설정 확인</summary><p>{{ options.aiReason || 'AI 연결 설정이 필요합니다.' }}</p></details>
+    <span v-if="aiPending">확보한 근거를 읽고 있습니다…</span><p v-if="aiError" class="tr-error">{{ aiError }}</p>
+    <ul v-if="ai"><li v-for="(item,i) in ai.items || []" :key="i">{{ item.text }} <button v-for="id in item.evidenceIds || []" :key="id" class="tr-inline" @click="focusEvidence(id)">{{ evidenceLabel(id) }} · 근거</button></li></ul>
+    <small v-if="ai">{{ provisional ? '부분 수집 근거 기준 · ' : '' }}추가 Jira 조회 없음 · 사용 토큰 {{ ai.usage?.totalTokens ?? '미확인' }}</small>
+  </div>`;
 
 const running = run => ['queued','running'].includes(run?.status);
 const basePath = '/api/tracking/runs';
 export default {
   name: 'TrackingView',
-  components: { TrackingReport },
+  components: { TrackingReport, TrackingOverview },
   data() {
     return { ...dateRange(), options:{people:[],modules:[]}, optionsLoaded:false, optionsError:'', people:[],modules:[],personNames:{},
       run:null,recent:[],recentId:'',pending:false,error:'',pollError:'',query:'',highlightKind:'person',highlightValue:'',
@@ -36,13 +48,9 @@ export default {
     },
     selectedIssue() { return this.selected?.issue || null; },
     report() { return buildTrackingReport(this.displayRun); },
-    completionSplit() {
-      const keys = new Set((this.run?.events || []).filter(e => e.kind === 'completed').map(e => e.issueKey));
-      const issues = (this.run?.issues || []).filter(issue => keys.has(issue.key));
-      const sub = issues.filter(issue => issue.isSubtask || /^sub/i.test(issue.type || '')).length;
-      const epic = issues.filter(issue => /^epic$/i.test(issue.type || '')).length;
-      return `업무 ${issues.length-sub-epic} · 하위 ${sub}`+(epic ? ` · Epic ${epic}` : '');
-    },
+    overview() { return buildTrackingOverview(this.report); },
+    selectedBrief() { return this.report.items.find(item => item.key === this.selected?.key); },
+    selectedBriefSummary() { return this.selectedBrief ? trackingRowSummary(this.selectedBrief) : null; },
     selectedEvents() {
       const item = this.mode === 'report' && this.report.items.find(item => item.key === this.selected?.key);
       return (this.run?.events || []).filter(e => item ? item.keys.includes(e.issueKey) : this.selected?.keys.has(e.issueKey));
@@ -86,6 +94,15 @@ export default {
       const r = this.run.request, same = (a,b) => JSON.stringify([...(a || [])].sort()) === JSON.stringify([...(b || [])].sort());
       return r.startDate !== this.startDate || r.endDate !== this.endDate || !same(r.people,this.people) || !same(r.modules,this.modules);
     },
+  },
+  watch: {
+    reportEvidenceOpen(open) {
+      if (open) {
+        this._evidenceTrigger = document.activeElement;
+        this.$nextTick(() => this.$refs.evidenceClose?.focus());
+      } else if (this.$refs.evidencePane?.contains(document.activeElement) && this._evidenceTrigger?.isConnected) this._evidenceTrigger.focus();
+    },
+    mode() { this.reportEvidenceOpen = false; },
   },
   mounted() {
     this._epoch = 0;
@@ -193,6 +210,7 @@ export default {
       const row = this.allRows.find(row => row.key === item.key);
       this.selectedId = row?.id || item.rowId; this.selectedEventId = ''; this.reportEvidenceOpen = true;
     },
+    selectOverview(key) { const item = this.report.items.find(item => item.key === key); if (item) this.selectReport(item); },
     selectEvent(event) {
       this.reportEvidenceOpen = true;
       const row = this.allRows.find(row => row.key === event.issueKey);
@@ -220,10 +238,11 @@ export default {
     focusEvidence(id) { const event = this.run?.events?.find(event => event.id === id); if (event) this.selectEvent(event); },
   },
   template: `
-  <section class="tracking" aria-labelledby="tracking-title" @keydown.esc="picker = ''; reportEvidenceOpen = false">
+  <section class="tracking tracking-overview" aria-labelledby="tracking-title" @keydown.esc="picker = ''; reportEvidenceOpen = false">
     <header class="tr-heading">
-      <div><h1 id="tracking-title">Tracking</h1><p>주요 업무의 실적과 진행 내용</p></div>
+      <div><h1 id="tracking-title">Tracking</h1><p>기간의 성과, 지금의 진척</p></div>
       <div class="tr-heading-actions">
+        <details class="tr-scope-note"><summary>조회 기준</summary><p>시작일·종료일 포함 · 한국 시간 · 기간 중 담당 업무와 본인 활동 · 조직과 WBS는 현재 설정 기준</p></details>
         <label v-if="recent.length" class="tr-recent"><span>최근 실행</span><select :value="recentId" @change="openRun($event.target.value)" :disabled="pending" aria-label="최근 수집 실행 열기">
           <option v-for="item in recent" :key="item.id" :value="item.id">{{ dateLabel(item.request?.startDate) }} – {{ dateLabel(item.request?.endDate) }} · {{ statusLabel(item.status) }}</option>
         </select></label>
@@ -245,7 +264,6 @@ export default {
       <button type="submit" class="tr-button tr-primary" :disabled="!!validation || busy || !optionsLoaded">{{ busy ? '수집 중…' : '조회' }}</button>
     </form>
     <div v-if="picker" class="tr-picker-backdrop" @click="picker = ''"></div>
-    <div class="tr-scope-note">시작일·종료일 포함 · 한국 시간 · 기간 중 담당 업무와 본인 활동 · 조직과 WBS는 현재 설정 기준</div>
     <p v-if="validation" class="tr-error" role="alert">{{ validation }}</p>
     <p v-if="optionsError" class="tr-error" role="alert">{{ optionsError }} <button class="tr-inline" @click="initialize">다시 연결</button></p>
     <p v-if="error" class="tr-error" role="alert">{{ error }} <button class="tr-inline" @click="initialize">최근 실행 확인</button></p>
@@ -256,20 +274,14 @@ export default {
         <button v-if="canResume" class="tr-inline" @click="runAction('resume')" :disabled="pending">이어서 수집</button><button v-if="['queued','running'].includes(run.status)" class="tr-inline" @click="runAction('cancel')" :disabled="pending">수집 취소</button>
       </div>
       <div v-if="pollError" class="tr-error" role="alert">{{ pollError }} 저장된 결과는 유지됩니다. <button class="tr-inline" @click="openRun(run.id,false)">상태 다시 확인</button></div>
-      <div v-if="mode === 'report'" class="tr-report-dashboard" aria-label="기간 실적 지표">
-        <div class="tr-dashboard-completed"><span>완료 이력 티켓</span><strong>{{ summaryLabel(summary.completed) }}<small>건</small></strong><p>{{ completionSplit }}</p></div>
-        <div><span>신규 업무</span><strong>{{ summaryLabel(summary.created) }}<small>건</small></strong><p>기간 내 새로 생성</p></div>
-        <div><span>보고·논의</span><strong>{{ summaryLabel(summary.comments) }}<small>댓글</small></strong><p>최근 내용은 업무별 요약에서 확인</p></div>
-        <div><span>변경 이력</span><strong>{{ summaryLabel(summary.fieldChanges) }}<small>건</small></strong><p>수집한 이력 기준</p></div>
-        <div class="tr-dashboard-review"><span>재확인할 업무</span><strong>{{ summaryLabel(report.summary.review) }}<small>개</small></strong><p>재오픈 또는 근거 미확인</p></div>
-      </div>
+      <TrackingOverview v-if="mode === 'report'" :overview="overview" @select="selectOverview" />
       <div v-if="mode !== 'report'" class="tr-summary" aria-label="기간 내 활동 집계"><span><b>{{ provisional ? '확인된 활동 티켓' : '활동 티켓' }}</b><strong>{{ summaryLabel(summary.uniqueIssues) }}</strong></span><span>생성 <strong>{{ summaryLabel(summary.created) }}</strong></span><span class="tr-completed">완료 <strong>{{ summaryLabel(summary.completed) }}</strong></span><span>댓글 <strong>{{ summaryLabel(summary.comments) }}</strong></span><span title="필요한 이력에서 확보한 변경만 표시합니다">확인된 변경 <strong>{{ summaryLabel(summary.fieldChanges) }}</strong></span><span class="tr-coverage">대상 이력 확인 <b>{{ historyConfirmed }}/{{ targetIssues.length }}</b></span></div>
       <div class="tr-toolbar"><div class="tr-segment" role="group" aria-label="활동 보기"><button :class="{on:mode === 'report'}" :aria-pressed="mode === 'report'" @click="mode = 'report'">업무 요약</button><button :class="{on:mode === 'tree'}" :aria-pressed="mode === 'tree'" @click="mode = 'tree'">계층</button><button :class="{on:mode === 'feed'}" :aria-pressed="mode === 'feed'" @click="mode = 'feed'">날짜별 활동</button></div>
         <input type="search" class="tr-search" v-model="query" placeholder="티켓 · Epic · 사람 검색" aria-label="수집 결과에서 검색">
         <div class="tr-highlight-controls"><span>강조</span><select v-model="highlightKind" @change="clearHighlight" aria-label="강조 대상 종류"><option value="person">사람</option><option value="task">Task</option><option value="epic">Epic</option></select><select v-model="highlightValue" aria-label="강조 대상"><option value="">선택 안 함</option><option v-for="option in highlightOptions" :key="option.id" :value="option.id">{{ option.name }}</option></select><button v-if="highlightValue" class="tr-clear" @click="clearHighlight" aria-label="강조 해제">×</button></div>
         <label class="tr-matched-only"><input type="checkbox" v-model="matchedOnly">일치 항목만</label>
       </div>
-      <div v-if="mode === 'report' || aiPending || ai || aiError" class="tr-ai-result" :class="{'tr-ai-placeholder':!ai && !aiPending}" aria-live="polite"><div class="tr-ai-heading"><strong>AI 업무 요약</strong><button v-if="mode === 'report'" class="tr-button" @click="summarize" :disabled="!options.aiEnabled || aiPending || busy" :title="options.aiReason || '수집된 근거만 요약합니다'">{{ aiPending ? '요약 중…' : options.aiEnabled ? 'AI 요약 생성' : 'AI 요약 준비 중' }}</button></div><p v-if="!ai && !aiPending" class="tr-ai-description">주요 성과 · 진행 내용 · 남은 확인 사항을 종합하는 요약 영역</p><span v-if="aiPending">확보한 근거를 읽고 있습니다…</span><p v-if="aiError" class="tr-error">{{ aiError }}</p><ul v-if="ai"><li v-for="(item,i) in ai.items || []" :key="i">{{ item.text }} <button v-for="id in item.evidenceIds || []" :key="id" class="tr-inline" @click="focusEvidence(id)">{{ evidenceLabel(id) }} · 근거</button></li></ul><small v-if="ai">{{ provisional ? '부분 수집 근거 기준 · ' : '' }}추가 Jira 조회 없음 · 사용 토큰 {{ ai.usage?.totalTokens ?? '미확인' }}</small></div>
+      <template v-if="mode !== 'report' && (aiPending || ai || aiError)">${AI_SUMMARY_TEMPLATE}</template>
       <div class="tr-workspace" :class="{'tr-workspace-report':mode === 'report','tr-report-wide':mode === 'report'}">
         <div class="tr-results">
           <TrackingReport v-if="mode === 'report'" :report="report" :run="run" :selected-key="selected?.key" :match-keys="[...matchKeys]" :has-match="!!(query || highlight)" :filter-matches="matchedOnly" @select="selectReport" @evidence="focusEvidence" />
@@ -282,9 +294,11 @@ export default {
           </tbody></table><div v-if="!rows.length" class="tr-empty">{{ query || highlight ? '일치하는 활동이 없습니다. 검색어나 강조 대상을 바꿔 보세요.' : (provisional ? '아직 확인된 업무가 없습니다. 수집 상태와 확인 범위를 확인하세요.' : '선택한 기간과 대상의 활동이 없습니다.') }}</div></div>
           <div v-else class="tr-feed"><section v-for="group in feedGroups" :key="group.date"><h3>{{ dateLabel(group.date) }} <small>한국 시간</small></h3><button v-for="event in group.events" :key="event.id" :class="['tr-feed-event',{'tr-feed-match':matchKeys.has(event.issueKey),'tr-feed-selected':selectedEventId === event.id}]" @click="selectEvent(event)"><time>{{ timeLabel(event.date) }}</time><span class="tr-event-kind" :class="'tr-event-'+event.kind">{{ eventLabel(event) }}</span><span class="tr-feed-content"><span class="tr-feed-ticket"><strong>{{ ticketTitle(event.issueKey) }}</strong><small>{{ event.issueKey }}</small></span><span class="tr-feed-body">{{ eventText(event) }}</span></span><span class="tr-muted">{{ event.actorName || event.actorId || '작성자 미확인' }}</span></button></section><div v-if="!feedGroups.length" class="tr-empty">표시할 기간 내 활동이 없습니다.</div></div>
         </div>
-        <aside v-if="mode !== 'report' || reportEvidenceOpen" class="tr-evidence" aria-label="선택 업무의 활동 근거"><button v-if="mode === 'report'" class="tr-evidence-close tr-inline" @click="reportEvidenceOpen = false">근거 패널 닫기 ×</button>
+        <TrackingOverview v-if="mode === 'report'" section="rail" :overview="overview" @select="selectOverview">${AI_SUMMARY_TEMPLATE}</TrackingOverview>
+        <aside v-if="mode !== 'report' || reportEvidenceOpen" ref="evidencePane" class="tr-evidence" aria-label="선택 업무의 활동 근거"><button v-if="mode === 'report'" ref="evidenceClose" class="tr-evidence-close tr-inline" @click="reportEvidenceOpen = false">근거 패널 닫기 ×</button>
           <template v-if="selected"><div class="tr-evidence-head"><div class="tr-breadcrumb">{{ selected.path.map(p => p.name || p.summary || p.key).join(' / ') }}</div><h2><button v-if="selected.key" class="tr-ticket-title" @click="openTicket(selected.key)">{{ ticketTitle(selected.key) }}</button><template v-else>{{ selected.title }}</template></h2><span v-if="selected.key" class="tr-ticket-key">{{ selected.key }}</span><div v-if="selectedIssue" class="tr-current"><span :class="['tr-current-status',{'tr-current-done':selectedIssue.statusCategory === 'done'}]">현재 {{ selectedIssue.status || '상태 미확인' }}</span><span class="tr-muted">{{ selectedIssue.assigneeName || '미할당' }}</span></div></div>
-            <div class="tr-evidence-summary"><strong>기간 내 활동</strong><span>{{ selectedEvents.length }}건{{ provisional ? ' 확인' : '' }}</span></div>
+            <section v-if="selectedBriefSummary" class="tr-evidence-brief"><h3>기간 내 확인된 변화</h3><strong class="tr-evidence-outcome">{{ selectedBriefSummary.headline }}</strong><p>{{ selectedBriefSummary.remainingLabel }}</p><ul v-if="selectedBrief.completedKeys.some(key => key !== selectedBrief.key)" class="tr-evidence-deliveries"><li v-for="child in selectedBrief.children.filter(child => selectedBrief.completedKeys.includes(child.key))" :key="child.key"><button class="tr-inline" @click="openTicket(child.key)">{{ ticketLabel(child.key) }}</button><span>완료 이력<span v-if="selectedBrief.reopenedKeys.includes(child.key)"> · 재오픈 이력도 있음</span></span></li></ul></section>
+            <div class="tr-evidence-summary"><strong>기간 내 활동 근거</strong><span>{{ selectedEvents.length }}건{{ provisional ? ' 확인' : '' }}</span></div>
             <div class="tr-evidence-events"><section v-for="group in evidenceGroups" :key="group.date"><h3>{{ dateLabel(group.date) }}</h3><article v-for="event in group.events" :key="event.id" :id="'tracking-event-'+event.id" :class="['tr-evidence-event',{'tr-event-focused':selectedEventId === event.id}]"><div class="tr-event-top"><span class="tr-event-kind" :class="'tr-event-'+event.kind">{{ eventLabel(event) }}</span><span>{{ event.actorName || event.actorId || '작성자 미확인' }}</span><time>{{ timeLabel(event.date) }}</time></div><button v-if="!selectedIssue || event.issueKey !== selected.key" class="tr-evidence-ticket tr-inline" @click="openTicket(event.issueKey)">{{ ticketLabel(event.issueKey) }}</button><p :class="{'tr-comment-excerpt':['comment','commentEdited'].includes(event.kind)}">{{ eventText(event) }}</p><small v-if="event.kind === 'comment' || event.kind === 'commentEdited'">{{ event.kind === 'commentEdited' ? '관측된 마지막 수정 · 과거 편집본 복원 제외' : '확인된 원문 발췌' }}</small></article></section><p v-if="!selectedEvents.length" class="tr-empty">{{ provisional ? '확인된 기간 내 활동이 없습니다. 미수집 이력이 남아 있을 수 있습니다.' : '이 업무의 기간 내 활동이 없습니다.' }}</p></div>
             <footer class="tr-evidence-footer"><span>{{ selected.contextOnly ? '계층 연결용 · 하위 근거 기준' : (selected.counts.historyComplete ? '확보한 이력 기준' : '일부 이력 미확인') }}</span><button v-if="selected.key" class="tr-button" @click="openTicket(selected.key)">티켓 열기 ↗</button></footer>
           </template><div v-else class="tr-empty">업무를 선택하면 기간 내 활동 근거를 확인할 수 있습니다.</div>
