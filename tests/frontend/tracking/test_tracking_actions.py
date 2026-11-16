@@ -65,6 +65,8 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     const render=compile(view.template,{decodeEntities:raw=>raw,onError(error){throw error}});
     assert.equal(typeof render,'function');
     vm.picker='people';vm.options.people=[{id:'a',name:'UserA'},{id:'b',name:'UserB'}];
+    assert.equal(vm.reportEvidenceOpen,false); // A different saved run clears stale evidence.
+    vm.selectEvent(source.events[0]);
     const nodes=[];
     function visit(node){if(!node || typeof node !== 'object')return;nodes.push(node);if(Array.isArray(node.children))node.children.forEach(visit)}
     visit(render.call(vm,vm,[]));
@@ -86,4 +88,99 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     assert.equal(vm.selectedEvents[0].id,'child-comment');
     '''.replace('STATIC',json.dumps(static))
     result = subprocess.run([node,'--input-type=module','-e',script],capture_output=True,text=True,encoding='utf-8')
+    assert result.returncode == 0, result.stderr
+
+
+def test_scoped_event_evidence_keeps_the_selected_shared_ticket_branch():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js is not installed')
+    static = (REPO_ROOT / 'app/static').as_uri()
+    script = r'''
+    import assert from 'node:assert/strict';
+    globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){}};
+    const {default:view}=await import(STATIC+'/components/tracking-view.js');
+    const {api}=await import(STATIC+'/lib/api.js');
+    let calls=0;api.raw=()=>{calls++;throw new Error('Display actions must not fetch')};
+    const coverage={complete:true,historyComplete:true,commentsComplete:true};
+    const issue=(key,extra={})=>({key,summary:key,type:'Task',coverage,...extra});
+    const ticket=(id,key,children=[])=>({id,issueKey:key,kind:'Task',name:key,children});
+    const event=key=>({id:'event:'+key,issueKey:key,kind:'comment',date:'2026-11-15T00:00:00Z',body:key});
+    const run={id:'shared',status:'complete',coverage:{complete:true},
+      issues:[issue('T-1'),issue('S-1',{type:'Sub-Task',parentKey:'T-1'}),issue('S-2',{type:'Sub-Task',parentKey:'T-1'})],
+      events:['T-1','S-1','S-2'].map(event),tree:[
+        {id:'a',kind:'wbs',name:'Branch A',children:[ticket('a-t','T-1',[ticket('a-s','S-1')])]},
+        {id:'b',kind:'wbs',name:'Branch B',children:[ticket('b-t','T-1',[ticket('b-s','S-2')])]}]};
+    const vm={...view.data(),run,scopeId:'b',options:{},$nextTick:()=>{}};
+    for(const [key,fn] of Object.entries(view.methods))vm[key]=fn.bind(vm);
+    for(const [key,fn] of Object.entries(view.computed))Object.defineProperty(vm,key,{get:()=>fn.call(vm)});
+    vm.selectReport(vm.scopedReport.items.find(item=>item.key==='T-1'));
+    assert.equal(vm.selectedId,'b-t');
+    assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['T-1','S-2']);
+    vm.focusEvidence('event:T-1');
+    assert.equal(vm.selectedId,'b-t');assert.equal(vm.selectedEventId,'event:T-1');
+    assert.equal(vm.scopeId,'b');assert.equal(vm.reportEvidenceOpen,true);
+    assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['T-1','S-2']);
+    assert.deepEqual(vm.selectedBrief.keys,['T-1','S-2']);
+    vm.mode='feed';vm.selectEvent(vm.feedGroups[0].events.find(e=>e.issueKey==='T-1'));
+    assert.equal(vm.selectedId,'b-t');
+    assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['T-1','S-2']);
+    // A deliberate navigator evidence action remains independent of report scope.
+    vm.selectRow(vm.allRows.find(row=>row.id==='a-t'));
+    assert.equal(vm.scopeId,'b');assert.equal(vm.selectedId,'a-t');
+    assert.deepEqual(vm.selectedEvents.map(e=>e.issueKey),['T-1','S-1']);
+    assert.equal(calls,0);
+    '''.replace('STATIC',json.dumps(static))
+    result = subprocess.run([node,'--input-type=module','-e',script],capture_output=True,
+                            text=True,encoding='utf-8',timeout=20)
+    assert result.returncode == 0, result.stderr
+
+
+def test_scoped_views_keep_ancestor_search_and_epic_highlight_matches():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js is not installed')
+    static = (REPO_ROOT / 'app/static').as_uri()
+    script = r'''
+    import assert from 'node:assert/strict';
+    globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){}};
+    const {default:view}=await import(STATIC+'/components/tracking-view.js');
+    const {api}=await import(STATIC+'/lib/api.js');
+    let calls=0;api.raw=()=>{calls++;throw new Error('Display actions must not fetch')};
+    const coverage={complete:true,historyComplete:true,commentsComplete:true};
+    const run={id:'ancestor-matches',status:'complete',coverage:{complete:true},issues:[
+      {key:'T-1',summary:'Task',type:'Task',coverage},
+      {key:'S-1',summary:'Child',type:'Sub-Task',parentKey:'T-1',coverage},
+      {key:'T-2',summary:'Outside scope',type:'Task',coverage}],
+      events:['T-1','S-1','T-2'].map(key=>({id:key,issueKey:key,kind:'comment',date:'2026-11-15T00:00:00Z',body:key})),
+      tree:[{id:'w',kind:'wbs',name:'Ancestor WBS',children:[
+        {id:'e',issueKey:'E-1',kind:'Epic',name:'Ancestor Epic',children:[
+          {id:'t',issueKey:'T-1',kind:'Task',name:'Task',children:[
+            {id:'s',issueKey:'S-1',kind:'Sub-Task',name:'Child',children:[]}]},
+          {id:'outside',issueKey:'T-2',kind:'Task',name:'Outside scope',children:[]}]}]}]};
+    const vm={...view.data(),run,scopeId:'t',options:{},matchedOnly:true,$nextTick:()=>{}};
+    for(const [key,fn] of Object.entries(view.methods))vm[key]=fn.bind(vm);
+    for(const [key,fn] of Object.entries(view.computed))Object.defineProperty(vm,key,{get:()=>fn.call(vm)});
+    function verify(){
+      assert.deepEqual(vm.scopedReport.items.map(item=>item.key),['T-1']);
+      assert.ok(vm.scopedReport.items.every(item=>item.keys.some(key=>vm.matchKeys.has(key))));
+      assert.deepEqual(vm.rows.map(row=>row.key),['T-1','S-1']);
+      assert.deepEqual(vm.rows.map(row=>row.depth),[0,1]);
+      assert.deepEqual(vm.feedGroups.flatMap(group=>group.events).map(event=>event.issueKey),['T-1','S-1']);
+      assert.equal(vm.scopeActivity.uniqueIssues,2);assert.equal(vm.scopeActivity.comments,2);
+      assert.equal(vm.overview.totals.comments,2);
+    }
+    vm.query='Ancestor WBS';verify();
+    vm.query='';vm.highlightKind='epic';vm.highlightValue='E-1';verify();
+    // Closing an ancestor in the full navigator cannot hide this isolated scope.
+    vm.closed={w:true,e:true};verify();
+    vm.query='No matching ancestor';
+    assert.deepEqual(vm.rows,[]);assert.deepEqual(vm.feedGroups,[]);
+    assert.ok(vm.scopedReport.items.every(item=>item.keys.every(key=>!vm.matchKeys.has(key))));
+    // Search filters the list; saved-scope aggregates retain their independent totals.
+    assert.equal(vm.scopeActivity.comments,2);assert.equal(vm.overview.totals.comments,2);
+    assert.equal(calls,0);
+    '''.replace('STATIC',json.dumps(static))
+    result = subprocess.run([node,'--input-type=module','-e',script],capture_output=True,
+                            text=True,encoding='utf-8',timeout=20)
     assert result.returncode == 0, result.stderr
