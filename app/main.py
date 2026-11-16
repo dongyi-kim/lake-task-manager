@@ -30,6 +30,7 @@ from app.jira.jira_client import JiraClient
 from app.infra.settings import STATIC_DIR, get_settings, load_people
 from app.routes.dashboards import build_dashboard_router
 from app.routes.mytasks import build_mytasks_router
+from app.routes.tracking import build_tracking_router
 from app.routes.resources import build_resource_router
 from app.routes.confluence import build_confluence_router
 from app.routes.confluence_download import build_confluence_download_router
@@ -1146,6 +1147,7 @@ app.include_router(build_confluence_router(get_client=lambda: _client))
 app.include_router(build_confluence_download_router(get_client=lambda: _client))
 app.include_router(build_confluence_authoring_router(get_client=lambda: _client))
 app.include_router(build_mytasks_router(get_client=lambda: _client))
+app.include_router(build_tracking_router(get_client=lambda: _client))
 app.include_router(build_ticket_router(get_client=lambda: _client))
 app.include_router(build_ticket_command_router(
     get_client=lambda: _client,

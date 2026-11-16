@@ -13,6 +13,9 @@ from fastapi import Query, Request
 from fastapi.responses import JSONResponse
 from jira820.jql import filter_keys
 
+from app.mock.evidence_compat import EvidenceSerializer, search_evidence
+from app.mock.history_jql import history_matches
+
 from app.jira.jql import (And, Atom, JqlUnsupported, Not, _Parser,
                           _render_tokens, _split_order, _unquote, tokenize)
 
@@ -59,7 +62,7 @@ def _parent_matches(store, atom, negate):
 
 def rewrite_parent_jql(store, raw):
     tokens = tokenize(raw or "")
-    if not any(_unquote(token.value).casefold() == "parent" for token in tokens):
+    if not any(_unquote(token.value).casefold() in {"parent", "updatedby", "changed", "was"} for token in tokens):
         return raw or ""
     body, order = _split_order(tokens)
 
@@ -70,6 +73,9 @@ def rewrite_parent_jql(store, raw):
             keys = _parent_matches(store, node.value, negate)
             if keys is not None:
                 return _key_list(keys)
+            keys = history_matches(store, node.value)
+            if keys is not None:
+                return _key_list(set(store.issues) - keys if negate else keys)
             if negate:
                 return _key_list(set(store.issues) - set(filter_keys(store, node.value)))
             return node.value
@@ -80,11 +86,18 @@ def rewrite_parent_jql(store, raw):
     return query + (" ORDER BY " + _render_tokens(order) if order else "")
 
 
-def install_query_compat(app):
-    """Replace this app's search route, retaining Jira820's response serializer."""
-    @app.get("/rest/api/2/search")
-    def search(request: Request, jql: str = Query(""), startAt: int = 0,
-               maxResults: int = 50, fields: str = ""):
+def install_query_compat(app, *, comment_limit=None, changelog_limit=None,
+                         supports_comment=True, supports_changelog=True):
+    """Install official search support and opt-in limited-source test modes.
+
+    Limits affect search expansions only. Individual issue/comment reads retain
+    the full source so collectors can verify and repair truncated search pages.
+    """
+    app.state.store.serializer = EvidenceSerializer(app.state.store)
+
+    def response(request, jql, startAt, maxResults, fields, expand):
+        if startAt < 0 or maxResults < 0:
+            return JSONResponse({"errorMessages": ["Pagination must be nonnegative"], "errors": {}}, status_code=400)
         store = request.app.state.store
         try:
             query = rewrite_parent_jql(store, jql)
@@ -94,11 +107,27 @@ def install_query_compat(app):
         page = keys[startAt:startAt + maxResults]
         base = str(request.base_url).rstrip("/")
         return {"expand": "schema,names", "startAt": startAt, "maxResults": maxResults,
-                "total": len(keys), "issues": [store.serializer.issue_res(store.issues[key], base, fields)
-                                               for key in page]}
+                "total": len(keys), "issues": [search_evidence(store.serializer, store.issues[key], base, fields, expand,
+                    comment_limit=comment_limit, changelog_limit=changelog_limit,
+                    supports_comment=supports_comment, supports_changelog=supports_changelog) for key in page]}
+
+    @app.get("/rest/api/2/search")
+    def search(request: Request, jql: str = Query(""), startAt: int = 0,
+               maxResults: int = 50, fields: str = "", expand: str = ""):
+        return response(request, jql, startAt, maxResults, fields, expand)
 
     # New FastAPI versions keep include_router() as lazy router nodes. Prepend
     # this app's override instead of mutating an installed shared router object.
+    app.router.routes.insert(0, app.router.routes.pop())
+
+    @app.post("/rest/api/2/search")
+    async def search_post(request: Request):
+        body = await request.json()
+        def joined(value):
+            return ",".join(value) if isinstance(value, list) else value
+        return response(request, body.get("jql", ""), body.get("startAt", 0), body.get("maxResults", 50),
+                        joined(body.get("fields", "")), joined(body.get("expand", "")))
+
     app.router.routes.insert(0, app.router.routes.pop())
 
     @app.middleware("http")
