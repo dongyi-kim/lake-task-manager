@@ -34,6 +34,14 @@ def test_report_pins_filters_copy_and_plain_text_render():
     for(const [key,fn] of Object.entries(view.methods))vm[key]=fn.bind(vm);
     for(const [key,fn] of Object.entries(view.computed))Object.defineProperty(vm,key,{get:()=>fn.call(vm)});
     assert.equal(vm.sections.length,2); assert.equal(vm.sections[1].title,'질의 - 데이터');
+    assert.equal(vm.grouping,'hierarchy');
+    vm.setGrouping('status');
+    assert.equal(view.data().grouping,'status');
+    assert.ok(vm.sections.every(section=>section.kind==='status'));
+    assert.ok(vm.sections.every(section=>section.children.every(child=>child.kind==='hierarchy')));
+    vm.setGrouping('hierarchy');
+    assert.ok(vm.sections.every(section=>section.kind==='hierarchy'));
+    assert.ok(vm.sections.every(section=>section.children.every(child=>child.kind==='status')));
     vm.filterMatches=true;assert.deepEqual(vm.items.map(i=>i.key),['T-1']);
     const task=report.items.find(i=>i.key==='T-1');vm.pin(task);vm.filter='pinned';
     assert.deepEqual(view.data().pins,['T-1']);

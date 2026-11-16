@@ -42,6 +42,7 @@ def test_subtasks_roll_up_once_with_shared_paths_while_epic_own_activity_stays_s
       assert.equal(task.category,'changed');assert.match(task.headline,/하위.*1건.*완료/);
       assert.ok(!task.headline.includes('상위 업무 완료'));assert.equal(task.transition,null);
       assert.equal(task.paths.length,2);assert.ok(task.paths.some(p=>p.includes('A')));
+      assert.deepEqual(task.ancestorPaths,['A › WBS › Epic','B › WBS › Epic']);
       assert.equal(task.children[0].key,'S-1');assert.equal(task.children[0].events.length,1);
       assert.equal(report.items.find(i=>i.key==='E-1').events[0].id,'epic');
       assert.equal(JSON.stringify(input),before);
