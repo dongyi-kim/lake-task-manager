@@ -77,6 +77,14 @@ class JqlCachePolicy:
     def leaf_epoch_namespace(self):
         return f"jqlleaf:{self.owner.env}"
 
+    def ticket_epoch_namespace(self):
+        return f"ticket-mutation:{self.owner.env}:{self.user_context()}"
+
+    def ticket_revision(self):
+        """Opaque, persistent UI change token; reads and cache refreshes never advance it."""
+        namespace = self.ticket_epoch_namespace()
+        return f"{namespace}:{self.cache.epoch(namespace)}"
+
     def generation(self):
         return self.cache.epoch(self.epoch_namespace())
 
@@ -166,6 +174,10 @@ class JqlCachePolicy:
 
         self.cache.invalidate_keys(self.affected_leaf_keys(events))
         self.cache.bump_epoch(self.epoch_namespace())
+        # All entries describe confirmed writes except the explicit cache-only refresh event.
+        # Publish once after the batch's invalidations so an idle UI's next read sees them.
+        if any(event.kind != "refresh" for event in events):
+            self.cache.bump_epoch(self.ticket_epoch_namespace())
         return events
 
     def record_mutation(self, event: MutationEvent):

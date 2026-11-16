@@ -29,6 +29,14 @@ CREATE TABLE IF NOT EXISTS cache (
     fetched_at REAL NOT NULL,
     ttl        INTEGER NOT NULL
 );
+-- Invalidating authority leaves source age, payload and row identity intact.
+CREATE TABLE IF NOT EXISTS cache_invalidated (key TEXT PRIMARY KEY);
+CREATE TRIGGER IF NOT EXISTS cache_fresh_insert AFTER INSERT ON cache
+BEGIN DELETE FROM cache_invalidated WHERE key=NEW.key; END;
+CREATE TRIGGER IF NOT EXISTS cache_fresh_update AFTER UPDATE ON cache
+BEGIN DELETE FROM cache_invalidated WHERE key=NEW.key; END;
+CREATE TRIGGER IF NOT EXISTS cache_fresh_delete AFTER DELETE ON cache
+BEGIN DELETE FROM cache_invalidated WHERE key=OLD.key; END;
 CREATE TABLE IF NOT EXISTS cache_display (
     key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL NOT NULL, ttl INTEGER NOT NULL
 );
@@ -113,11 +121,12 @@ class CacheReadPolicyError(RuntimeError):
 
 
 class Cache:
-    # 정리(purge) 정책 — 디스크 무한증가 방지. 캐시 행은 dead_ttl 을 넘으면 오프라인 폴백에도
-    # 못 쓰므로(get_alive 가 dead_ttl 로 거른다) 지워도 안전하다. 스냅샷(시계열)은 최근 흐름만 쓰니
-    # 이 기간만 남긴다. set() 이 일정 횟수마다 한 번씩 자동 정리하고, 시작 시에도 한 번 돈다.
+    # Physical GC follows the cold horizon, independently of freshness/display eligibility.
+    # Retained payloads survive refresh and storage-pressure targets; successful writes replace
+    # their own prior value. Historical rollup snapshots keep their separate reporting horizon.
     SNAPSHOT_KEEP_DAYS = 120
     PURGE_EVERY = 400            # set() 이 이만큼 쌓일 때마다 한 번 정리(비용 amortize)
+    # Legacy advisory sizes: retained payloads are never evicted to enforce these targets.
     CONFLUENCE_BODY_BUDGET = 256 * 1024 * 1024
     CONFLUENCE_BODY_MAX_ENTRY = 8 * 1024 * 1024
     RETENTION_SECONDS = 30 * 86400
@@ -245,9 +254,10 @@ class Cache:
     def metadata(self, key):
         with self._lock:
             row = self._conn.execute(
-                "SELECT c.payload,c.fetched_at,c.ttl,i.row_identity FROM cache c "
-                "LEFT JOIN cache_row_identity i ON i.key=c.key WHERE c.key=?", (key,)).fetchone()
-            invalidated = not row
+                "SELECT c.payload,c.fetched_at,c.ttl,i.row_identity,(v.key IS NOT NULL) FROM cache c "
+                "LEFT JOIN cache_row_identity i ON i.key=c.key "
+                "LEFT JOIN cache_invalidated v ON v.key=c.key WHERE c.key=?", (key,)).fetchone()
+            invalidated = not row or bool(row[4])
             if not row:
                 row = self._conn.execute("SELECT payload,fetched_at,ttl,NULL FROM cache_display WHERE key=?", (key,)).fetchone()
             if not row:
@@ -263,7 +273,7 @@ class Cache:
                   "invalidated": invalidated, "rowIdentity": row_identity,
                   "state": "dead" if time.time() > display else "fresh" if not invalidated and time.time() <= fresh else "stale"}
         policy = current_read_policy()
-        validated = (row_identity is not None and policy.validations.get((self._validation_scope, key)) ==
+        validated = (not invalidated and row_identity is not None and policy.validations.get((self._validation_scope, key)) ==
                      (self._write_fence, fetched, row_identity))
         result["upstreamValidated"] = validated
         if policy.explicit:
@@ -280,7 +290,9 @@ class Cache:
                (value.get("error") or value.get("errors") or value.get("partial") or
                 value.get("complete") is False or value.get("ok") is False or value.get("missing")))
 
-    def _eligible(self, key, value, fetched, ttl, row_identity):
+    def _eligible(self, key, value, fetched, ttl, row_identity, invalidated=False):
+        if invalidated:
+            return False
         policy = current_read_policy()
         if policy.explicit:
             if not self._complete(value):
@@ -320,7 +332,8 @@ class Cache:
             captured = current if row_identity is _CURRENT_ROW_IDENTITY else row_identity
             # Owners call under the write lock. Joiners must supply their captured identity;
             # missing/evicted proof must never attach itself to whichever row exists now.
-            if captured is not None and captured == current and self._write_fence == fence:
+            if (captured is not None and captured == current and self._write_fence == fence
+                    and not self._conn.execute("SELECT 1 FROM cache_invalidated WHERE key=?", (key,)).fetchone()):
                 policy.validations[(self._validation_scope, key)] = (fence, fetched, captured)
                 return True
         return False
@@ -464,9 +477,6 @@ class Cache:
             fetched = self._conn.execute("SELECT fetched_at FROM cache WHERE key=?", (key,)).fetchone()[0]
             self._validated(key, fetched, self._write_fence)
             self._touch([key])
-            self._trim_payloads()
-            if key.startswith("confbody:"):
-                self._trim_confluence_bodies()
             # 주기적 자동 정리 — 오래 켜 두는 세션에서도 디스크가 계속 늘지 않게(비용은 amortize).
             self._set_count += 1
             if self._set_count >= self.PURGE_EVERY:
@@ -484,6 +494,7 @@ class Cache:
             if self._write_fence != fence:
                 return False
             self._write_fence += 1
+            self._forget_task_previews([key])
             self._conn.execute("DELETE FROM cache WHERE key=?", (key,))
             # Display-cache schema is optional on independently deployable older clients.
             if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cache_display'").fetchone():
@@ -504,9 +515,6 @@ class Cache:
             self._conn.execute("DELETE FROM cache_display WHERE key=?", (key,))
             self._validated(key, stamp, fence, upstream_validated=upstream_validated)
             self._touch([key])
-            self._trim_payloads()
-            if key.startswith("confbody:"):
-                self._trim_confluence_bodies()
             self._set_count += 1
             if self._set_count >= self.PURGE_EVERY:
                 self._set_count = 0
@@ -561,7 +569,6 @@ class Cache:
                 self._validated(key, stamp, fence, upstream_validated=upstream_validated)
             if written:
                 self._touch([r[0] for r in written])
-                self._trim_payloads()
                 self._set_count += len(written)
                 if self._set_count >= self.PURGE_EVERY:
                     self._set_count = 0
@@ -584,19 +591,21 @@ class Cache:
                 batch = ordered[offset:offset + 400]
                 marks = ",".join("?" for _ in batch)
                 rows = self._conn.execute(
-                    f"SELECT c.key,c.payload,c.fetched_at,c.ttl,i.row_identity FROM cache c "
-                    f"LEFT JOIN cache_row_identity i ON i.key=c.key WHERE c.key IN ({marks})",
+                    f"SELECT c.key,c.payload,c.fetched_at,c.ttl,i.row_identity,(v.key IS NOT NULL) FROM cache c "
+                    f"LEFT JOIN cache_row_identity i ON i.key=c.key "
+                    f"LEFT JOIN cache_invalidated v ON v.key=c.key WHERE c.key IN ({marks})",
                     batch,
                 ).fetchall()
-                for key, payload, fetched_at, ttl, row_identity in rows:
+                for key, payload, fetched_at, ttl, row_identity, invalidated in rows:
                     value = json.loads(payload)
                     allowed_age = self.display_ttl(key) if dead_ttl is None else int(dead_ttl)
                     eligible = (now - fetched_at <= self.RETENTION_SECONDS if retained else
-                                self._eligible(key, value, fetched_at, ttl, row_identity)
+                                self._eligible(key, value, fetched_at, ttl, row_identity, invalidated)
                                 if current_read_policy().explicit or not alive else
                                 now - fetched_at <= allowed_age)
                     if eligible:
-                        found[key] = (value, self._row_metadata(key, value, fetched_at, ttl, row_identity))
+                        found[key] = (value, self._row_metadata(key, value, fetched_at, ttl, row_identity,
+                                                              invalidated=bool(invalidated)))
             if alive and not retained and not current_read_policy().explicit and self.policy is not None:
                 missing = [key for key in ordered if key not in found]
                 for offset in range(0, len(missing), 400):
@@ -637,12 +646,13 @@ class Cache:
         now, found = time.time(), {}
         with self._lock:
             rows = self._conn.execute(
-                "SELECT c.key,c.payload,c.fetched_at,c.ttl,i.row_identity FROM cache c "
-                "LEFT JOIN cache_row_identity i ON i.key=c.key WHERE c.key>=? AND c.key<?", (prefix, prefix + "\uffff")
+                "SELECT c.key,c.payload,c.fetched_at,c.ttl,i.row_identity,(v.key IS NOT NULL) FROM cache c "
+                "LEFT JOIN cache_row_identity i ON i.key=c.key "
+                "LEFT JOIN cache_invalidated v ON v.key=c.key WHERE c.key>=? AND c.key<?", (prefix, prefix + "\uffff")
             ).fetchall()
-        for key, payload, fetched_at, ttl, row_identity in rows:
+        for key, payload, fetched_at, ttl, row_identity, invalidated in rows:
             if (now - fetched_at <= self.RETENTION_SECONDS if retained else
-                    self._eligible(key, json.loads(payload), fetched_at, ttl, row_identity)):
+                    self._eligible(key, json.loads(payload), fetched_at, ttl, row_identity, invalidated)):
                 try:
                     found[key] = json.loads(payload)
                 except Exception:
@@ -671,26 +681,27 @@ class Cache:
         return int(row[0])
 
     def _purge_within_lock(self):
-        """죽은 캐시 행(dead_ttl 초과) + 오래된 스냅샷 삭제. **이미 _lock 을 쥔 채** 호출한다.
+        """Cold 보존 기간이 지난 캐시와 오래된 스냅샷 정리. 이미 _lock을 쥔 채 호출한다.
         (SQLite 는 DELETE 로 파일이 줄진 않지만 빈 페이지를 재사용하므로 크기가 안정된다.)"""
         now = time.time()
         try:
-            # Immutable JQL snapshots carry complete rows. Keep only their cursor lifetime,
-            # rather than retaining every historical query's payload for the display horizon.
-            self._conn.execute("DELETE FROM cache WHERE key LIKE 'jqlsnap:%' AND ? - fetched_at > ttl", (now,))
+            # Physical GC requires both expired source retention and no recent use.
+            # Reading a retained value protects storage without changing its source age.
             if self.policy:
                 for table in ("cache", "cache_display"):
                     self._conn.execute(f"DELETE FROM {table} WHERE ? - fetched_at > CASE WHEN "
                                    "substr(key,1,instr(key,':')-1) IN ('epicmeta','avatar_url','avatar_bytes') "
-                                   "THEN ? WHEN key LIKE 'confbody:%' THEN ? ELSE ? END",
+                                   "THEN ? WHEN key LIKE 'confbody:%' THEN ? ELSE ? END "
+                                   f"AND coalesce((SELECT accessed_at FROM cache_access a WHERE a.key={table}.key),fetched_at) < ?",
                                    (now, max(self.RETENTION_SECONDS, self.policy.metadataDisplaySeconds),
-                                    self.policy.confluenceBodyRetentionSeconds, self.RETENTION_SECONDS))
+                                    max(self.RETENTION_SECONDS, self.policy.confluenceBodyRetentionSeconds), self.RETENTION_SECONDS,
+                                    now - self.RETENTION_SECONDS))
             else:
                 for table in ("cache", "cache_display"):
                     self._conn.execute(f"DELETE FROM {table} WHERE ? - fetched_at > CASE WHEN key LIKE 'confbody:%' "
-                                       "THEN ? ELSE ? END", (now, 30 * 86400, self.RETENTION_SECONDS))
-            self._trim_confluence_bodies()
-            self._trim_payloads()
+                                       "THEN ? ELSE ? END "
+                                       f"AND coalesce((SELECT accessed_at FROM cache_access a WHERE a.key={table}.key),fetched_at) < ?",
+                                       (now, 30 * 86400, self.RETENTION_SECONDS, now - self.RETENTION_SECONDS))
             self._conn.execute("DELETE FROM cache_access WHERE key NOT IN (SELECT key FROM cache UNION SELECT key FROM cache_display)")
             self._conn.execute("DELETE FROM snapshot WHERE taken_at < ?",
                                (now - self.SNAPSHOT_KEEP_DAYS * 86400,))
@@ -704,38 +715,6 @@ class Cache:
         with self._lock:
             self._purge_within_lock()
             self._conn.commit()
-
-    def _trim_confluence_bodies(self):
-        """Bound immutable revisions without truncating a caller's document result."""
-        rows = self._conn.execute("SELECT key,length(CAST(payload AS BLOB)) FROM cache "
-                                  "WHERE key LIKE 'confbody:%' ORDER BY fetched_at DESC,key").fetchall()
-        used, remove = 0, []
-        for key, size in rows:
-            if size > self.CONFLUENCE_BODY_MAX_ENTRY or used + size > self.CONFLUENCE_BODY_BUDGET:
-                remove.append((key,))
-            else:
-                used += size
-        self._conn.executemany("DELETE FROM cache WHERE key=?", remove)
-
-    def _trim_payloads(self):
-        """Bound retained JSON bytes; UI state, receipts and generation fences are independent."""
-        total = self._conn.execute("SELECT payload_bytes FROM cache_payload_total WHERE id=1").fetchone()[0]
-        if total <= self.PAYLOAD_BUDGET:
-            return
-        rows = self._conn.execute(
-            "SELECT c.key,length(CAST(c.payload AS BLOB)) FROM "
-            "(SELECT key,payload,fetched_at FROM cache UNION ALL SELECT key,payload,fetched_at FROM cache_display) c "
-            "LEFT JOIN cache_access a ON a.key=c.key ORDER BY coalesce(a.accessed_at,c.fetched_at),c.key").fetchall()
-        for key, size in rows:
-            if total <= self.PAYLOAD_BUDGET:
-                break
-            # A missing dependency edge cannot safely invalidate its target leaf. Retire the
-            # whole dependent query layer whenever budget eviction removes an index edge.
-            if key.startswith("jqlidx"):
-                self._conn.execute("DELETE FROM cache WHERE key LIKE 'jqlleaf:%' OR key LIKE 'jqlcurrent:%'")
-            for table in ("cache", "cache_display", "cache_access"):
-                self._conn.execute(f"DELETE FROM {table} WHERE key=?", (key,))
-            total = self._conn.execute("SELECT payload_bytes FROM cache_payload_total WHERE id=1").fetchone()[0]
 
     def close(self):
         """Release the SQLite handle (benchmarks and short-lived clients)."""
@@ -757,8 +736,7 @@ class Cache:
                 self.served_stale_at = time.time()
                 note_read(source)
                 return alive[0], True
-            if (self.policy is not None and display and self.revalidator
-                    and not (source or {}).get("invalidated", True)):
+            if self.policy is not None and display and self.revalidator:
                 self.revalidator(key, ttl, producer)
                 self.served_stale_at = time.time()
                 note_read(source)
@@ -852,7 +830,7 @@ class Cache:
             if self.skip_producer and self.skip_producer():
                 note_read(source)
                 return alive[0], "stale"
-            if not (source or {}).get("invalidated", True):
+            if background:
                 background(key, ttl, producer)
                 note_read(source)
                 return alive[0], "stale"
@@ -878,16 +856,19 @@ class Cache:
         """Definitive deletion/permission loss removes both authoritative and display values."""
         with self._lock:
             self._write_fence += 1
+            self._forget_task_previews([key])
             for table in ("cache", "cache_display"):
                 self._conn.execute(f"DELETE FROM {table} WHERE key=?", (key,))
             self._conn.commit()
 
     def forget_prefixes(self, prefixes, *, fence=None):
         """Remove a denied/deleted resource including display copies, atomically."""
+        prefixes = tuple(prefixes)
         with self._lock:
             if fence is not None and self._write_fence != fence:
                 return False
             self._write_fence += 1
+            self._forget_task_previews(prefixes)
             for prefix in prefixes:
                 for table in ("cache", "cache_display"):
                     self._conn.execute(f"DELETE FROM {table} WHERE key>=? AND key<?",
@@ -895,15 +876,22 @@ class Cache:
             self._conn.commit()
             return True
 
+    def _forget_task_previews(self, resources):
+        """A known deleted/denied ticket must never reappear in a saved Task display."""
+        if any(str(key).split(":", 1)[0] in {"issue", "issueL", "issueview", "epicmeta"}
+               for key in resources):
+            for table in ("cache", "cache_display"):
+                self._conn.execute(f"DELETE FROM {table} WHERE key LIKE 'taskpreview:%'")
+
     def invalidate(self, prefix=None):
+        """Invalidate authority without deleting retained payloads or resetting source age."""
         with self._lock:
             self._write_fence += 1
             if prefix:
-                self._archive_display("key LIKE ?", (prefix + "%",))
-                self._conn.execute("DELETE FROM cache WHERE key LIKE ?", (prefix + "%",))
+                self._conn.execute("INSERT OR IGNORE INTO cache_invalidated SELECT key FROM cache WHERE key LIKE ?",
+                                   (prefix + "%",))
             else:
-                self._conn.execute("DELETE FROM cache")
-                self._conn.execute("DELETE FROM cache_display")
+                self._conn.execute("INSERT OR IGNORE INTO cache_invalidated SELECT key FROM cache")
             self._conn.commit()
 
     def invalidate_keys(self, keys):
@@ -915,8 +903,8 @@ class Cache:
             for offset in range(0, len(unique), 400):
                 batch = unique[offset:offset + 400]
                 marks = ",".join("?" for _ in batch)
-                self._archive_display(f"key IN ({marks})", batch)
-                self._conn.execute(f"DELETE FROM cache WHERE key IN ({marks})", batch)
+                self._conn.execute(
+                    f"INSERT OR IGNORE INTO cache_invalidated SELECT key FROM cache WHERE key IN ({marks})", batch)
             self._conn.commit()
         return len(unique)
 

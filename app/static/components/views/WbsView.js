@@ -2,12 +2,14 @@
 // 간트 본문(라벨트리·타임라인 바·트리커넥터)은 검증된 명령형 renderGantt()를 refs 로 구동.
 // 4계층 lazy(Epic→Task→Sub-Task), 파일탐색기식 가이드선/[+], 상태색 바. updated: 2026-07-08
 import { api } from "../../lib/api.js";
+import { retainedViewRefresh } from "../../lib/viewRefresh.js";
 import { moduleColor, categoryColor, wbsColor, statusLabel } from "../../lib/colors.js";
 import { isTicketUnread, observeTicketUpdates } from "../../lib/ticketUpdates.js";
 import TicketUpdateMark from "../ui/TicketUpdateMark.js";
 
 export default {
   name: "WbsView",
+  mixins: [retainedViewRefresh(function () { return this.refresh(); })],
   data() { return { D: null, err: "", unit: "month", expanded: {}, epicTree: {}, treeRetrying: {},
                     // Epic 별로 '못 가져온 하위 수'(-1 = 통째로 실패). 없는 것과 못 받은 것은 다르다.
                     partial: {}, hideBugVoc: true, _rt: null, _onResize: null }; },
@@ -15,15 +17,14 @@ export default {
     window.addEventListener("ticket-updates-changed", this._ticketUpdate = e => this.updateReadRows(e.detail?.keys));
     window.addEventListener('api-cache-updated', this._cacheUpdate = e => this.applyCacheUpdate(e.detail));
     window.addEventListener('cache-policy-changed', this._policyUpdate = () => {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       api.wbs().catch(() => {});
       Object.keys(this.epicTree).forEach(key => api.epicTree(key).catch(() => {}));
     });
-    window.addEventListener("force-refresh", this._fr = async () => {
-      try { await this.refresh(); }
-      finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
-    });
+
     // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
     window.addEventListener("auth-ok", this._authok = () => {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       const retryFailedTrees = () => {
         Object.keys(this.partial).filter((key) => this.partial[key] === -1)
           .forEach((key) => this.retryEpicTree(key, false));
@@ -34,6 +35,7 @@ export default {
       }).catch(() => {});
     });
     window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       api.wbs().then(d => { this.D = d; this.err = ''; this.scheduleRender(); })
         .catch(e => { this.err = e.message; });
     });
@@ -51,7 +53,6 @@ export default {
     this._treeEpoch = (this._treeEpoch || 0) + 1;
     if (this._onResize) window.removeEventListener("resize", this._onResize);
     if (this._raf) cancelAnimationFrame(this._raf);
-    window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
@@ -84,7 +85,14 @@ export default {
         if (!selected || selected.has(card.key)) element.classList.toggle("update-unread", isTicketUnread(card));
       }
     },
-    applyCacheUpdate({ path, value }) {
+    applyCacheUpdate({ path, value, removed }) {
+      if (removed) {
+        if (path === '/api/wbs') this.D = null;
+        const match = path.match(/^\/api\/epic\/([^/]+)\/tree$/);
+        if (match) delete this.epicTree[decodeURIComponent(match[1])];
+        this.scheduleRender();
+        return;
+      }
       if (!value || value.partial || value.error) return;
       if (path === '/api/wbs' && this.D) this.D = value;
       else {
@@ -105,9 +113,9 @@ export default {
     collapseAll() { this.expanded = {}; this.renderGantt(); },
     async refresh() {
       try {
-        await api.refresh(); this._treeEpoch = (this._treeEpoch || 0) + 1;
-        this.epicTree = {}; this.treeRetrying = {}; this.expanded = {}; this.partial = {};
+        this._treeEpoch = (this._treeEpoch || 0) + 1;
         this.D = await api.wbs(); this.err = ""; this.$nextTick(() => this.renderGantt());
+        await Promise.all(Object.keys(this.epicTree).map(key => this.loadEpicTree(key, true)));
       }
       catch (e) { this.err = e.message; }
     },

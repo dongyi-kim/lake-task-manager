@@ -179,3 +179,44 @@ def test_live_stream_keeps_actual_upstream_validation_for_query_aggregate(stream
         _key, _rows, source = _aggregate(client)
     assert calls and final["model"]["groups"] and not final["partial"]
     assert source["upstreamValidated"] and source["compliant"]
+
+
+def test_expired_stream_emits_scoped_display_preview_before_query(stream_client, monkeypatch):
+    client, now, calls = stream_client
+    original = list(_stream(client))[-1]
+    assert original["model"]["groups"]
+    now[0] += 650
+    calls.clear()
+    def failed(*args, **kwargs):
+        raise ConnectionError("query unavailable")
+        yield
+    monkeypatch.setattr(client, "iter_search_issue_chunks", failed)
+    preview = next(_stream(client))
+    assert preview["displayOnly"] and not preview["authoritative"] and not preview["done"]
+    assert preview["model"]["groups"] == [dict(group, childrenPending=False)
+                                           for group in original["model"]["groups"]]
+    assert not preview["model"].get("syncId")
+    assert calls == []
+    other = mytasks.iter_my_task_models(client, user="another.person", scope="assignee")
+    assert not next(other).get("displayOnly")
+
+
+def test_explicit_live_stream_never_emits_saved_display_preview(stream_client):
+    client, _now, _calls = stream_client
+    list(_stream(client))
+    with read_scope(cache_mode="live"):
+        assert not next(_stream(client)).get("displayOnly")
+
+
+def test_permission_denied_query_retires_its_saved_preview(stream_client, monkeypatch):
+    client, _now, _calls = stream_client
+    list(_stream(client))
+    assert client.cache.entries_by_prefix("taskpreview:", retained=True)
+    original = client.iter_search_issue_chunks
+    def forbidden(*args, **kwargs):
+        for chunk in original(*args, **kwargs):
+            yield {**chunk, "error": {"kind": "permission", "message": "Forbidden"}, "combined": []}
+    monkeypatch.setattr(client, "iter_search_issue_chunks", forbidden)
+    final = list(_stream(client))[-1]
+    assert final["partial"]
+    assert client.cache.entries_by_prefix("taskpreview:", retained=True) == {}

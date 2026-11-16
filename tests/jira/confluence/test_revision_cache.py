@@ -223,11 +223,11 @@ def test_old_refresh_cannot_repopulate_head_after_successful_write(source):
     assert conf.check_revision(source.client, "100", 1)["isLatest"] is False
 
 
-def test_revision_cache_budget_evicts_storage_only_not_response(source, monkeypatch):
+def test_revision_cache_budget_keeps_retained_revision_and_response(source, monkeypatch):
     monkeypatch.setattr(source.cache, "CONFLUENCE_BODY_BUDGET", 20)
     result = conf.body(source.client, "100")
     assert result["body"]["storage"]["value"] == "<p>first revision</p>"
-    assert not source.cache.entries_by_prefix("confbody:")
+    assert source.cache.entries_by_prefix("confbody:")
 
 
 @pytest.mark.parametrize("query", ["type=page) OR space=OTHER OR (type=page", "title = 'unterminated", "title='" + "가" * 6000 + "'"],

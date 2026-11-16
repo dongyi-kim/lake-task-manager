@@ -34,7 +34,8 @@ export class CacheMemo {
           return value; // a failed coverage refresh must not erase a prior complete display snapshot
         }
         if (value && (value.error || value.partial || value.pending)) {
-          this.rows.delete(path); return value;
+          if (row.value === undefined) this.rows.delete(path);
+          return value;
         }
         const now = this.now();
         row.value = value;
@@ -47,7 +48,11 @@ export class CacheMemo {
         row.displayUntil = metadata?.displayUntil ?? (now + this.policy.displaySeconds);
         row.displayKind = metadata?.displayKind;
         if (revalidate) this.publish({ path, value });
-        if (this.rows.size > 300) this.rows.delete(this.rows.keys().next().value);
+        // Prune only unused values past cold retention. Reads never delete a value
+        // merely because it is stale; a successful refresh replaces it in place.
+        if (this.rows.size > 300) for (const [key, cached] of this.rows) {
+          if (!cached.pending && cached.fetchedAt < now - 30 * 86400) this.rows.delete(key);
+        }
         // A first request can itself be a server SWR hit; update this open view as well.
         needsRefresh = !revalidate && row.freshUntil < now;
         return value;
@@ -89,6 +94,24 @@ export class CacheMemo {
   }
   keys() { return this.rows.keys(); }
   revision(path) { return this.rows.get(path)?.revision || 0; }
+  invalidate(path) {
+    const row = this.rows.get(path);
+    if (!row) return;
+    // Replace the request identity, not its display value or source age. A response
+    // started before the mutation must not overwrite the next successful refresh.
+    this.rows.set(path, { ...row, freshUntil: 0, invalidated: true,
+      pending: null, revision: ++this.nextRevision });
+  }
+  invalidateAll() { for (const path of this.rows.keys()) this.invalidate(path); }
+  replace(path, value) {
+    const now = this.now();
+    // A confirmed mutation supplies new display data, not proof of the source age
+    // required by freshness-sensitive reads. Fence any earlier pending request.
+    this.rows.set(path, { value, fetchedAt: now, sourceFetchedAt: null,
+      freshUntil: 0, displayUntil: now + this.policy.displaySeconds,
+      invalidated: true, revision: ++this.nextRevision, pending: null });
+    this.publish({ path, value });
+  }
   delete(path) { this.rows.delete(path); }
   clear() { this.rows.clear(); }
 }

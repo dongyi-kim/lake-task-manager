@@ -17,6 +17,7 @@
 // 카드 모양은 배치와 무관하게 하나다(.mt-card) — 리스트든 그리드든 같은 것을 읽는다.
 import { reactive } from "../../vendor/vue.esm-browser.prod.js";
 import { api } from "../../lib/api.js";
+import { retainedViewRefresh } from "../../lib/viewRefresh.js";
 import TypeBadge from "../ui/TypeBadge.js";
 import Avatar from "../ui/Avatar.js";
 import PriIcon, { priRankOf } from "../ui/PriIcon.js";
@@ -54,7 +55,7 @@ export { reconcileTaskModel, resolveDefaultModule, uniformStatusCategory } from 
 
 export default {
   name: "MyTasksView",
-  mixins: [ticketUpdateView, taskFindMixin],
+  mixins: [retainedViewRefresh(function () { return this.hardRefresh(); }, { localChanges: false }), ticketUpdateView, taskFindMixin],
   components: { TypeBadge, Avatar, TaskCard, PriIcon, DueText, FieldEdit, AdvancedSearchDialog, TransitionDialog,
                 SubtaskFoldBar, TicketUpdateMark, TaskFindBar },
   data() {
@@ -140,10 +141,13 @@ export default {
       const changedKey = String((view && view.key) || detail.key || "").trim().toUpperCase();
       const wasVisible = this._taskModelHasKey(changedKey);
       // LTM에서 Epic 자체를 수정하면 서버 전용 캐시는 즉시 무효화된다. 같은 화면에서 유지하는
-      // 이름 map도 해당 key만 버려야 다음 snapshot이 새 이름을 다시 확인할 수 있다.
-      if (changedKey && this._epicMetaKnown) this._epicMetaKnown.delete(changedKey);
+      // 기존 이름은 유지하고 해당 key를 다시 확인한다.
+      if (changedKey && this._epicMetaKnown?.has(changedKey)) {
+        (this._epicMetaPending || (this._epicMetaPending = new Set())).add(changedKey);
+      }
       // 바뀐 필드는 **즉시** 화면에 반영한다(상태·담당이 눈앞에서 바뀌게).
       if (view) this._applyEditLocally(view);
+      if (!this._refreshActive) { this._refreshDirty = true; return; }
       // ★ 목록에서 빠질지는 **서버가 판정한다.** 예전엔 클라가 흉내 냈는데, 이 목록에 있던
       //   이유가 그 티켓의 필드만으로는 알 수 없는 경우가 있다 — 이를테면 부모 Task 는
       //   '내가 하위를 담당해서' 걸려 있는데, 부모 담당자를 같은 모듈 다른 사람으로 바꾸면
@@ -159,20 +163,17 @@ export default {
       });
     };
     window.addEventListener("ticket-changed", this._onChanged);
-    // 좌하단 플로팅 새로고침
-    window.addEventListener("force-refresh", this._fr = async () => {
-      try { await this.hardRefresh(); }
-      finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
-    });
     // 재인증(auth-ok) 후 — 세션이 끊긴 채 실패했던 조회를 다시 받는다(그대로 두면 '목록 없음'
     // 으로 굳어 새로고침해야만 떴다). 서버 캐시는 안 비운다(가벼운 재조회).
     window.addEventListener("auth-ok", this._authok = () => {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       this.refreshMe();
       // 성공한 leaf는 서버 cache에서 즉시 재사용되고 인증 때문에 실패한 leaf만 Jira를 다시 탄다.
       // 이미 보이는 카드도 유지해, 재로그인이 전체 목록 재로딩처럼 보이지 않게 한다.
       if (!this._resumeChildHydration()) this.load({ quiet: true });
     });
     window.addEventListener('workspace-config-updated', this._workspaceUpdate = async () => {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       this._dropModelCache();
       const seq = this._loadSeq;
       await this.refreshMe();
@@ -204,7 +205,6 @@ export default {
     if (this._taskRetryTimer) clearTimeout(this._taskRetryTimer);
     if (this._epicMetaTimer) clearTimeout(this._epicMetaTimer);
     window.removeEventListener("ticket-changed", this._onChanged);
-    window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
     this._unbindDrag && this._unbindDrag();
@@ -489,6 +489,7 @@ export default {
       for (const modelKey of Object.keys(cache || {})) cache[modelKey] = patch(cache[modelKey]);
     },
     _scheduleEpicMetadataFlush(cache) {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       const pending = this._epicMetaPending || new Set();
       if (!pending.size || this._epicMetaTimer || this._epicMetaBusy) return;
       const attempts = this._epicMetaAttempts || new Map();
@@ -524,7 +525,7 @@ export default {
       this._epicMetaBusy = true;
       let rows = [];
       try {
-        const result = await api.myTasksEpicMeta(keys);
+        const result = await api.myTasksEpicMeta(keys, true);
         rows = (result && result.epics) || [];
         this._applyEpicMetadata(rows, cache);
       } catch (e) { /* 카드/JQL 스트림은 Epic 메타 조회 실패와 독립적으로 계속 동작한다 */ }
@@ -557,6 +558,7 @@ export default {
       this._taskRetryTimer = setTimeout(() => {
         this._taskRetryTimer = null;
         if (this._activeCacheKey !== cacheKey) return;
+        if (!this._refreshActive) { this._refreshDirty = true; return; }
         // 성공 leaf는 strict cache hit다. 이 quiet stream은 실패해 cache가 생기지 않은 leaf만
         // upstream에서 다시 받고, 현재 카드/스크롤/폴딩 상태는 그대로 둔다.
         this.load({ quiet: true, retryAttempt: attempt });
@@ -596,7 +598,7 @@ export default {
       const failedAxes = new Map();
       let hydrationPromise = null;
       const cached = cache[key];
-      const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);
+      let preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);
       // 새 필터는 이전 필터 카드를 남기지 않는다. 같은 필터의 완료/부분 캐시만 즉시 재사용한다.
       if (cached) this.model = cached;
       else if (!preserveVisible) this.model = this._emptyTaskModel();
@@ -628,6 +630,15 @@ export default {
           const eventSequence = Number(event.sequence);
           if (!Number.isInteger(eventSequence) || eventSequence <= lastSequence) return;
           lastSequence = eventSequence;
+          if (event.displayOnly) {
+            // A persisted preview is display evidence, never a membership/hydration result.
+            if (!preserveVisible && event.model && seq === this._loadSeq && streamGenerationCurrent()) {
+              this.model = reactive(cloneTaskModel(event.model));
+              streamModel = this.model;
+              preserveVisible = true;
+            }
+            return;
+          }
           if (event.done && event.model) receivedFinal = true;
 
           const progress = event.progress || {};
@@ -701,7 +712,7 @@ export default {
           const finalUsable = event.done && !streamHadAuthFailure && !streamHadOtherFailure;
           if (event.replace !== false && event.model && (!preserveVisible || finalUsable)
               && streamGenerationCurrent()) {
-            const next = Object.assign({}, event.model, { streamComplete: !!event.done });
+            const next = Object.assign({}, event.model, { streamComplete: !!event.done, displayOnly: false });
             // Quiet current refreshes may patch the still-visible model at the final usable
             // snapshot to preserve card DOM identity. Every other case remains request-owned.
             const target = active && preserveVisible ? this.model : streamModel;
@@ -860,6 +871,8 @@ export default {
         if (!n || n.key !== key) return 0;
         const wasDone = n.statusCategory === "done";
         if (f.statusCategory) n.statusCategory = f.statusCategory;
+        if ("status" in f) n.status = f.status;
+        if ("resolved" in f) n.resolved = f.resolved;
         if ("assigneeId" in f) n.assigneeId = f.assigneeId;
         if ("reporterId" in f) n.reporterId = f.reporterId;
         if (f.components) n.components = f.components;
@@ -888,13 +901,11 @@ export default {
       this.busy = true;
       this._dropModelCache();
       try {
-        await api.refresh();
-        // 강제 새로고침은 서버 캐시까지 비우는 명시적 동작이다. 컴포넌트 수명 동안 유지한
-        // 이름도 함께 버려야 외부 Jira에서 바뀐 Epic 이름을 다시 받을 수 있다.
-        this._epicMetaKnown = new Map();
         this._epicMetaAttempts = new Map();
-        this.model = null;
-        await this.load();
+        await this.load({ quiet: true });
+        const pending = this._epicMetaPending || (this._epicMetaPending = new Set());
+        for (const epic of this.model?.epics || []) if (epic.key) pending.add(epic.key);
+        this._scheduleEpicMetadataFlush(this._mcache);
       }
       catch (e) { this.err = (e && e.message) || "다시 받지 못했습니다."; }
       finally { this.busy = false; }

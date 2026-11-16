@@ -3,6 +3,7 @@
 //   (Due·D-day, 완료일시; 진행중=임박순·완료=최근순 정렬).
 // 인력 = 본명(displayName 첫 어절) + 개발/운영 뱃지(id 사번 x+숫자/i+숫자). updated: 2026-07-09
 import { api } from "../../lib/api.js";
+import { retainedViewRefresh } from "../../lib/viewRefresh.js";
 import { vocBadgeSegs, vocStripTitle } from "../../lib/voc.js";
 import { moduleColor, categoryColor, sigColor } from "../../lib/colors.js";
 import { ymd, ymdhm, tkt, dday } from "../../lib/fmt.js";
@@ -43,7 +44,7 @@ const NONE_COLOR = "var(--border-hi)";    // Epic 없음
 export default {
   name: "WorkloadView",
   components: { ProgressBar, TypeBadge, Avatar, TicketUpdateMark },
-  mixins: [ticketUpdateView],
+  mixins: [retainedViewRefresh(function () { return this.hardRefresh(); }), ticketUpdateView],
   data() {
     // 옵션(완료 성과 계산식·정렬)은 브라우저에 남긴다 — 매번 다시 고르는 건 화면이 할 일이다.
     let pref = {};
@@ -66,14 +67,7 @@ export default {
   },
   created() {
     window.addEventListener('api-cache-updated', this._cacheUpdate = e => this.applyCacheUpdate(e.detail));
-    window.addEventListener('cache-policy-changed', this._policyUpdate = () => {
-      (this.curMod?.people || []).forEach(p => {
-        api.workloadPerson(p.id, this.doneDays, this.assignedWindow).catch(() => {});
-        for (const bucket of ['open', 'inProgress', 'done7d']) {
-          if (this.tkd[p.id]?.[bucket]) api.workloadBucket(p.id, bucket, this.doneDays, this.assignedWindow).catch(() => {});
-        }
-      });
-    });
+    window.addEventListener('cache-policy-changed', this._policyUpdate = () => this.requestViewRefresh());
     this.bodyRefs = {};                // 비반응 DOM 참조(모듈 body)
     this.peopleRetryTimers = new Set();
     this.workScheduler = new WorkloadRequestScheduler();
@@ -82,12 +76,10 @@ export default {
     this.detailLoadEpoch = 0;
     this.dueRiskEpoch = 0;
     // 좌하단 플로팅 새로고침 — 뷰마다 캐시 비우고 다시 받는 함수 이름이 달라 여기서 잇는다.
-    window.addEventListener("force-refresh", this._fr = async () => {
-      try { await this.hardRefresh(); }
-      finally { window.dispatchEvent(new CustomEvent("force-refresh-done")); }
-    });
+
     // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
     window.addEventListener("auth-ok", this._authok = () => {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       if (!this.d) this.load();
       else {
         // 성공한 사람·컬럼·마감 집계는 그대로 두고 인증 때문에 멈춘 조각만 다시 받는다.
@@ -96,11 +88,7 @@ export default {
         this.retryDueRisk("auth");
       }
     });
-    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => {
-      this._invalidateDueRisk();
-      // Keep existing per-person statistics/expanded rows; reload the roster and new people.
-      this.load().then(() => { this.scheduleMeasure(); this.loadDueRisk(); });
-    });
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => this.requestViewRefresh());
   },
   async mounted() {
     await this.load();
@@ -115,7 +103,6 @@ export default {
     this.detailLoadEpoch++;
     this.dueRiskEpoch++;
     if (this._onResize) window.removeEventListener("resize", this._onResize);
-    window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
@@ -269,8 +256,14 @@ export default {
     },
   },
   methods: {
-    applyCacheUpdate({ path, value }) {
-      if (!value || value.partial || value.error || !path.startsWith('/api/workload/')) return;
+    applyCacheUpdate({ path, value, removed = false }) {
+      if (!path?.startsWith('/api/workload/')) return;
+      if (removed && path === '/api/workload/shell') {
+        this.d = null; this.pstat = {}; this.tkd = {}; this._invalidateDueRisk();
+        this.err = '워크로드 조회 권한이 없거나 데이터가 삭제되었습니다.';
+        return;
+      }
+      if (!removed && (!value || value.partial || value.error)) return;
       if (path === '/api/workload/shell' && this.d) { this.d = value; return; }
       const url = new URL(path, window.location.origin);
       // A background response belongs to its original filters, even after the user moves on.
@@ -280,6 +273,24 @@ export default {
       if (!match) return;
       const id = decodeURIComponent(match[1] || match[2]);
       if (!(this.curMod?.people || []).some(p => p.id === id)) return;
+      if (removed) {
+        const buckets = match[1] ? ['open', 'inProgress'] : [match[3]];
+        if (match[1]) {
+          this.pstat[id] = { id, error: true, errorKind: 'permission', message: '조회 제외' };
+          delete this.tkd[id];
+        } else if (this.tkd[id]) {
+          const box = this._ensureDetailBox(id);
+          box[match[3]] = []; box.states[match[3]] = bucketState('permission', { kind: 'permission' });
+        }
+        if (this.dueRisk) {
+          const parts = { ...this.dueRisk.parts };
+          for (const bucket of buckets) parts[id+'|'+bucket] = { id, bucket, status: 'permission', rows: [] };
+          this.dueRisk = summarizeDueRiskParts({ people: this.curMod.people, parts,
+            excludeVoc: this.excludeVoc, dueRank: t => this.dueRank(t), nameOf: pid => this.pstat[pid]?.name || pid });
+        }
+        this.scheduleMeasure();
+        return;
+      }
       if (match[1]) {
         if (this.pstat[id]) this.pstat[id] = value;
         this.scheduleMeasure();
@@ -319,11 +330,12 @@ export default {
       // 장기 상주 앱에서 과거 필터의 notice key를 끝없이 들고 있지 않는다.
       if (this.workNotices.size > 40) this.workNotices.clear();
     },
-    _invalidateDueRisk() {
+    _invalidateDueRisk(preserve = false) {
       this.dueRiskEpoch++;
-      this.dueRisk = null;
+      if (!preserve) this.dueRisk = null;
       this.dueRiskBusy = false;
-      this.dueRiskFor = "";
+      if (!preserve) this.dueRiskFor = "";
+      this._dueRiskDirty = true;
     },
     /** 버킷 한 조각의 공통 재시도. 상세·마감 리스크 모두 이 함수를 쓰므로 실패한 조각만
      *  0.8/2.4/5초 간격으로 재시도하고, 동일 요청은 위 스케줄러에서 합쳐진다. */
@@ -337,18 +349,20 @@ export default {
     },
     /** 모듈별 병렬 로딩: 골격 먼저 → 각 모듈 동시 요청 → 도착하는 대로 채움(느린 모듈이 안 막음).
      *  ★ 메서드로 둔다 — hardRefresh 가 this.load() 를 부른다(예전엔 mounted 인라인이라 죽었다). */
-    async load() {
+    async load(opts = {}) {
       this.err = "";
       try {
         this.d = await api.workloadShell();          // 골격 + 로스터(명단) 먼저 — 즉시 그려진다
-        this.d.modules.forEach((m) => { this.open[m.module] = true; });
+        this.d.modules.forEach((m) => { if (!(m.module in this.open)) this.open[m.module] = true; });
         // 선택 모듈: 저장된 값 우선 → 없으면 **세션 사용자 소속 모듈**(myModule) → 그것도 없으면 첫 모듈.
         const names = this.d.modules.map((m) => m.module);
         if (!names.includes(this.mod)) {
           this.mod = (this.d.myModule && names.includes(this.d.myModule)) ? this.d.myModule : (names[0] || "");
         }
         // **선택한 모듈의 인력만** 통계를 받는다(한 화면 = 한 모듈, 부하↓).
-        this.loadModulePeople(this.mod);
+        if (opts.refreshPeople) {
+          await this._loadPeople((this.curMod?.people || []).map(p => p.id), true);
+        } else this.loadModulePeople(this.mod);
       } catch (e) { this.err = e.message; }
     },
     /** 선택 모듈의 인력 통계를 사람 by 사람으로 로딩(이미 받은 사람은 건너뜀). */
@@ -382,6 +396,7 @@ export default {
     _cancelPeopleRetryTimers() {
       for (const timer of (this.peopleRetryTimers || [])) clearTimeout(timer);
       if (this.peopleRetryTimers) this.peopleRetryTimers.clear();
+      for (const finish of (this._peopleLoadResolvers || [])) finish();
     },
     /** 현재 선택 모듈에서 실패가 확정된 사람만 다시 받는다. 성공 데이터와 상세 펼침은 건드리지 않는다. */
     retryFailedPeople(kind = null) {
@@ -389,28 +404,41 @@ export default {
       if (!m) return;
       const pids = (m.people || []).map((p) => p.id)
         .filter((id) => this.pstat[id]
-          && (this.pstat[id].error || (this.pstat[id].partial && this.pstat[id].retryable))
+          && (this.pstat[id].error || this.pstat[id].refreshError || (this.pstat[id].partial && this.pstat[id].retryable))
           && !this.pstat[id].retrying && !this.pstat[id].partialRetrying
           && this.pstat[id].errorKind !== "permission"
-          && (!kind || this.pstat[id].errorKind === kind));
-      if (pids.length) this._loadPeople(pids);
+          && (!kind || (this.pstat[id].refreshErrorKind || this.pstat[id].errorKind) === kind));
+      if (pids.length) this._loadPeople(pids, true);
     },
     retryPerson(pid) {
       const state = this.pstat[pid];
-      if (!state || !(state.error || (state.partial && state.retryable))
+      if (!state || !(state.error || state.refreshError || (state.partial && state.retryable))
           || state.retrying || state.partialRetrying || state.loading
           || state.errorKind === "permission") return;
-      this._loadPeople([pid]);
+      this._loadPeople([pid], true);
     },
-    _loadPeople(pids) {
+    _loadPeople(pids, preserve = false) {
       const CONC = 3;
       const epoch = this.peopleLoadEpoch;
       const doneDays = this.doneDays;
       const assignedWindow = this.assignedWindow;
       const queue = [...new Set(pids)].map((pid) => ({ pid, attempt: 0, readyAt: 0 }));
+      const retained = new Map(preserve ? queue.filter(({pid}) => this.pstat[pid]
+        && !this.pstat[pid].error && !this.pstat[pid].loading).map(({pid}) => [pid, this.pstat[pid]]) : []);
+      let finish;
+      this._peopleLoadResolvers ||= new Set();
+      const complete = new Promise(resolve => { finish = () => { this._peopleLoadResolvers.delete(finish); resolve(); }; });
+      this._peopleLoadResolvers.add(finish);
+      const failed = (pid, kind, message, retrying = false, attempt = 0) => {
+        const prior = retained.get(pid);
+        this.pstat[pid] = prior && kind !== 'permission'
+          ? { ...prior, refreshing: retrying, refreshError: message, refreshErrorKind: kind, retryAttempt: attempt }
+          : { id: pid, error: !retrying, loading: retrying, retrying, errorKind: kind, message, retryAttempt: attempt };
+        if (kind === 'permission') delete this.tkd[pid];
+      };
       let active = 0, wakeTimer = null, authPaused = false;
       queue.forEach(({ pid }) => {
-        if (!(this.pstat[pid] && this.pstat[pid].partial && !this.pstat[pid].error)) {
+        if (!(preserve && this.pstat[pid]) && !(this.pstat[pid] && this.pstat[pid].partial && !this.pstat[pid].error)) {
           this.pstat[pid] = { id: pid, loading: true, retryAttempt: 0 };
         }
       });
@@ -428,7 +456,8 @@ export default {
         this.peopleRetryTimers.add(wakeTimer);
       };
       const pump = () => {
-        if (epoch !== this.peopleLoadEpoch || authPaused) return clearWake();
+        if (this._refreshActive === false) { this._refreshDirty = true; queue.length = 0; clearWake(); if (!active) finish(); return; }
+        if (epoch !== this.peopleLoadEpoch || authPaused) { clearWake(); if (!active) finish(); return; }
         clearWake();
         let now = Date.now();
         while (active < CONC) {
@@ -437,7 +466,7 @@ export default {
           const task = queue.splice(index, 1)[0];
           const pid = task.pid;
           active++;
-          if (this.pstat[pid] && this.pstat[pid].partial && !this.pstat[pid].error) {
+          if (this.pstat[pid] && ((preserve && !this.pstat[pid].error) || (this.pstat[pid].partial && !this.pstat[pid].error))) {
             this.pstat[pid] = Object.assign({}, this.pstat[pid], {
               retrying: false, partialRetrying: task.attempt > 0, retryAttempt: task.attempt,
             });
@@ -463,13 +492,15 @@ export default {
             }
             if (r && r.partial && r.retryable) {
               const nextAttempt = task.attempt + 1;
-              this.pstat[pid] = Object.assign({}, r, {
+              this.pstat[pid] = Object.assign({}, retained.get(pid) || r, {
                 retrying: false,
                 partialRetrying: task.attempt < WORKLOAD_PERSON_RETRY_DELAYS.length
                   && r.errorKind !== "auth",
                 retryAttempt: nextAttempt,
+                refreshError: retained.has(pid) ? '일부 집계를 다시 확인하지 못했습니다.' : '',
+                refreshErrorKind: r.errorKind || 'other',
               });
-              this._invalidateDueRisk();
+              this._invalidateDueRisk(preserve);
               if (r.errorKind === "auth") {
                 this._notifyWorkloadError("auth", true);
               } else if (task.attempt < WORKLOAD_PERSON_RETRY_DELAYS.length) {
@@ -482,14 +513,13 @@ export default {
               return;
             }
             this.pstat[pid] = r;
-            this._invalidateDueRisk();
+            this._invalidateDueRisk(preserve);
           })
           .catch((e) => {
             if (epoch !== this.peopleLoadEpoch) return;
             const kind = workloadErrorKind(e);
             if (kind === "permission") {
-              this.pstat[pid] = { id: pid, error: true, errorKind: kind,
-                                  message: (e && e.message) || String(e) };
+              failed(pid, kind, (e && e.message) || String(e));
             } else if (kind === "auth") {
               // One confirmed session loss applies to this whole request generation. Do not send
               // every still-queued person through the same dead SSO session; retain successful
@@ -497,52 +527,53 @@ export default {
               authPaused = true;
               clearWake();
               for (const pending of queue.splice(0)) {
-                this.pstat[pending.pid] = { id: pending.pid, error: true, errorKind: "auth",
-                  message: "인증 복구 대기 중" };
+                failed(pending.pid, 'auth', '인증 복구 대기 중');
               }
               this._notifyWorkloadError(kind, true);
-              this.pstat[pid] = { id: pid, error: true, errorKind: kind,
-                                  message: (e && e.message) || String(e) };
+              failed(pid, kind, (e && e.message) || String(e));
             } else if (task.attempt < WORKLOAD_PERSON_RETRY_DELAYS.length) {
               const nextAttempt = task.attempt + 1;
               // 자동 재시도를 모두 소진하기 전에는 실패로 확정하지 않는다. 최초 로딩과 같은
               // 자리표시를 유지하고 시도 횟수만 알려, 성공할 수 있는 행을 빨갛게 경고하지 않는다.
-              this.pstat[pid] = { id: pid, loading: true, retrying: true,
-                retryAttempt: nextAttempt,
-                message: (e && e.message) || String(e) };
+              failed(pid, kind, (e && e.message) || String(e), true, nextAttempt);
               this._notifyWorkloadError(kind, false);
               queue.push({ pid, attempt: nextAttempt,
                            readyAt: Date.now() + WORKLOAD_PERSON_RETRY_DELAYS[task.attempt] });
             } else {
               this._notifyWorkloadError(kind, true);
-              this.pstat[pid] = { id: pid, error: true, errorKind: kind,
-                                  message: (e && e.message) || String(e) };
+              failed(pid, kind, (e && e.message) || String(e));
             }
           })
           .finally(() => {
             active--;
-            if (epoch !== this.peopleLoadEpoch) return;
-            this.scheduleMeasure(); this.loadDueRisk();
+            if (epoch !== this.peopleLoadEpoch) { if (!active) finish(); return; }
+            this.scheduleMeasure();
+            if (!preserve) this.loadDueRisk();
             if (!authPaused) pump();
+            else if (!active) finish();
           });
           now = Date.now();
         }
         if (active < CONC && queue.length) wakeLater();
+        if (!active && !queue.length) finish();
       };
       pump();
+      return complete;
     },
-    /** 캐시를 비우고 전부 다시 받는다 — 낡은 값으로 화면을 지키는 구조라 사람이 끊을 수단이 필요하다. */
+    /** 표시된 집계와 펼침 상태를 유지하며 현재 모듈만 다시 확인한다. */
     async hardRefresh() {
       if (this.busy) return;
       this.busy = true;
       try {
-        await api.refresh();
         this._cancelPeopleRetryTimers();
         this.peopleLoadEpoch++;
         this._beginNoticeEpoch();
-        this._invalidateDueRisk();
-        this.d = null; this.pstat = {}; this.tkd = {}; this.actOpen = {}; this.linePos = {};
-        await this.load();
+        this.detailLoadEpoch++;
+        this._invalidateDueRisk(true);
+        await this.load({ refreshPeople: true });
+        await Promise.all(Object.keys(this.tkd).filter(id => this.actOpen[id]).flatMap(id =>
+          ["open", "inProgress", "done7d"].map(bucket => this._loadDetailBucket(id, bucket, { resetRows: false }))));
+        await this.loadDueRisk({ force: true });
       } catch (e) {
         this.err = (e && e.message) || "다시 받지 못했습니다.";
       } finally { this.busy = false; }
@@ -713,7 +744,9 @@ export default {
         },
         onPartial: (rows, attempt, error) => {
           if (!isCurrent()) return;
-          box[bucket] = rows.slice().sort(this._detailSorter(bucket));
+          if (opts.resetRows !== false || !box[bucket]?.length) {
+            box[bucket] = rows.slice().sort(this._detailSorter(bucket));
+          }
           box.states[bucket] = bucketState("partial", {
             requestKey, attempt, kind: workloadErrorKind(error),
             message: (error && error.message) || String(error),
@@ -726,6 +759,7 @@ export default {
         box.states[bucket] = bucketState("success", { requestKey });
         return;
       }
+      if (result.status === 'permission') box[bucket] = [];
       box.states[bucket] = bucketState(result.status, {
         requestKey, kind: result.kind || "other",
         message: (result.error && result.error.message) || "불러오지 못했습니다.",
@@ -793,18 +827,19 @@ export default {
     },
     /** 마감 리스크 — 현재 모듈 인력의 할당/진행중 티켓에서 초과(D+)·임박(D-3) 집계(지연 로딩). */
     async loadDueRisk(opts = {}) {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       const mod = this.curMod ? this.curMod.module : "";
       const assignedWindow = this.assignedWindow;
       const excludeVoc = this.excludeVoc;
       const requestKey = mod + "|" + assignedWindow + "|" + (excludeVoc ? "no-voc" : "voc");
       const sameResult = this.dueRisk && this.dueRiskFor === requestKey ? this.dueRisk : null;
       if (this.dueRiskBusy && this.dueRiskFor === requestKey) return;
-      if (sameResult && !opts.retryFailed) return;
+      if (sameResult && !opts.retryFailed && !opts.force && !this._dueRiskDirty) return;
       if (!this.statsReady) return;                // 전원 로딩된 뒤에만
       // 세션이 끊겨 사람 집계부터 실패한 동안에는 2×인력 버킷을 더 쌓지 않는다. auth-ok가 그
       // 사람만 복구한 뒤 마지막 finally에서 다시 진입한다.
       if ((this.curMod.people || []).some((p) => this.pstat[p.id]
-          && this.pstat[p.id].errorKind === "auth")) return;
+          && (this.pstat[p.id].errorKind === "auth" || this.pstat[p.id].refreshErrorKind === "auth"))) return;
 
       const parts = Object.assign({}, (sameResult && sameResult.parts) || {});
       const targets = [];
@@ -817,7 +852,7 @@ export default {
         }
         const previous = parts[partKey];
         if (opts.retryFailed) {
-          if (!previous || previous.status !== "error"
+          if (!previous || (previous.status !== "error" && !previous.refreshError)
               || (opts.retryKind && previous.kind !== opts.retryKind)) continue;
         }
         targets.push({ p, bucket, partKey });
@@ -825,14 +860,19 @@ export default {
       if (opts.retryFailed && !targets.length) return;
 
       const epoch = ++this.dueRiskEpoch;
+      this._dueRiskDirty = false;
       this.dueRiskBusy = true; this.dueRiskFor = requestKey;
       const nameOf = (pid) => (this.pstat[pid] && this.pstat[pid].name) || pid;
       const publish = () => {
         if (epoch !== this.dueRiskEpoch || this.dueRiskFor !== requestKey) return;
-        this.dueRisk = summarizeDueRiskParts({
+        const summary = summarizeDueRiskParts({
           people: this.curMod.people || [], parts, excludeVoc,
           dueRank: (ticket) => this.dueRank(ticket), nameOf,
         });
+        const retainedFailures = Object.values(parts).filter(part => part.refreshError).length;
+        summary.failures += retainedFailures;
+        if (retainedFailures) summary.complete = false;
+        this.dueRisk = summary;
       };
       // 첫 조각부터 화면에 누적한다. 느리거나 실패하는 마지막 요청 때문에 이미 확인된
       // 마감 위험까지 가려지지 않는다(완료 전 수치는 '+'로 하한임을 표시).
@@ -846,7 +886,10 @@ export default {
           });
           if (result.status === "cancelled"
               || epoch !== this.dueRiskEpoch || this.dueRiskFor !== requestKey) return;
-          parts[partKey] = Object.assign({ id: p.id, bucket }, result);
+          const prior = parts[partKey];
+          parts[partKey] = result.status === 'error' && prior?.status === 'success'
+            ? { ...prior, refreshError: true, kind: result.kind }
+            : Object.assign({ id: p.id, bucket }, result);
           publish();
         }));
       } finally {
@@ -1106,6 +1149,7 @@ export default {
                 <div v-else class="wbars">
                   <ProgressBar class="wside" :segments="assignedSegs(pstat[p.id])" :scale="scale.ip" show-total dark-text />
                   <ProgressBar class="wside" :segments="doneSegs(pstat[p.id])" :scale="scale.dn" show-total dark-text />
+                  <span v-if="pstat[p.id].refreshError" class="muted mini" :title="pstat[p.id].refreshError">이전 집계 <button v-if="!pstat[p.id].refreshing" class="wl-retry" @click.stop="retryPerson(p.id)">재시도</button></span>
                 </div>
                 <button class="plus" @click="toggleAct(p.id)">{{ actOpen[p.id] ? "−" : "+" }}</button>
               </div>
@@ -1138,7 +1182,7 @@ export default {
                         <b>{{ bucketStateOf(p.id, c.k).status === 'success' ? (tkd[p.id][c.k] || []).length : ((tkd[p.id][c.k] || []).length ? (tkd[p.id][c.k] || []).length + '+' : '…') }}</b>
                       </div>
                       <div class="tcol-body">
-                      <div v-if="bucketStateOf(p.id, c.k).status === 'loading' || bucketStateOf(p.id, c.k).status === 'retrying'" class="loading">
+                      <div v-if="(bucketStateOf(p.id, c.k).status === 'loading' || bucketStateOf(p.id, c.k).status === 'retrying') && !(tkd[p.id][c.k] || []).length" class="loading">
                         {{ bucketStateOf(p.id, c.k).attempt ? '불러오는 중… (재시도: ' + bucketStateOf(p.id, c.k).attempt + ')' : '불러오는 중…' }}
                       </div>
                       <div v-else-if="bucketStateOf(p.id, c.k).status === 'permission'" class="muted mini">조회 제외</div>
@@ -1146,7 +1190,7 @@ export default {
                         <span>{{ bucketStateOf(p.id, c.k).kind === 'auth' ? '인증 후 자동 재시도' : '불러오지 못했습니다' }}</span>
                         <button v-if="bucketStateOf(p.id, c.k).kind !== 'auth'" class="wl-retry" @click.stop="retryBucket(p.id, c.k)">다시 시도</button>
                       </div>
-                      <template v-else-if="bucketStateOf(p.id, c.k).status === 'success' || bucketStateOf(p.id, c.k).status === 'partial'">
+                      <template v-if="bucketStateOf(p.id, c.k).status !== 'permission' && ((tkd[p.id][c.k] || []).length || bucketStateOf(p.id, c.k).status === 'success' || bucketStateOf(p.id, c.k).status === 'partial')">
                         <div v-for="t in tkd[p.id][c.k]" :key="c.k + '-' + t.key" class="wtk tkt ticket-update-row"
                              :class="[c.cls, { 'update-unread': isUnread(t) }]" :data-key="t.key" role="button" tabindex="0"
                              :title="t.key + ' · ' + t.summary">
@@ -1168,7 +1212,7 @@ export default {
                         </div>
                         <div v-if="!(tkd[p.id][c.k] || []).length" class="muted mini">없음</div>
                       </template>
-                      <div v-else class="loading">대기 중…</div>
+                      <div v-else-if="bucketStateOf(p.id, c.k).status === 'idle'" class="loading">대기 중…</div>
                       </div>
                     </div>
                   </div>

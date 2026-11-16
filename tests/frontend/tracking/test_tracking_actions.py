@@ -18,6 +18,7 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){}};
     const {default: view}=await import(STATIC+'/components/tracking-view.js');
     const {api}=await import(STATIC+'/lib/api.js');
+    api.readCached=(path,opts)=>api.raw(path,opts);
     const vm=view.data();
     for(const [key,fn] of Object.entries(view.methods)) vm[key]=fn.bind(vm);
     for(const [key,fn] of Object.entries(view.computed)) Object.defineProperty(vm,key,{get:()=>fn.call(vm)});
