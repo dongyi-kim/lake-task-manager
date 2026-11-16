@@ -5,15 +5,18 @@ export default {
   name:'TrackingSplitter',
   props:{
     width:{type:Number,default:DEFAULT_WIDTH},
+    defaultWidth:{type:Number,default:DEFAULT_WIDTH},
+    minimumWidth:{type:Number,default:MIN_WIDTH},
+    maximumWidth:{type:Number,default:MAX_WIDTH},
     controls:{type:String,default:'tracking-hierarchy'},
     storageKey:{type:String,default:'ltm.tracking.hierarchyWidth'},
   },
   emits:['resize'],
   data() { return {preferredWidth:this.width,containerWidth:1032,dragging:false}; },
   computed:{
-    minWidth() { return MIN_WIDTH; },
-    maxWidth() { return Math.max(MIN_WIDTH,Math.min(MAX_WIDTH,this.containerWidth-420-12)); },
-    renderedWidth() { return Math.round(Math.max(MIN_WIDTH,Math.min(this.maxWidth,this.preferredWidth))); },
+    minWidth() { return this.minimumWidth ?? MIN_WIDTH; },
+    maxWidth() { return Math.max(this.minWidth,Math.min(this.maximumWidth ?? MAX_WIDTH,this.containerWidth-420-12)); },
+    renderedWidth() { return Math.round(Math.max(this.minWidth,Math.min(this.maxWidth,this.preferredWidth))); },
   },
   watch:{
     width(value) {
@@ -26,7 +29,7 @@ export default {
     try {
       const saved = window.localStorage.getItem(this.storageKey);
       if (saved !== null && saved.trim() && Number.isFinite(Number(saved))) {
-        this.preferredWidth = Math.max(MIN_WIDTH,Math.min(MAX_WIDTH,Number(saved)));
+        this.preferredWidth = Math.max(this.minimumWidth ?? MIN_WIDTH,Math.min(this.maximumWidth ?? MAX_WIDTH,Number(saved)));
       }
     } catch (_) { /* Storage may be disabled; resizing still works. */ }
     this.observeLayout();
@@ -44,7 +47,7 @@ export default {
     },
     setWidth(width,persist=true) {
       if (!Number.isFinite(width)) return;
-      this.preferredWidth = Math.round(Math.max(MIN_WIDTH,Math.min(MAX_WIDTH,width)));
+      this.preferredWidth = Math.round(Math.max(this.minimumWidth ?? MIN_WIDTH,Math.min(this.maximumWidth ?? MAX_WIDTH,width)));
       this.publishWidth();
       if (persist) this.saveWidth();
     },
@@ -70,13 +73,13 @@ export default {
       this._layoutObserver = null;
       this._layoutListener = null;
     },
-    resetWidth() { this.setWidth(DEFAULT_WIDTH); },
+    resetWidth() { this.setWidth(this.defaultWidth ?? DEFAULT_WIDTH); },
     resizeKey(event) {
       const width = {ArrowLeft:this.renderedWidth-16,ArrowRight:this.renderedWidth+16,
-        Home:DEFAULT_WIDTH,End:this.maxWidth}[event.key];
+        Home:this.defaultWidth ?? DEFAULT_WIDTH,End:this.maxWidth}[event.key];
       if (width === undefined) return;
       event.preventDefault();
-      this.setWidth(Math.max(MIN_WIDTH,Math.min(this.maxWidth,width)));
+      this.setWidth(Math.max(this.minWidth,Math.min(this.maxWidth,width)));
     },
     startResize(event) {
       if (event.button !== 0 || event.isPrimary === false) return;
@@ -86,7 +89,7 @@ export default {
       const startX = event.clientX, startWidth = this.renderedWidth;
       const previousCursor = document.body.style.cursor, previousSelection = document.body.style.userSelect;
       const move = e => {
-        if (e.pointerId === pointer) this.setWidth(Math.max(MIN_WIDTH,Math.min(this.maxWidth,startWidth+e.clientX-startX)),false);
+        if (e.pointerId === pointer) this.setWidth(Math.max(this.minWidth,Math.min(this.maxWidth,startWidth+e.clientX-startX)),false);
       };
       const finish = e => {
         if (e?.pointerId !== undefined && e.pointerId !== pointer) return;

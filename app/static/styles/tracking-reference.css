@@ -1,0 +1,109 @@
+/* Tracking reference contract: white work surface, ink hierarchy, blue selection.
+   All tokens and rules stay inside the page; surrounding product views are unchanged. */
+.tracking-reference {
+  --tr-ink:#1b2840;--tr-muted:#68758b;--tr-line:#e5e9f1;--tr-bg:#f5f7fb;
+  --tr-blue:#3956c8;--tr-blue-light:#eef1ff;--tr-green:#21745d;--tr-amber:#956013;
+  --tr-red:#a84b4e;--tr-panel:#fff;--tr-amber-light:#fff6e5;
+  --text:var(--tr-ink);--muted:var(--tr-muted);--border:var(--tr-line);--panel:var(--tr-panel);
+  --panel-2:var(--tr-bg);--accent:var(--tr-blue);--good:var(--tr-green);--warn:var(--tr-amber);
+  margin:-16px -28px -60px;height:calc(100dvh - 46px);min-height:580px;
+  display:flex;flex-direction:column;overflow:hidden;background:var(--tr-panel);color:var(--tr-ink);
+  font:13px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK KR","Malgun Gothic",sans-serif;
+  letter-spacing:-.01em;
+}
+.tracking-reference *, .tracking-reference *::before, .tracking-reference *::after {box-sizing:border-box}
+.tracking-reference button,.tracking-reference input,.tracking-reference select,.tracking-reference textarea {font:inherit;color:inherit}
+.tracking-reference button {cursor:pointer;border:0;background:transparent;padding:0}
+.tracking-reference button:disabled {cursor:default;opacity:.46}
+.tracking-reference :is(button,input,select,textarea):focus-visible {outline:2px solid var(--tr-blue);outline-offset:3px}
+.tracking-reference button {transition:background .14s,border-color .14s,color .14s}
+.tracking-reference .rf-muted {color:var(--tr-muted)}
+.tracking-reference .rf-sr {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.tracking-reference .rf-header {height:64px;flex:none;padding:0 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--tr-line);background:var(--tr-panel)}
+.tracking-reference .rf-brand {display:flex;align-items:center;gap:10px}
+.tracking-reference .rf-brand-icon {width:34px;height:34px;border-radius:9px;background:var(--tr-blue);color:#fff;display:grid;place-items:center}
+.tracking-reference .rf-brand h1 {margin:0;font-size:17px;line-height:1.3;font-weight:750;letter-spacing:-.5px}
+.tracking-reference .rf-brand p {margin:1px 0 0;color:var(--tr-muted);font-size:10px}
+.tracking-reference .rf-header-actions {display:flex;gap:8px;align-items:center}
+.tracking-reference .rf-header-actions>button,.tracking-reference .rf-query button,.tracking-reference .rf-dialog button {border:1px solid var(--tr-line);background:var(--tr-panel);border-radius:7px;padding:7px 12px;white-space:nowrap;font-size:12px;font-weight:600}
+.tracking-reference .rf-header-actions>button:hover,.tracking-reference .rf-query button:hover,.tracking-reference .rf-dialog button:hover {background:var(--tr-bg)}
+.tracking-reference .rf-beta {margin-left:5px;color:var(--tr-blue);font-size:9px;font-weight:750}
+.tracking-reference button.rf-primary {background:var(--tr-blue);border-color:var(--tr-blue);color:#fff;box-shadow:0 1px 2px #1b28400a}
+.tracking-reference button.rf-primary:hover {background:color-mix(in srgb,var(--tr-blue),#000 9%)}
+.tracking-reference .rf-query {min-height:62px;flex:none;padding:12px 24px;display:flex;align-items:center;gap:18px;border-bottom:1px solid var(--tr-line);background:var(--tr-panel);z-index:12}
+.tracking-reference .rf-query fieldset {display:flex;align-items:center;gap:8px;margin:0;padding:0;border:0;min-width:0}
+.tracking-reference .rf-query :is(fieldset>label,.rf-picker>span) {font-size:11px;font-weight:650;color:var(--tr-muted);white-space:nowrap}
+.tracking-reference .rf-query input[type=date] {height:32px;padding:4px 8px;width:132px;font-size:12px;background:var(--tr-panel);border:1px solid var(--tr-line);border-radius:6px}
+.tracking-reference .rf-presets {display:flex;gap:2px;margin-left:2px}
+.tracking-reference .rf-presets button {border-color:transparent;padding:5px 7px;color:var(--tr-muted);font-size:11px;font-weight:500}
+.tracking-reference .rf-picker {position:relative;display:flex;align-items:center;gap:8px;min-width:0}
+.tracking-reference .rf-picker-button {display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:210px;overflow:hidden;text-overflow:ellipsis}
+.tracking-reference .rf-picker-button span {color:var(--tr-muted)}
+.tracking-reference .rf-picker-menu {position:absolute;top:calc(100% + 9px);right:0;min-width:280px;padding:12px;display:grid;gap:10px;background:var(--tr-panel);border:1px solid var(--tr-line);border-radius:9px;box-shadow:0 12px 35px #1b284024;z-index:15}
+.tracking-reference .rf-picker-menu input[type=search] {border:1px solid var(--tr-line);background:var(--tr-panel);padding:7px 9px;border-radius:5px;width:100%}
+.tracking-reference .rf-picker-list {max-height:240px;overflow:auto}
+.tracking-reference .rf-picker-list label {display:flex;gap:9px;padding:7px 4px;align-items:center;cursor:pointer}
+.tracking-reference .rf-picker-list label:hover {background:var(--tr-bg)}
+.tracking-reference input[type=checkbox] {accent-color:var(--tr-blue)}
+.tracking-reference .rf-picker-backdrop {position:fixed;inset:46px 0 0;z-index:11}
+.tracking-reference .rf-run-status {min-height:32px;flex:none;display:flex;align-items:center;gap:12px;padding:6px 24px;font-size:10px;color:var(--tr-muted);background:var(--tr-bg);border-bottom:1px solid var(--tr-line);flex-wrap:wrap}
+.tracking-reference .rf-run-status strong {font-weight:600;color:var(--tr-ink)}
+.tracking-reference .rf-status-dot {width:5px;height:5px;flex:none;border-radius:50%;background:var(--tr-green);margin-right:-6px}
+.tracking-reference .rf-run-status.is-partial .rf-status-dot {background:var(--tr-amber)}
+.tracking-reference .rf-run-status.is-partial {background:var(--tr-amber-light)}
+.tracking-reference .rf-run-status button {border:0;padding:0;background:transparent;color:var(--tr-blue);font-size:10px}
+.tracking-reference .rf-run-status .rf-audit-button {margin-left:auto;color:var(--tr-muted);text-decoration:underline;text-underline-offset:3px}
+.tracking-reference .rf-draft {color:var(--tr-amber)}
+.tracking-reference .rf-alert {flex:none;margin:0;padding:10px 24px;color:var(--tr-red);background:color-mix(in srgb,var(--tr-red) 7%,var(--tr-panel));font-size:12px;border-bottom:1px solid var(--tr-line)}
+.tracking-reference .rf-alert button {background:transparent;border:0;text-decoration:underline;color:inherit;font-weight:600}
+.tracking-reference .rf-workspace {display:flex;flex:1;min-height:0;overflow:hidden;align-items:stretch;background:var(--tr-panel)}
+.tracking-reference .rf-main {flex:1;min-width:0;overflow:auto;overscroll-behavior:contain;background:var(--tr-panel);padding:14px 24px 32px}
+.tracking-reference .rf-workspace.is-leaf .rf-main {display:none}
+.tracking-reference .rf-workspace.is-leaf .tp-evidence {flex:1;width:auto;max-width:none;border-left:0}
+.tracking-reference .tr-splitter {width:8px;flex:0 0 8px;cursor:col-resize;position:relative;background:var(--tr-panel);touch-action:none;border:0;z-index:2}
+.tracking-reference .tr-splitter::after {content:"";position:absolute;top:0;bottom:0;left:3px;width:1px;background:var(--tr-line);transition:background .15s,width .15s}
+.tracking-reference .tr-splitter::before {content:"";position:absolute;left:2px;top:50%;width:3px;height:32px;border-radius:3px;background:var(--tr-line);z-index:1}
+.tracking-reference .tr-splitter:hover::after,.tracking-reference .tr-splitter.is-dragging::after,.tracking-reference .tr-splitter:focus-visible::after {background:var(--tr-blue);width:2px}
+.tracking-reference .rf-start {display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;padding:40px;text-align:center}
+.tracking-reference .rf-start>svg {color:var(--tr-blue);margin-bottom:12px}
+.tracking-reference .rf-start h2 {font-size:22px;font-weight:650;margin:0 0 8px}
+.tracking-reference .rf-start p {margin:4px 0}
+.tracking-reference .rf-dialog {width:min(720px,calc(100vw - 80px));max-height:calc(100dvh - 100px);padding:0;border:1px solid var(--tr-line);border-radius:12px;color:var(--tr-ink);background:var(--tr-panel);box-shadow:0 24px 80px #1b284033}
+.tracking-reference .rf-dialog::backdrop {background:#18233b55;backdrop-filter:blur(2px)}
+.tracking-reference .rf-dialog>header {display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-bottom:1px solid var(--tr-line)}
+.tracking-reference .rf-dialog>header small {font-size:10px;letter-spacing:.08em;color:var(--tr-muted)}
+.tracking-reference .rf-dialog h2 {font-size:20px;margin:2px 0 0;font-weight:650}
+.tracking-reference .rf-dialog button.rf-dialog-close {font-size:22px;line-height:1;padding:6px 9px;border:0;color:var(--tr-muted)}
+.tracking-reference .rf-dialog-body {padding:20px 24px;overflow-wrap:anywhere}
+.tracking-reference .rf-dialog-body>div>p:first-child {margin-top:0}
+.tracking-reference .rf-history>button {width:100%;display:flex;justify-content:space-between;align-items:center;gap:16px;text-align:left;margin-bottom:8px;padding:12px 14px}
+.tracking-reference .rf-history strong,.tracking-reference .rf-history small {display:block}
+.tracking-reference .rf-history small {margin-top:2px;color:var(--tr-muted);font-size:11px;font-weight:400}
+.tracking-reference .rf-copy-text {display:block;width:100%;height:340px;resize:vertical;border:1px solid var(--tr-line);border-radius:7px;padding:12px;background:var(--tr-bg);line-height:1.8;font-size:12px}
+.tracking-reference .rf-dialog-actions {display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px}
+.tracking-reference .rf-dialog-actions [role=status] {font-size:12px;color:var(--tr-muted)}
+.tracking-reference .rf-ai ul {padding-left:18px}
+.tracking-reference .rf-ai li {margin:18px 0;line-height:1.8}
+.tracking-reference .rf-dialog .rf-text-button,.tracking-reference .rf-query .rf-text-button {border:0;background:transparent;color:var(--tr-blue);padding:3px 0;white-space:normal;text-align:left}
+.tracking-reference .rf-ai .rf-text-button {font-size:11px;margin-right:10px}
+.tracking-reference .rf-warning {color:var(--tr-amber)}
+.tracking-reference .rf-audit dl {display:grid;grid-template-columns:160px 1fr;border-top:1px solid var(--tr-line);margin:20px 0}
+.tracking-reference .rf-audit dt,.tracking-reference .rf-audit dd {margin:0;padding:10px 0;border-bottom:1px solid var(--tr-line)}
+.tracking-reference .rf-audit dt {color:var(--tr-muted)}
+/* Preserve the shared rich comment and activity renderer, with local palette. */
+.tracking-reference .tr-comment {color:var(--tr-ink)}
+.tracking-reference .tr-feed {padding:0}
+html[data-theme=dark] .tracking-reference,[data-theme=dark] .tracking-reference {
+  --tr-ink:#e2e8f4;--tr-muted:#9aa9c2;--tr-line:#2d3a50;--tr-bg:#182131;--tr-panel:#131c2a;
+  --tr-blue:#91a7ff;--tr-blue-light:#273553;--tr-green:#7bc6aa;--tr-amber:#e4ba70;--tr-red:#e69b9e;--tr-amber-light:#302a20;
+}
+[data-theme=dark] .tracking-reference button.rf-primary {background:#4764d1;border-color:#4764d1}
+[data-theme=dark] .tracking-reference input[type=date] {color-scheme:dark}
+@media(max-width:1280px) {
+  .tracking-reference .rf-header,.tracking-reference .rf-query {padding-left:18px;padding-right:18px}
+  .tracking-reference .rf-query {gap:12px}
+  .tracking-reference .rf-query input[type=date] {width:125px}
+  .tracking-reference .rf-presets button {padding-left:4px;padding-right:4px}
+  .tracking-reference .rf-picker-button {max-width:160px}
+}
+@media(prefers-reduced-motion:reduce) {.tracking-reference * {scroll-behavior:auto!important;transition:none!important;animation:none!important}}

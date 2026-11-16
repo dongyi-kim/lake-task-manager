@@ -98,21 +98,21 @@ def test_each_grouping_applies_search_highlight_and_renders_foldable_comments(tr
     expect(edited.get_by_role('button', name='댓글 접기', exact=True)).to_have_attribute('aria-expanded', 'true')
     assert page.locator('button button, button a, a button').count() == 0
 
-    search = page.get_by_role('searchbox', name='수집 결과에서 검색')
+    search = page.get_by_role('textbox', name='업무 검색')
     search.fill('하위 확인')
-    page.get_by_role('checkbox', name='일치 항목만').check()
+    page.get_by_role('combobox', name='검색 표시 방식').select_option('matches')
     assert event_ids(area) == ['edited-comment', 'sub-completed', 'sub-created']
     expect(area.locator('.tr-feed-ticket-heading').filter(has_text='TASK-1')).to_have_count(0)
     search.fill('')
-    page.get_by_role('combobox', name='강조 대상 종류', exact=True).select_option('task')
-    page.get_by_role('combobox', name='강조 대상', exact=True).select_option('SUB-1')
+    page.get_by_role('combobox', name='사람 또는 업무 강조', exact=True).select_option('task:SUB-1')
     assert event_ids(area) == ['edited-comment', 'sub-completed', 'sub-created']
-    page.get_by_role('button', name='강조 해제', exact=True).click()
+    page.get_by_role('button', name='강조 지우기', exact=True).click()
     assert sorted(event_ids(area)) == sorted(EVENT_ORDER)
-    page.get_by_role('navigation', name='업무 계층과 보고 범위', exact=True).get_by_role(
+    page.get_by_role('navigation', name='업무 계층 탐색', exact=True).get_by_role(
         'button', name='소속 Epic 없음 펼치기', exact=True,
     ).click()
-    page.get_by_role('button', name='업무 댓글 렌더링 업무 업무 요약 보기', exact=True).click()
+    page.get_by_role('button', name='댓글 렌더링 업무 (TASK-1) 범위 선택', exact=True).click()
+    area = open_surface(page, 'feed')
     assert sorted(event_ids(area)) == sorted(['edited-comment', 'sub-completed', 'rich-comment', 'plain-comment', 'sub-created'])
     expect(area.locator('.tr-feed-ticket-heading').filter(has_text='TASK-2')).to_have_count(0)
     for next_mode in ['none', 'ticket', 'date-ticket']:
@@ -121,8 +121,8 @@ def test_each_grouping_applies_search_highlight_and_renders_foldable_comments(tr
     assert reads == before
 
     area.locator('.tr-feed-event[data-event-id="rich-comment"] .tr-feed-ticket').click()
-    expect(page.locator('#tracking-detail')).to_be_visible()
-    expect(page.get_by_role('tab', name=re.compile('상세'))).to_have_attribute('aria-selected', 'true')
+    expect(page.locator('.tp-evidence')).to_be_visible()
+    expect(page.get_by_role('complementary', name='상세 근거')).to_be_visible()
     assert reads == before
     assert not unexpected
     assert not errors

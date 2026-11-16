@@ -63,11 +63,11 @@ A_EVENTS = {'a-comment', 'a-created', 'a-sub-comment', 'a-sub-completed'}
 
 
 def navigation(page):
-    return page.get_by_role('navigation', name='업무 계층과 보고 범위', exact=True)
+    return page.get_by_role('navigation', name='업무 계층 탐색', exact=True)
 
 
 def unassigned_buttons(page):
-    return navigation(page).get_by_role('button', name=f'미소속 {UNASSIGNED} 업무 요약 보기', exact=True)
+    return navigation(page).get_by_role('button', name=f'{UNASSIGNED} 범위 선택', exact=True)
 
 
 def select_group(page, index=0):
@@ -75,12 +75,12 @@ def select_group(page, index=0):
 
 
 def brief_titles(page):
-    return page.locator('.tr-brief-title h3').all_text_contents()
+    return page.locator('.tb-title-button').all_text_contents()
 
 
 def detail_event_ids(page):
-    return set(page.locator('#tracking-detail .tr-evidence-event').evaluate_all(
-        "events => events.map(event => event.id.replace('tracking-event-', ''))"
+    return set(page.locator('.tp-evidence .tp-event').evaluate_all(
+        'events => events.map(event => event.dataset.eventId)'
     ))
 
 
@@ -96,7 +96,6 @@ def test_unassigned_scopes_keep_wbs_module_and_root_members_separate(tracking_br
     page, reads, unexpected, errors = tracking_browser
     before = list(reads)
     expect(unassigned_buttons(page)).to_have_count(4)
-    # Same visible group name in two WBS contexts must never merge their scopes.
     for index, context, titles in [
         (0, ['제품 모듈', 'WBS A', UNASSIGNED], [TASK_A]),
         (1, ['제품 모듈', 'WBS B', UNASSIGNED], ['두 번째 WBS의 독립 업무']),
@@ -104,96 +103,86 @@ def test_unassigned_scopes_keep_wbs_module_and_root_members_separate(tracking_br
         (3, [UNASSIGNED], ['최상위 독립 업무']),
     ]:
         select_group(page, index)
-        expect(page.get_by_role('tab', name='요약', exact=True)).to_have_attribute('aria-selected', 'true')
-        expect(page.get_by_role('tab', name='요약', exact=True)).to_be_enabled()
+        expect(page.locator('.tb-briefing')).to_be_visible()
+        expect(page.locator('.tp-evidence')).to_have_count(0)
         assert brief_titles(page) == titles
-        breadcrumb = page.get_by_role('navigation', name='현재 보고 범위')
+        breadcrumb = page.get_by_role('navigation', name='선택 범위 경로')
         expect(breadcrumb.locator('button')).to_have_text(['전체 업무', *context])
 
-    navigation(page).get_by_role('button', name='Epic 실제 Epic 업무 요약 보기', exact=True).click()
+    navigation(page).get_by_role('button', name='실제 Epic (EPIC-1) 범위 선택', exact=True).click()
     assert brief_titles(page) == ['실제 Epic에 속한 업무']
-    navigation(page).get_by_role('button', name='Epic 화면 - 사용성 업무 요약 보기', exact=True).click()
+    navigation(page).get_by_role('button', name='화면 - 사용성 범위 선택', exact=True).click()
     assert brief_titles(page) == ['VOC의 독립 업무']
     expect(unassigned_buttons(page)).to_have_count(4)
     assert_clean(reads, before, unexpected, errors)
 
 
-def test_unassigned_group_detail_and_task_subtree_keep_all_member_evidence(tracking_browser):
+def test_nonleaf_keeps_briefing_beside_evidence_and_leaf_uses_full_main(tracking_browser):
     from playwright.sync_api import expect
 
     page, reads, unexpected, errors = tracking_browser
     before = list(reads)
     select_group(page)
-    page.get_by_role('tab', name=re.compile('상세')).click()
-    expect(page.locator('#tracking-detail')).to_be_visible()
+    page.get_by_role('button', name='범위 활동', exact=True).click()
+    expect(page.locator('.tp-evidence')).to_be_visible()
+    expect(page.locator('.tp-evidence')).not_to_have_class(re.compile(r'\btp-evidence-leaf\b'))
+    expect(page.locator('.tb-briefing')).to_be_visible()
     assert detail_event_ids(page) == A_EVENTS
-    expect(page.get_by_role('navigation', name='현재 업무 위치')).to_contain_text('WBS A')
-    page.get_by_role('tab', name='요약', exact=True).click()
+    expect(page.get_by_role('navigation', name='근거 상위 경로')).to_contain_text('WBS A')
+    page.get_by_role('button', name='상세 근거 닫기', exact=True).click()
     assert brief_titles(page) == [TASK_A]
 
-    group_fold = navigation(page).get_by_role('button', name=UNASSIGNED + ' 펼치기', exact=True).first
-    group_fold.click()
-    navigation(page).get_by_role('button', name=f'업무 {TASK_A} 업무 요약 보기', exact=True).click()
-    assert brief_titles(page) == [TASK_A]
-    page.get_by_role('tab', name=re.compile('상세')).click()
+    page.locator('.tb-row[data-key="TASK-1"] .tb-evidence .tb-text').click()
     assert detail_event_ids(page) == A_EVENTS
-
-    # A terminal Subtask opens detail directly while its parent scope stays intact.
-    navigation(page).get_by_role('button', name=f'서브 {SUB_A} 상세 근거 보기', exact=True).click()
-    expect(page.get_by_role('tab', name='요약', exact=True)).to_be_disabled()
+    expect(page.locator('.tb-briefing')).to_be_visible()
+    page.get_by_role('button', name='상세 근거 닫기', exact=True).click()
+    navigation(page).get_by_role('button', name=UNASSIGNED + ' 펼치기', exact=True).first.click()
+    navigation(page).get_by_role('button', name=f'{TASK_A} (TASK-1) 범위 선택', exact=True).click()
+    assert brief_titles(page) == [SUB_A]
+    navigation(page).get_by_role('button', name=f'{SUB_A} (SUB-1) 범위 선택', exact=True).click()
+    expect(page.locator('.rf-workspace > .tp-evidence-leaf')).to_be_visible()
+    expect(page.locator('.rf-main')).to_be_hidden()
     assert detail_event_ids(page) == {'a-sub-comment', 'a-sub-completed'}
-    expect(page.get_by_role('navigation', name='현재 업무 위치')).to_contain_text(UNASSIGNED)
-    expect(page.get_by_role('navigation', name='현재 업무 위치')).to_contain_text(TASK_A)
+    expect(page.get_by_role('navigation', name='근거 상위 경로')).to_contain_text(TASK_A)
+    page.get_by_role('button', name='상위 범위로 돌아가기', exact=True).click()
+    expect(page.locator('.tb-briefing')).to_be_visible()
+    assert brief_titles(page) == [SUB_A]
     select_group(page, 1)
     assert brief_titles(page) == ['두 번째 WBS의 독립 업무']
     assert_clean(reads, before, unexpected, errors)
 
 
-def test_unassigned_feed_grouping_search_and_highlight_retain_parent_context(tracking_browser):
+def test_scoped_grouping_search_and_highlight_keep_ancestor_context(tracking_browser):
     from playwright.sync_api import expect
 
     page, reads, unexpected, errors = tracking_browser
     before = list(reads)
     select_group(page)
-    report_grouping = page.get_by_role('combobox', name='업무 요약 그룹핑', exact=True)
+    report_grouping = page.get_by_role('combobox', name='업무 그룹핑', exact=True)
     for mode in ['status', 'hierarchy']:
         report_grouping.select_option(mode)
         assert brief_titles(page) == [TASK_A]
     area = open_surface(page, 'feed')
     grouping = page.get_by_role('combobox', name='날짜별 활동 그룹핑', exact=True)
-    search = page.get_by_role('searchbox', name='수집 결과에서 검색')
+    search = page.get_by_role('textbox', name='업무 검색')
     for mode in ['none', 'ticket', 'date-ticket']:
         grouping.select_option(mode)
         assert set(area.locator('.tr-feed-event').evaluate_all('els => els.map(el => el.dataset.eventId)')) == A_EVENTS
         search.fill(SUB_A)
-        page.get_by_role('checkbox', name='일치 항목만').check()
-        expect(navigation(page).get_by_role('button', name=f'업무 {TASK_A} 업무 요약 보기', exact=True)).to_be_visible()
+        page.get_by_role('combobox', name='검색 표시 방식').select_option('matches')
+        expect(navigation(page).get_by_role('button', name=f'{TASK_A} (TASK-1) 범위 선택', exact=True)).to_be_visible()
         expect(unassigned_buttons(page)).to_have_count(1)
-        expect(navigation(page).get_by_role('button', name='WBS WBS A 업무 요약 보기', exact=True)).to_be_visible()
+        expect(navigation(page).get_by_role('button', name='WBS A 범위 선택', exact=True)).to_be_visible()
         assert set(area.locator('.tr-feed-event').evaluate_all('els => els.map(el => el.dataset.eventId)')) == {'a-sub-comment', 'a-sub-completed'}
         search.fill('')
-    page.get_by_role('combobox', name='강조 대상 종류', exact=True).select_option('task')
-    page.get_by_role('combobox', name='강조 대상', exact=True).select_option('SUB-1')
+    page.get_by_role('combobox', name='사람 또는 업무 강조').select_option('task:SUB-1')
     assert set(area.locator('.tr-feed-event').evaluate_all('els => els.map(el => el.dataset.eventId)')) == {'a-sub-comment', 'a-sub-completed'}
-    page.get_by_role('button', name='강조 해제', exact=True).click()
+    page.get_by_role('button', name='강조 지우기', exact=True).click()
     assert set(area.locator('.tr-feed-event').evaluate_all('els => els.map(el => el.dataset.eventId)')) == A_EVENTS
-    expect(navigation(page).get_by_role('button', name=UNASSIGNED + ' 펼치기', exact=True).first).to_have_attribute('aria-expanded', 'false')
-    navigation(page).get_by_role('button', name=re.compile(r'^전체 업무')).click()
-    page.get_by_role('combobox', name='강조 대상 종류', exact=True).select_option('epic')
-    options = page.get_by_role('combobox', name='강조 대상', exact=True).locator('option').filter(has_text=UNASSIGNED)
-    expect(options).to_have_count(4)
-    labels = options.all_text_contents()
-    assert len(set(labels)) == 4, 'Identical group names need their actual WBS/module context'
-    assert all('VOC' not in label for label in labels)
-    for context, expected in [('WBS A', A_EVENTS), ('WBS B', {'b-comment'})]:
-        option = options.filter(has_text=context)
-        expect(option).to_have_count(1)
-        page.get_by_role('combobox', name='강조 대상', exact=True).select_option(option.get_attribute('value'))
-        assert set(area.locator('.tr-feed-event').evaluate_all('els => els.map(el => el.dataset.eventId)')) == expected
     assert_clean(reads, before, unexpected, errors)
 
 
-def test_wbs_tree_folds_and_narrow_titles_remain_keyboard_operable(tracking_browser):
+def test_tree_folding_resizing_and_collapse_remain_local_and_keyboard_operable(tracking_browser):
     from playwright.sync_api import expect
 
     page, reads, unexpected, errors = tracking_browser
@@ -205,25 +194,70 @@ def test_wbs_tree_folds_and_narrow_titles_remain_keyboard_operable(tracking_brow
     fold.press('Enter')
     fold = nav.get_by_role('button', name=UNASSIGNED + ' 접기', exact=True).first
     expect(fold).to_have_attribute('aria-expanded', 'true')
-    target = nav.get_by_role('button', name=f'업무 {TASK_A} 업무 요약 보기', exact=True)
+    target = nav.get_by_role('button', name=f'{TASK_A} (TASK-1) 범위 선택', exact=True)
     expect(target).to_be_visible()
     box = fold.bounding_box()
     assert box['width'] >= 24 and box['height'] >= 24
-    assert fold.inner_text().strip() != '>'
-
-    page.get_by_role('combobox', name='계층 패널 너비', exact=True).select_option('240')
     separator = page.get_by_role('separator', name='계층 패널 너비 조절', exact=True)
-    expect(separator).to_have_attribute('aria-valuenow', '240')
+    separator.focus()
+    for _ in range(4):
+        separator.press('ArrowLeft')
+    expect(separator).to_have_attribute('aria-valuenow', '220')
     expect(target).to_have_attribute('title', TASK_A + ' (TASK-1)')
-    assert target.locator('strong').evaluate('el => { const s = getComputedStyle(el); return s.whiteSpace === "nowrap" && el.getBoundingClientRect().height <= parseFloat(s.lineHeight) + 1; }')
+    assert target.evaluate('el => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1'), 'Long titles must remain readable within the narrow navigation'
     target.press('Enter')
-    assert brief_titles(page) == [TASK_A]
+    assert brief_titles(page) == [SUB_A]
     separator.focus()
     separator.press('ArrowRight')
-    expect(separator).to_have_attribute('aria-valuenow', '256')
+    expect(separator).to_have_attribute('aria-valuenow', '236')
     separator.press('Home')
-    expect(separator).to_have_attribute('aria-valuenow', '300')
+    expect(separator).to_have_attribute('aria-valuenow', '252')
+    nav.get_by_role('button', name='업무 탐색 패널 접기', exact=True).click()
+    expect(page.locator('.tp-nav-rail')).to_be_visible()
+    page.get_by_role('button', name='업무 탐색 패널 펼치기', exact=True).click()
+    expect(navigation(page)).to_be_visible()
     for width in [1440, 1280]:
         page.set_viewport_size({"width": width, "height": 1000})
-        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'Horizontal overflow at {width}px'
+        overflow = page.evaluate('Array.from(document.querySelectorAll("body *")).filter(el => el.getBoundingClientRect().right > innerWidth + 1).slice(0,8).map(el => ({tag:el.tagName,class:el.className,width:el.getBoundingClientRect().width,right:el.getBoundingClientRect().right}))')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'Horizontal overflow at {width}px: {overflow}'
+    assert_clean(reads, before, unexpected, errors)
+
+
+def test_leaf_report_copy_contains_only_selected_leaf_evidence(tracking_browser):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    before = list(reads)
+    select_group(page)
+    page.locator('.tb-row[data-key="TASK-1"] .tb-title-button').click()
+    page.locator('.tb-row[data-key="SUB-1"] .tb-title-button').click()
+    expect(page.locator('.rf-workspace > .tp-evidence-leaf')).to_be_visible()
+    assert detail_event_ids(page) == {'a-sub-comment', 'a-sub-completed'}
+    page.get_by_role('button', name='보고서 복사', exact=True).click()
+    dialog = page.get_by_role('dialog')
+    expect(dialog).to_be_visible()
+    text = dialog.get_by_role('textbox', name='보고서 내용').input_value()
+    assert SUB_A in text
+    assert '하위 업무의 보고' in text and '완료' in text and 'SUB-1' in text
+    assert all(fact not in text for fact in ['첫 번째 업무의 보고', '두 번째 업무의 보고', 'REAL-1', 'VOC-1'])
+    assert_clean(reads, before, unexpected, errors)
+
+
+def test_virtual_epic_highlights_keep_distinct_parent_context(tracking_browser):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    before = list(reads)
+    area = open_surface(page, 'feed')
+    page.get_by_role('combobox', name='검색 표시 방식').select_option('matches')
+    highlight = page.get_by_role('combobox', name='사람 또는 업무 강조')
+    options = highlight.locator('option').filter(has_text=UNASSIGNED)
+    expect(options).to_have_count(4)
+    labels = options.all_text_contents()
+    assert len(set(labels)) == 4, 'Same-named virtual Epic choices need their actual WBS/module path'
+    for context, expected in [('WBS A', A_EVENTS), ('WBS B', {'b-comment'})]:
+        option = options.filter(has_text=context)
+        expect(option).to_have_count(1)
+        highlight.select_option(option.get_attribute('value'))
+        assert set(area.locator('.tr-feed-event').evaluate_all('els => els.map(el => el.dataset.eventId)')) == expected
     assert_clean(reads, before, unexpected, errors)
