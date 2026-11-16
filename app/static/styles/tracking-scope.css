@@ -39,6 +39,7 @@
 .tr-scope-node:hover { background: var(--panel-2); }
 .tr-scope-node.is-active { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
 .tr-scope-node.is-active .tr-scope-node-label { color: var(--accent); }
+.tr-scope-node.is-evidence { box-shadow: inset 2px 0 0 var(--accent); }
 .tr-scope-node.is-match .tr-scope-node-label > strong,
 .tr-scope-node.is-match .tr-scope-node-title { text-decoration: underline; text-decoration-color: var(--warn); text-decoration-thickness: 2px; text-underline-offset: 3px; }
 .tracking .tr-scope-fold,
