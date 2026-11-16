@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 
 from app.content.htmlsafe import mark_explicit_jira_links, sanitize_html, shorten_mention_names, tidy_html
 from app.content.wikihtml import wiki_to_html
+from app.tracking.activity import project_activity
 
 
 class _CommentText(HTMLParser):
@@ -47,6 +48,7 @@ def _comment_text(html):
 
 
 def present_comments(snapshot, client, checkpoint=None):
+    snapshot = project_activity(snapshot)
     fmt = str(getattr(client.s, "comment_format", "") or "").lower()
     if fmt not in ("html", "wiki"):
         fmt = "html" if client.env == "prod" else "wiki"

@@ -20,7 +20,7 @@ PLAIN_TEXT = '일반 댓글 첫째 줄\n일반 댓글 둘째 줄\n일반 댓글 
 
 
 @pytest.fixture
-def tracking_browser():
+def tracking_browser(request):
     """Mount production Vue and CSS; only the saved-run HTTP boundary is fake."""
     playwright = pytest.importorskip("playwright.sync_api")
     coverage = {"complete": True, "historyComplete": True, "commentsComplete": True}
@@ -41,6 +41,21 @@ def tracking_browser():
              "body": PLAIN_TEXT, "actorName": "일반 작성자"},
         ],
     }
+    if getattr(request, 'param', None) == 'grouping':
+        run['issues'].append({"key": "TASK-2", "summary": "별도 확인 업무", "type": "Task", "coverage": coverage})
+        run['tree'].append({"id": "task:TASK-2", "key": "TASK-2", "kind": "task", "children": []})
+        run['events'].extend([
+            {"id": "edited-comment", "issueKey": "SUB-1", "kind": "commentEdited", "date": "2026-11-13T16:00:00Z",
+             "body": "Edited first line\nEdited second line\nEdited third line",
+             "bodyHtml": "<p>Edited first line</p><p>Edited second line</p><p>Edited third line</p>",
+             "bodyText": "Edited first line\nEdited second line\nEdited third line", "actorName": "수정 작성자"},
+            {"id": "sub-completed", "issueKey": "SUB-1", "kind": "completed", "date": "2026-11-13T10:00:00Z",
+             "actorName": "하위 담당자"},
+            {"id": "sub-created", "issueKey": "SUB-1", "kind": "created", "date": "2026-11-12T08:00:00Z",
+             "actorName": "하위 담당자"},
+            {"id": "other-change", "issueKey": "TASK-2", "kind": "fieldChanged", "date": "2026-11-13T08:00:00Z",
+             "field": "priority", "from": "Low", "to": "High", "actorName": "별도 담당자"},
+        ])
     styles = ["tokens", "base", "ticket", "tracking", "tracking-report", "tracking-overview", "tracking-scope", "tracking-comment"]
     html = '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>Tracking comment regression</title>'
     html += ''.join(f'<link rel="stylesheet" href="/styles/{name}.css">' for name in styles)
@@ -85,7 +100,7 @@ def tracking_browser():
             page.on('console', lambda message: errors.append(message.text) if message.type == 'error' else None)
             page.route('**/*', respond)
             page.goto('http://tracking.test/')
-            playwright.expect(page.locator('.tr-brief')).to_have_count(1)
+            playwright.expect(page.locator('.tr-brief').first).to_be_visible()
             yield page, api_requests, unexpected, errors
         finally:
             browser.close()
