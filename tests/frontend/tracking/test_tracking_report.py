@@ -61,6 +61,16 @@ def test_current_done_never_implies_period_completion_and_parent_completion_is_e
     """)
 
 
+def test_copy_separates_period_completion_from_later_current_reopen():
+    run_js("""
+      const input=run([issue('T-1',{statusCategory:'indeterminate',status:'Reopened'})],
+        [event('done','T-1','completed','2026-11-10T01:00:00Z')]);
+      const text=m.reportText(m.buildTrackingReport(input),{asOf:'2026-11-16T09:00:00+09:00'});
+      assert.match(text,/기간 내 완료 이력.*현재 미완료/);
+      assert.match(text,/수집 시점 현재 상태: Reopened/);
+    """)
+
+
 def test_latest_reopen_requires_review_but_recompletion_clears_that_category():
     run_js("""
       const issues=[issue('T-1'),issue('S-1',{type:'Sub-Task',isSubtask:true,parentKey:'T-1'})];

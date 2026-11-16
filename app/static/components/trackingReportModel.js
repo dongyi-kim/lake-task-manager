@@ -1,5 +1,6 @@
 // Report projections over a saved run. No collection, network, DOM, or current-status inference.
 import { eventText, issueKeyOf, ticketLabel } from './trackingModel.js';
+import { trackingRowSummary } from './trackingOverviewModel.js';
 
 const rank = {review:0,completed:1,changed:2,quiet:3};
 const kindOf = value => String(value || '').toLowerCase().replace(/[-_\s]/g,'');
@@ -181,7 +182,9 @@ export function reportText(report, {request={},asOf='',keys} = {}) {
   for (const item of items) {
     const titles = new Map([[item.key,item.title],...item.children.map(child=>[child.key,child.title])]);
     const label = key => ticketLabel(key,titles.get(key));
-    lines.push('',label(item.key),'- '+item.headline);
+    const observed = trackingRowSummary(item);
+    lines.push('',label(item.key),'- '+observed.headline,'- 수집 시점 현재 상태: '+observed.currentLabel);
+    if (observed.remainingLabel) lines.push('- '+observed.remainingLabel);
     if (item.paths.length) lines.push('- 업무 경로: '+item.paths.join(' | '));
     for (const child of item.children.filter(value=>item.completedKeys.includes(value.key))) {
       let note = '';

@@ -1,7 +1,9 @@
 import { eventText, readableTicketTitle, ticketLabel } from './trackingModel.js';
 import { reportText } from './trackingReportModel.js';
+import { trackingRowSummary } from './trackingOverviewModel.js';
 
 const PIN_KEY = 'ltm.tracking.report.pins';
+const CATEGORY_ORDER = {review:0,completed:1,changed:2,quiet:3};
 function readPins() {
   try { const value = JSON.parse(localStorage.getItem(PIN_KEY) || '[]'); return Array.isArray(value) ? value.filter(k => typeof k === 'string') : []; }
   catch (error) { return []; }
@@ -14,17 +16,33 @@ const CATEGORIES = [
 
 export default {
   name:'TrackingReport',
-  props:{report:Object,run:Object,selectedKey:String,matchKeys:Array,filterMatches:Boolean,hasMatch:Boolean},
-  emits:['select','evidence'],
-  data() { return {pins:readPins(),filter:'all',expanded:{},copyState:'',copyError:false}; },
+  props:{report:Object,run:Object,selectedKey:String,matchKeys:Array,filterMatches:Boolean,hasMatch:Boolean,
+    groups:{type:Array,default:null},scopeId:{type:String,default:''},scopeLabel:{type:String,default:'전체 업무'}},
+  emits:['select','evidence','scope'],
+  data() { return {pins:readPins(),filter:'all',expanded:{},collapsed:{},copyState:'',copyError:false}; },
+  watch:{scopeId() { this.collapsed = {}; this.copyState = ''; this.copyError = false; }},
   computed:{
-    categories() { return CATEGORIES.map(c => ({...c,count:c.key === 'all' ? this.report.items.length : c.key === 'pinned' ? this.report.items.filter(i => this.pins.includes(i.key)).length : this.report.items.filter(i => i.category === c.key).length})); },
+    rowSummaries() { return new Map(this.report.items.map(item => [item.key,trackingRowSummary(item)])); },
+    categories() { return CATEGORIES.map(c => ({...c,count:c.key === 'all' ? this.report.items.length : c.key === 'pinned' ? this.report.items.filter(i => this.pins.includes(i.key)).length : this.report.items.filter(i => this.rowSummary(i).category === c.key).length})); },
     items() {
-      return this.report.items.filter(item => (this.filter === 'all' || (this.filter === 'pinned' ? this.pins.includes(item.key) : item.category === this.filter)) &&
+      return this.report.items.filter(item => (this.filter === 'all' || (this.filter === 'pinned' ? this.pins.includes(item.key) : this.rowSummary(item).category === this.filter)) &&
         (!this.filterMatches || !this.hasMatch || this.matches(item)))
-        .sort((a,b) => Number(this.pins.includes(b.key))-Number(this.pins.includes(a.key)));
+        .sort((a,b) => Number(this.pins.includes(b.key))-Number(this.pins.includes(a.key)) ||
+          CATEGORY_ORDER[this.rowSummary(a).category]-CATEGORY_ORDER[this.rowSummary(b).category]);
     },
     sections() {
+      if (this.groups != null) {
+        const used = new Set();
+        return this.groups.map(group => {
+          const keys = new Set(group.keys);
+          const items = this.items.filter(item => {
+            if (!keys.has(item.key) || used.has(item.key)) return false;
+            used.add(item.key);
+            return true;
+          });
+          return {...group,grouped:true,items};
+        }).filter(group => group.items.length);
+      }
       const groups = new Map();
       for (const item of this.items) {
         const category = item.issue?.vocCategory || '분류 미지정';
@@ -34,10 +52,10 @@ export default {
       }
       return [...groups.values()].sort((a,b) => Number(a.voc)-Number(b.voc));
     },
-    overview() { const s = this.report.summary; return s.total ? `${s.total}개 업무로 모은 기간 내 변화` : '아직 요약할 업무가 없습니다'; },
   },
   methods:{
     eventText,
+    rowSummary(item) { return this.rowSummaries.get(item.key); },
     matches(item) { return item.keys.some(key => (this.matchKeys || []).includes(key)); },
     categoryLabel(key) { return CATEGORIES.find(c => c.key === key)?.label || '활동'; },
     isSelected(item) { return item.keys.includes(this.selectedKey); },
@@ -52,9 +70,10 @@ export default {
     comments(item) { return this.expanded[item.key] ? item.comments : item.comments.slice(0,2); },
     changeEvents(item) { return item.events.filter(e => ['created','completed','reopened','fieldChanged'].includes(e.kind)).slice(0,3); },
     toggle(item) { this.expanded = {...this.expanded,[item.key]:!this.expanded[item.key]}; },
+    toggleGroup(section) { this.collapsed = {...this.collapsed,[section.key]:!this.collapsed[section.key]}; },
     async copy() {
       this.copyState = ''; this.copyError = false;
-      const text = reportText(this.report,{request:this.run.request,asOf:this.run.asOf,keys:this.items.map(i => i.key)});
+      const text = '보고 범위: '+(this.scopeLabel || '전체 업무')+'\n'+reportText(this.report,{request:this.run.request,asOf:this.run.asOf,keys:this.items.map(i => i.key)});
       try {
         if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
         else {
@@ -69,24 +88,38 @@ export default {
   },
   template:`
     <section class="tr-report" aria-label="기간 업무 요약">
-      <header class="tr-report-head"><div><h2>{{ overview }}</h2><p>Task와 하위 작업을 함께 읽고, 주요 업무를 고정해 보고에 활용하세요.</p></div><button class="tr-button" @click="copy" :disabled="!items.length">보고 내용 복사</button></header>
+      <header class="tr-report-head"><h2>주요 업무 <span>{{ items.length }}<template v-if="items.length !== report.items.length"> / 전체 {{ report.items.length }}</template></span></h2><button class="tr-button" @click="copy" :disabled="!items.length">보고 내용 복사</button></header>
       <div class="tr-report-filters" role="group" aria-label="업무 요약 분류"><button v-for="category in categories" :key="category.key" :class="['tr-report-filter','tr-report-filter-'+category.key,{on:filter === category.key}]" :aria-pressed="filter === category.key" @click="filter = category.key">{{ category.label }}<b>{{ category.count }}</b></button></div>
       <p v-if="copyState" class="tr-report-copy" :class="{'tr-error':copyError}" role="status">{{ copyState }}</p>
       <p v-if="report.summary.provisional" class="tr-report-caveat">일부 근거만 확인됨 · 업무 요약과 완료 이력은 추가 수집 시 달라질 수 있습니다.</p>
+      <div class="tr-report-columns" aria-hidden="true"><span>업무 · 담당</span><span>기간 내 변화</span><span>현재 상태 · 남은 확인</span><span></span></div>
       <div class="tr-report-list">
-        <section v-for="section in sections" :key="section.key" class="tr-report-section"><header v-if="section.voc || sections.length > 1" class="tr-report-section-head"><span v-if="section.voc" class="tr-report-voc">사용자 VOC</span><h3>{{ section.title }}</h3><span>{{ section.items.length }}개 업무</span><small v-if="section.voc">분류별 묶음</small></header><div class="tr-report-briefs">
-        <article v-for="item in section.items" :key="item.key" :class="['tr-brief','tr-brief-'+item.category,{'tr-brief-selected':isSelected(item),'tr-brief-match':hasMatch && matches(item)}]">
-          <div class="tr-brief-context"><span :title="item.paths.join(' / ')">{{ item.paths[0] || '연결된 상위 업무 없음' }}</span><span v-if="item.paths.length > 1">외 {{ item.paths.length-1 }}개 경로</span><button class="tr-brief-pin" @click="pin(item)" :aria-pressed="pins.includes(item.key)" :aria-label="item.title + (pins.includes(item.key) ? ' 주요 업무 고정 해제' : ' 주요 업무로 고정')" :title="pins.includes(item.key) ? '주요 업무 고정 해제' : '주요 업무로 고정'"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 2 6 0-1 5 3 3v2h-4v6l-1-2-1 2v-6H5v-2l3-3z"/></svg><span>{{ pins.includes(item.key) ? '주요 업무' : '고정' }}</span></button></div>
-          <div class="tr-brief-title"><button @click="$emit('select',item)"><h3>{{ issueTitle(item,item.key) }}</h3><span>{{ item.key }}</span></button><span class="tr-brief-current" title="조회 시점의 현재 상태이며 기간 말 상태와 다를 수 있습니다">현재 {{ item.issue?.status || '미확인' }}</span></div>
-          <div class="tr-brief-outcome"><span class="tr-brief-label">{{ categoryLabel(item.category) }}</span><strong>{{ item.headline }}</strong><span v-if="item.transition" class="tr-brief-transition">{{ item.transition.from }} → {{ item.transition.to }}</span></div>
+        <section v-for="section in sections" :key="section.key" class="tr-report-section">
+          <header v-if="section.grouped || section.voc" class="tr-report-section-head">
+            <button class="tr-report-group-toggle" @click="toggleGroup(section)" :aria-expanded="!collapsed[section.key]" :aria-label="section.title + (collapsed[section.key] ? ' 펼치기' : ' 접기')">{{ collapsed[section.key] ? '+' : '−' }}</button>
+            <span v-if="section.voc" class="tr-report-voc">사용자 VOC</span>
+            <div class="tr-report-group-title"><h3>{{ section.title }}</h3><small v-if="section.pathLabel && section.pathLabel !== section.title">{{ section.pathLabel }}</small></div>
+            <span>{{ section.items.length }}개 업무</span>
+            <button v-if="section.scopeId && section.scopeId !== scopeId" class="tr-report-group-scope" @click="$emit('scope',section.scopeId)" :aria-label="section.title + ' 범위 보기'">이 범위 보기</button>
+          </header>
+          <div v-if="!collapsed[section.key]" class="tr-report-briefs">
+        <article v-for="item in section.items" :key="item.key" :class="['tr-brief','tr-brief-'+rowSummary(item).category,{'tr-brief-selected':isSelected(item),'tr-brief-match':hasMatch && matches(item)}]">
+          <div class="tr-brief-row">
+            <div class="tr-brief-identity"><div class="tr-brief-title"><button @click="$emit('select',item)" :title="issueTitle(item,item.key)"><h3>{{ issueTitle(item,item.key) }}</h3></button></div><div class="tr-brief-meta"><span>{{ item.issue?.assigneeName || item.issue?.assignee?.name || '담당 미확인' }}</span><span>{{ item.issue?.type || '업무' }}</span><span>{{ item.key }}</span></div><div class="tr-brief-context" :title="item.paths.join(' / ')">{{ item.paths[0] || '연결된 상위 업무 없음' }}<template v-if="item.paths.length > 1"> 외 {{ item.paths.length-1 }}개 경로</template></div></div>
+            <div class="tr-brief-period"><strong>{{ rowSummary(item).headline }}</strong><button v-if="rowSummary(item).detail" class="tr-brief-preview" @click="$emit('select',item)" :title="rowSummary(item).detail">{{ rowSummary(item).detail }}</button><div class="tr-brief-actions"><button @click="$emit('select',item)">근거 {{ item.events.length }}건</button><button @click="toggle(item)" :aria-expanded="!!expanded[item.key]">{{ expanded[item.key] ? '내용 접기' : '내용 펼치기' }}</button></div></div>
+            <div class="tr-brief-state"><span class="tr-brief-current" :class="{'is-done':rowSummary(item).currentDone}" title="수집 시점의 현재 상태이며 기간 말 상태와 다를 수 있습니다">{{ rowSummary(item).currentLabel }}</span><span class="tr-brief-remaining">{{ rowSummary(item).remainingLabel }}</span></div>
+            <button class="tr-brief-pin" @click="pin(item)" :aria-pressed="pins.includes(item.key)" :aria-label="item.title + (pins.includes(item.key) ? ' 주요 업무 고정 해제' : ' 주요 업무로 고정')" :title="pins.includes(item.key) ? '주요 업무 고정 해제' : '주요 업무로 고정'"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 2 6 0-1 5 3 3v2h-4v6l-1-2-1 2v-6H5v-2l3-3z"/></svg></button>
+          </div>
+          <div v-if="expanded[item.key]" class="tr-brief-expanded"><div class="tr-brief-outcome"><span class="tr-brief-label">{{ categoryLabel(rowSummary(item).category) }}</span><strong>{{ rowSummary(item).headline }}</strong><span v-if="item.transition" class="tr-brief-transition">{{ item.transition.from }} → {{ item.transition.to }}</span></div>
           <ul v-if="completedChildren(item).length" class="tr-brief-deliveries"><li v-for="key in completedChildren(item).slice(0,expanded[item.key] ? undefined : 2)" :key="key"><span aria-hidden="true">✓</span><button @click="$emit('evidence',item.events.find(e => e.issueKey === key && e.kind === 'completed')?.id)">{{ issueTitle(item,key) }}</button><small>{{ key }}</small><small v-if="item.reopenedKeys.includes(key)">재오픈 이력도 있음</small></li><li v-if="!expanded[item.key] && completedChildren(item).length > 2" class="tr-muted">외 {{ completedChildren(item).length-2 }}건의 하위 완료 이력</li></ul>
           <div v-if="item.comments.length" class="tr-brief-comments"><span class="tr-brief-section-label">최근 보고·논의</span><button v-for="comment in comments(item)" :key="comment.id" class="tr-brief-comment" @click="$emit('evidence',comment.id)"><p>{{ eventText(comment) }}</p><span>{{ comment.actorName || comment.actorId || '작성자 미확인' }}<time>{{ date(comment.date) }}</time><span v-if="comment.isEdited || comment.latestObservedEdit || comment.kind === 'commentEdited'">관측된 수정본</span><span v-if="comment.issueKey !== item.key" class="tr-comment-source">{{ issueLabel(item,comment.issueKey) }}</span></span></button></div>
           <ul v-else-if="changeEvents(item).length" class="tr-brief-changes"><li v-for="event in changeEvents(item)" :key="event.id"><button @click="$emit('evidence',event.id)"><span class="tr-change-ticket">{{ issueLabel(item,event.issueKey) }}</span><span>{{ eventText(event) }}</span></button><time>{{ date(event.date) }}</time></li></ul>
           <p v-else class="tr-brief-no-evidence">{{ item.uncertain ? '수집되지 않은 근거가 있어 기간 내 진행 내용을 확정할 수 없습니다.' : '이 기간에 수집된 활동 없음. 실제 작업 여부는 이 정보만으로 판단할 수 없습니다.' }}</p>
           <footer class="tr-brief-footer"><span>{{ item.issue?.assigneeName || item.issue?.assignee?.name || '담당 미확인' }}</span><span v-if="item.children.length">하위 {{ item.children.length }}개 업무 묶음</span><span v-if="item.uncertain" class="tr-brief-uncertain">근거 일부 미확인</span><button v-if="item.comments.length > 2 || completedChildren(item).length > 2" @click="toggle(item)" :aria-expanded="!!expanded[item.key]">{{ expanded[item.key] ? '간략히' : '내용 더 보기' }}</button><button class="tr-brief-evidence" @click="$emit('select',item)">활동 근거 {{ item.events.length }}건 보기</button></footer>
+          </div>
         </article></div></section>
         <div v-if="!items.length" class="tr-empty"><template v-if="filter === 'pinned'">보고에서 계속 볼 업무의 ‘고정’을 누르세요. 기간을 바꿔도 주요 업무 선택을 유지합니다.</template><template v-else>이 분류에 표시할 업무가 없습니다. 분류나 검색 조건을 바꿔 보세요.</template></div>
       </div>
-      <footer class="tr-report-note">완료 이력과 최근 댓글을 함께 표시 · 하위 완료는 상위 Task 전체 완료를 뜻하지 않음</footer>
+      <footer class="tr-report-note">조회된 업무 기준 · 전체 잔여 업무 미확인 · 하위 완료 이력은 상위 Task 전체 완료를 뜻하지 않음</footer>
     </section>`,
 };

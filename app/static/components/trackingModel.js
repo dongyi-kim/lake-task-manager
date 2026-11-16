@@ -73,6 +73,9 @@ export function countLabel(value, complete) {
   if (!value) return '–';
   return String(value) + (complete ? '' : '+');
 }
+export function isTerminalTrackingRow(row) {
+  return !!row?.key && !row.children?.length && !['module','wbs','epic'].includes(row.kind);
+}
 export function trackingRows(run, {query = '', highlight = null, matchedOnly = false, closed = {}} = {}) {
   const index = indexes(run), q = normalize(query), out = [];
   const active = !!q || !!highlight?.value;
