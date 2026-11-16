@@ -116,3 +116,35 @@ def test_child_cumulative_snapshots_invalidate_real_vue_computed_pending_groups(
     assert observed["finalStates"] == {"DL-1": "complete", "DL-2": "complete"}
     assert observed["finalModelPending"] == []
     assert observed["finalComputedPending"] == []
+
+
+def test_persisted_preview_survives_planning_without_becoming_hydration_input():
+    observed = run_vue("retained-preview", f"""
+      globalThis.window = {{ crypto: {{ randomUUID: () => 'preview-test' }} }};
+      const source = readFileSync({json.dumps(str(VIEW))}, 'utf8');
+      const method = source.slice(source.indexOf('    async load(opts)'), source.indexOf('    _groupCounts(')).trim().replace(/,$/, '');
+      const observations=[], hydrated=[], cached=[];
+      const model = key => ({{groups:[{{key,atoms:[],others:[]}}],epics:[],counts:{{total:1}}}});
+      let state;
+      const api = {{myTasksStream:async(opts,publish)=>{{
+        const send=(sequence,extra)=>publish({{type:'snapshot',contract:'task-snapshot.v1',requestToken:opts.requestToken,sequence,...extra}});
+        send(0,{{displayOnly:true,model:{{...model('OLD'),displayOnly:true}},replace:true,done:false}});
+        observations.push(state.model.groups.map(g=>g.key));
+        send(1,{{replace:false,done:false,model:{{groups:[],epics:[]}}}});
+        observations.push(state.model.groups.map(g=>g.key));
+        send(2,{{model:model('NEW'),replace:true,done:true}});
+        observations.push(state.model.groups.map(g=>g.key));
+      }}}};
+      const load=new Function('api','STATES','cloneTaskModel','reconcileTaskModel','taskLoadErrorKind','TASK_RETRY_DELAYS','pushToast','reactive',
+        'return ({{'+method+'}}).load;')(api,[{{k:'todo'}},{{k:'inprogress'}},{{k:'done'}}],cloneTaskModel,reconcileTaskModel,taskLoadErrorKind,TASK_RETRY_DELAYS,()=>{{}},reactive);
+      state=reactive({{apiScope:'module:ETL',openFilter:'all',progFilter:'all',doneFilter:'1m',model:null,excluded:{{}},
+        streamAxes:{{todo:{{}},inprogress:{{}},done:{{}}}},resetAxisPages(){{}},_queueEpicMetadata(){{}},
+        _emptyTaskModel(){{return {{groups:[],epics:[],counts:{{total:0}}}};}},
+        _cacheModel(cache,key,value){{cache[key]=value;cached.push(value.displayOnly);}},
+        _hydrateModel(value){{hydrated.push(value.groups.map(g=>g.key));return Promise.resolve();}},
+        _scheduleTaskRetry(){{return false;}},_markPendingAxes(){{}}}});
+      await load.call(state,{{awaitHydration:true}});
+      process.stdout.write(JSON.stringify({{observations,hydrated,cached,error:state.err,displayOnly:state.model.displayOnly}}));
+    """)
+    assert observed == {"observations": [["OLD"], ["OLD"], ["NEW"]],
+                        "hydrated": [["NEW"]], "cached": [False], "error": "", "displayOnly": False}

@@ -3,6 +3,7 @@
 //   현안/하위 티켓은 행 전체가 클릭 대상(.tkt[data-key]) → 인앱 티켓 다이얼로그.
 // '완료 작업 안 보기' 토글로 직계 완료 티켓 숨김. updated: 2026-07-09
 import { api } from "../../lib/api.js";
+import { retainedViewRefresh } from "../../lib/viewRefresh.js";
 import { moduleColor, STATUS_ORDER, STATUS_VAR, statusLabel, typeLabel, TYPE_BG } from "../../lib/colors.js";
 import { esc, mdISO, ymd, ymdhm, mdhm, tkt, dday } from "../../lib/fmt.js";
 import TypeBadge from "../ui/TypeBadge.js";
@@ -20,7 +21,7 @@ const STALE_DAYS = 5;
 export default {
   name: "VitView",
   components: { TypeBadge, StatusPill, TicketUpdateMark },
-  mixins: [ticketUpdateView],
+  mixins: [retainedViewRefresh(function () { return this.hardRefresh(); }), ticketUpdateView],
   data() { return { d: null, err: "", detail: {}, detailOpen: {}, hideDone: false,
                     mods: {}, modErr: {}, modPartial: {}, modLoading: {},
                     detailErr: {}, detailLoading: {}, busy: false,
@@ -60,38 +61,52 @@ export default {
   async mounted() { await this.load(); },
   created() {
     window.addEventListener('api-cache-updated', this._cacheUpdate = e => this.applyCacheUpdate(e.detail));
-    window.addEventListener('cache-policy-changed', this._policyUpdate = () => {
-      api.vitShell().catch(() => {});
-      Object.keys(this.mods).forEach(module => api.vitModule(module).catch(() => {}));
-      Object.keys(this.detail).forEach(key => api.vitDetail(key).catch(() => {}));
-    });
+    window.addEventListener('cache-policy-changed', this._policyUpdate = () => this.requestViewRefresh());
     // 좌하단 플로팅 새로고침이 부른다 — 뷰마다 캐시를 비우고 다시 받는 함수가 이름이 달라
     // (hardRefresh/refresh) 여기서 한 번에 잇는다. 끝나면 버튼에 '됐다' 고 알린다.
-    window.addEventListener("force-refresh", this._fr = async () => {
-      try { await this.hardRefresh(); } finally {
-        window.dispatchEvent(new CustomEvent("force-refresh-done"));
-      }
-    });
+
     // 재인증(auth-ok) 후 — 세션 끊긴 채 실패했던 조회를 가볍게 다시 받는다(서버 캐시는 안 비움).
     window.addEventListener("auth-ok", this._authok = () => {
+      if (this._refreshActive === false) { this._refreshDirty = true; return; }
       if (this.err || !this.d) { this.load(); return; }
       Object.keys(this.modErr).forEach((module) => this.retryModule(module, false));
       Object.keys(this.detailErr).filter((key) => this.detailOpen[key])
         .forEach((key) => this.loadDetail({ key }, false));
     });
-    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => this.load());
+    window.addEventListener('workspace-config-updated', this._workspaceUpdate = () => this.requestViewRefresh());
   },
   unmounted() {
     window.removeEventListener('api-cache-updated', this._cacheUpdate);
     window.removeEventListener('cache-policy-changed', this._policyUpdate);
     this._loadSeq = (this._loadSeq || 0) + 1;
     this._detailEpoch = (this._detailEpoch || 0) + 1;
-    window.removeEventListener("force-refresh", this._fr);
     window.removeEventListener("auth-ok", this._authok);
     window.removeEventListener('workspace-config-updated', this._workspaceUpdate);
   },
   methods: {
-    applyCacheUpdate({ path, value }) {
+    applyCacheUpdate({ path, value, removed = false }) {
+      if (removed) {
+        if (path === '/api/vit/shell') {
+          this.d = null; this.mods = {}; this.detail = {};
+          this.err = '현안 조회 권한이 없거나 데이터가 삭제되었습니다.';
+          return;
+        }
+        const module = path.match(/^\/api\/vit\/module\/([^/]+)$/);
+        const detail = path.match(/^\/api\/vit\/([^/]+)$/);
+        const keys = new Set();
+        if (module) {
+          const name = decodeURIComponent(module[1]);
+          for (const row of this.mods[name] || []) keys.add(row.key);
+          if (Object.hasOwn(this.mods, name)) this.mods = { ...this.mods, [name]: [] };
+        } else if (detail) keys.add(decodeURIComponent(detail[1]));
+        if (keys.size) {
+          this.detail = Object.fromEntries(Object.entries(this.detail).filter(([key]) => !keys.has(key)));
+          const visible = rows => (rows || []).filter(row => !keys.has(row.key))
+            .map(row => row.children ? { ...row, children: visible(row.children) } : row);
+          this.mods = Object.fromEntries(Object.entries(this.mods).map(([name, rows]) => [name, visible(rows)]));
+        }
+        return;
+      }
       if (!value || value.partial || value.error) return;
       if (path === '/api/vit/shell' && this.d) { this.d = value; return; }
       const module = path.match(/^\/api\/vit\/module\/([^/]+)$/);
@@ -114,7 +129,8 @@ export default {
         const shell = await api.vitShell();
         if (loadSeq !== this._loadSeq) return;
         this.d = shell;
-        shell.modules.forEach((m) => this.loadModule(m.module, loadSeq));
+        if (this._refreshActive === false) { this._refreshDirty = true; return; }
+        await Promise.all(shell.modules.map((m) => this.loadModule(m.module, loadSeq)));
       } catch (e) { if (loadSeq === this._loadSeq) this.err = e.message; }
     },
     loadModule(module, loadSeq = this._loadSeq, evict = false) {
@@ -126,7 +142,10 @@ export default {
       this.modLoading = Object.assign({}, this.modLoading, { [module]: true });
       return api.vitModule(module).then((r) => {
         if (!fresh()) return r;
-        this.mods = Object.assign({}, this.mods, { [module]: (r && r.issues) || [] });
+        if (r?.error) throw new Error(r.message || r.detail || '현안 목록을 다시 확인하지 못했습니다.');
+        if (!r?.partial || !this.mods[module]?.length) {
+          this.mods = Object.assign({}, this.mods, { [module]: (r && r.issues) || [] });
+        }
         const errors = Object.assign({}, this.modErr); delete errors[module]; this.modErr = errors;
         const partial = Object.assign({}, this.modPartial);
         if (r && r.partial) partial[module] = r.missing || 1;
@@ -144,18 +163,16 @@ export default {
       });
     },
     retryModule(module, evict = true) { return this.loadModule(module, this._loadSeq, evict); },
-    /** 캐시를 비우고 전부 다시 받는다. 화면도 '모른다' 상태로 되돌린 뒤 새로 채운다 —
-     *  옛 값을 남겨 두면 무엇이 새로 온 값인지 알 수 없다. */
+    /** 기존 모듈·상세·펼침을 유지하고 새로운 조회 결과로 갱신한다. */
     async hardRefresh() {
       if (this.busy) return;
       this.busy = true;
       try {
-        await api.refresh();
         this._loadSeq = (this._loadSeq || 0) + 1;
         this._detailEpoch = (this._detailEpoch || 0) + 1;
-        this.d = null; this.mods = {}; this.modErr = {}; this.modPartial = {}; this.modLoading = {};
-        this.detail = {}; this.detailOpen = {}; this.detailErr = {}; this.detailLoading = {};
         await this.load();
+        await Promise.all(Object.keys(this.detailOpen).filter(key => this.detailOpen[key])
+          .map(key => this.loadDetail({ key }, false)));
       } catch (e) {
         this.err = (e && e.message) || "다시 받지 못했습니다.";
       } finally { this.busy = false; }
@@ -257,10 +274,16 @@ export default {
       this.detailLoading = Object.assign({}, this.detailLoading, { [key]: true });
       return api.vitDetail(key).then((value) => {
         if (!fresh()) return value;
+        if (value?.error || (value?.partial && this.detail[key])) {
+          throw Object.assign(new Error(value.message || value.detail || '상세 정보를 모두 확인하지 못했습니다.'), { status: value.status });
+        }
         this.detail = Object.assign({}, this.detail, { [key]: value || { tree: [], comments: [] } });
         const errors = Object.assign({}, this.detailErr); delete errors[key]; this.detailErr = errors;
         return value;
       }).catch((e) => {
+        if (fresh() && [403,404].includes(e?.status)) {
+          const detail = { ...this.detail }; delete detail[key]; this.detail = detail;
+        }
         if (fresh()) this.detailErr = Object.assign({}, this.detailErr, {
           [key]: (e && e.message) || "상세 정보를 불러오지 못했습니다.",
         });

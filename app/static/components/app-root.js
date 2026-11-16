@@ -248,13 +248,13 @@ export default {
           <SettingsMenu :theme="theme" @toggle-theme="toggleTheme" />
         </div>
       </header>
+      <StatusBanner v-if="ready" />
       <div v-if="!ready" class="loading page">인증 확인 중…</div>
       <!-- Jira 세션은 개별 데이터 요청에서 처리한다. 로컬 화면과 초안은 항상 열린다. -->
       <TicketDialog v-else-if="pageTicket" :key="pageTicket"
                     :key-id="pageTicket" mode="page" :theme="theme"
                     @search="searchOpen = true" @toggle-theme="toggleTheme" />
       <template v-else>
-        <StatusBanner />
         <FormulaCallout :route="route" />
         <keep-alive><component :is="view"></component></keep-alive>
         <!-- 좌하단 플로팅 강제 새로고침 — 데이터 화면에서만(개발 도구·티켓 단독 페이지 제외) -->

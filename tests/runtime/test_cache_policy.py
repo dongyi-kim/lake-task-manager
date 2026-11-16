@@ -197,15 +197,16 @@ def test_epic_and_photo_keep_30_days_with_daily_freshness(cache, clock):
     assert cache.get_alive("avatar_bytes:mock:alice") is None
 
 
-def test_mutation_preserves_display_but_new_read_must_fetch(cache, clock):
+def test_mutation_preserves_display_but_authoritative_read_must_fetch(cache, clock):
     key = "issue:mock:DL-1"
     cache.set(key, issue(), 600)
     cache.invalidate(key)
     assert cache.get(key) is None
     assert cache.get_alive(key)[0] == issue()
-    cache.revalidator = lambda *_: pytest.fail("mutation must not return SWR as authoritative")
+    cache.revalidator = lambda *_: pytest.fail("strict read must not schedule SWR")
     changed = {**issue(), "new": True}
-    assert cache.get_or_set(key, 600, lambda: changed) == (changed, False)
+    with read_scope(strict=True):
+        assert cache.get_or_set(key, 600, lambda: changed) == (changed, False)
     assert not cache.metadata(key)["invalidated"]
     cache.invalidate(key)
     cache.forget(key)
@@ -313,17 +314,13 @@ def test_retired_generation_permission_failure_cannot_forget_new_success(cache):
     assert cache.get(key) == issue()
 
 
-def test_invalidated_relation_swr_fetches_latest_but_can_display_offline(cache):
+def test_invalidated_relation_swr_displays_retained_rows_and_queues_latest(cache):
     key = "children:mock:DL-1"
     cache.set(key, ["old-child"], 600)
     cache.invalidate(key)
-    def unexpected_background(*_args):
-        pytest.fail("The first post-write read must await its latest result")
-    assert cache.get_or_set_swr(key, 600, lambda: ["new-child"], unexpected_background) == (["new-child"], "miss")
-    cache.invalidate(key)
-    def offline():
-        raise ConnectionError("offline")
-    assert cache.get_or_set_swr(key, 600, offline, unexpected_background) == (["new-child"], "stale")
+    queued = []
+    assert cache.get_or_set_swr(key, 600, lambda: ["new-child"], lambda *args: queued.append(args)) == (["old-child"], "stale")
+    assert len(queued) == 1
     assert cache.metadata(key)["invalidated"]
 
 
@@ -367,7 +364,8 @@ def test_new_queries_refresh_after_ten_minutes_and_old_cursors_stay_frozen(cache
     cache.purge()
     with pytest.raises(ValueError, match="snapshot"):
         client.search_issues_page(query, fields="summary,status", snapshot_id=first["snapshotId"])
-    assert cache.get_stale(f"jqlsnap:v{client.JQL_CACHE_VERSION}:{client.env}:{first['snapshotId']}") is None
+    # The cursor is no longer usable, but its payload remains until cold-horizon GC.
+    assert cache.get_stale(f"jqlsnap:v{client.JQL_CACHE_VERSION}:{client.env}:{first['snapshotId']}")
     assert client.search_issues_page(query, fields="summary,status", snapshot_id=latest["snapshotId"])["issues"]
 
 
@@ -480,7 +478,6 @@ def test_display_snapshot_keeps_value_and_source_together(cache, clock, api, int
         cache.set(key, ["new"] * 5, 600)
 
     def background(*_args):
-        assert interleave == "background", "invalidated display must await fresh data"
         prime()  # Background completion after stale selection but before the HTTP response.
 
     def producer():
@@ -498,14 +495,9 @@ def test_display_snapshot_keeps_value_and_source_together(cache, clock, api, int
     with read_scope() as sources:
         result = (cache.get_or_set(key, 600, producer) if api == "get_or_set" else
                   cache.get_or_set_swr(key, 600, producer, background))[0]
-    if interleave == "background":
-        assert result == ["old"] * 4
-        assert sources[-1]["state"] == "stale"
-        assert sources[-1]["fetchedAt"] == original_time
-    else:
-        assert result == ["new"] * 5
-        assert sources[-1]["state"] == "fresh"
-        assert sources[-1]["fetchedAt"] == new_time
+    assert result == ["old"] * 4
+    assert sources[-1]["state"] == "stale"
+    assert sources[-1]["fetchedAt"] == original_time
     assert cache.get(key) == ["new"] * 5
 
 

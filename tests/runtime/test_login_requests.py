@@ -189,12 +189,14 @@ def test_status_exposes_only_latest_jira_login_attempt(bridge, monkeypatch):
     main = bridge.main
     monkeypatch.setattr(main, "_dispatch_login", lambda _: None)
     monkeypatch.setattr(main, "_client", SimpleNamespace(
-        session_recheck_async=lambda: None, upstream_state=lambda: {"down": False}, needs_login=lambda: True))
+        session_recheck_async=lambda: None, upstream_state=lambda: {"down": False}, needs_login=lambda: True,
+        _jql_policy=SimpleNamespace(ticket_revision=lambda: "ticket-mutation:prod:fixture:7")))
     monkeypatch.setattr(main, "_probe_online", lambda: True)
     monkeypatch.setattr(main._local_mcp.workspace_config, "revision", lambda: "fixture")
     result = main.api_login()
     main.complete_login_request("jira", False, result["attemptId"])
     status = json.loads(main.api_status().body)
+    assert status["ticketRevision"] == "ticket-mutation:prod:fixture:7"
     assert status["needLogin"] is True
     assert status["loginAttempt"]["attemptId"] == result["attemptId"]
     assert status["loginAttempt"]["state"] == "completed"

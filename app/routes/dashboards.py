@@ -140,6 +140,7 @@ def build_dashboard_router(
 
     @router.post("/api/refresh")
     def api_refresh():
+        # Retain display payloads and labels; only freshness/query authority is invalidated.
         cache.invalidate()
         client.advance_jql_generation()
         reload_people()

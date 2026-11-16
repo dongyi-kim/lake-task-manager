@@ -98,7 +98,7 @@ export default {
     this._cacheUpdated = (event) => {
       const { path, value } = event.detail || {};
       const base = '/api/ticket/' + encodeURIComponent(this.keyId);
-      if (path === base && !this.descEdit) {
+      if (path === base && (!this.descEdit || event.detail.removed)) {
         this.v = value;
         if (event.detail.removed) this.err = '티켓이 삭제되었거나 접근 권한이 없습니다.';
       }
@@ -129,6 +129,19 @@ export default {
     };
     window.addEventListener('api-cache-updated', this._cacheUpdated);
     window.addEventListener('cache-policy-changed', this._cachePolicy);
+    // Refresh mounted editors quietly, including a revision of this same ticket.
+    window.addEventListener('tickets-updated', this._ticketsUpdated = (event) => {
+      const keys = event.detail?.keys;
+      if (keys?.length && !keys.some((key) => key === this.keyId
+          || [...(this.children || []), ...(this.siblings || []), ...(this.ancestors || [])]
+            .some((row) => row.key === key))) return;
+      this.load(true, true);
+    });
+    window.addEventListener('data-refresh', this._dataRefresh = (event) => {
+      const pending = this.load(true, true);
+      event.detail?.waitUntil?.(pending);
+    });
+    window.addEventListener('force-refresh-done', this._refreshDone = () => { this.refreshing = false; });
     document.addEventListener('visibilitychange', this._updatesVisible = () => this.acknowledgeDisplayedUpdates());
     document.addEventListener('pointerdown', this._updatesVisible, true);
     // Esc: 위에 뜬 것부터 하나씩 닫는다(확대 → 상태 팝업 → 다이얼로그).
@@ -187,6 +200,9 @@ export default {
   unmounted() {
     window.removeEventListener('api-cache-updated', this._cacheUpdated);
     window.removeEventListener('cache-policy-changed', this._cachePolicy);
+    window.removeEventListener('tickets-updated', this._ticketsUpdated);
+    window.removeEventListener('data-refresh', this._dataRefresh);
+    window.removeEventListener('force-refresh-done', this._refreshDone);
     document.removeEventListener('visibilitychange', this._updatesVisible);
     document.removeEventListener('pointerdown', this._updatesVisible, true);
     this._updateViewKey = null;
@@ -544,7 +560,7 @@ export default {
     },
     /** 보조 패널은 모두 같은 생명주기를 쓴다. 실패를 빈 배열로 바꾸지 않고, 도착한 패널만
      *  즉시 반영한다. 호출 순서가 곧 prod 직렬 SSO의 우선순위이므로 spec 순서를 보존한다. */
-    _loadDialogPanel(name, key = this.keyId, requestId = this._req) {
+    _loadDialogPanel(name, key = this.keyId, requestId = this._req, retain = false) {
       const isComments = name === 'comments';
       const commentsId = isComments ? (this._commentsReq = (this._commentsReq || 0) + 1) : null;
       const commentsPath = '/api/issue/' + encodeURIComponent(key) + '/comments';
@@ -557,10 +573,10 @@ export default {
         comments: { get: () => api.ticketComments(key), put: (v) => { this.applyUpdateComments(v || [], commentsPath); } },
         siblings: { get: () => api.ticketSiblings(key), put: (v) => { this.siblings = v || []; } },
         attachments: { get: () => api.ticketAttachments(key), put: (v) => {
-          this.atts = v || []; this.attOpen = this.atts.length <= FOLD_AT;
+          this.atts = v || []; if (!retain) this.attOpen = this.atts.length <= FOLD_AT;
         } },
         documents: { get: () => api.ticketDocuments(key), put: (v) => {
-          this.docs = v || []; this.docOpen = this.docs.length <= FOLD_AT;
+          this.docs = v || []; if (!retain) this.docOpen = this.docs.length <= FOLD_AT;
         } },
         children: { get: () => api.ticketChildren(key), put: (v) => { this.children = v || []; } },
         related: { get: () => api.ticketRelated(key), put: (v) => { this.related = v || []; } },
@@ -583,7 +599,7 @@ export default {
         return null;
       });
     },
-    retryPanel(name) { return this._loadDialogPanel(name, this.keyId, this._req); },
+    retryPanel(name) { return this._loadDialogPanel(name, this.keyId, this._req, true); },
     retryFailedPanels() {
       return Promise.all(this.failedPanels.map((name) => this.retryPanel(name)));
     },
@@ -612,8 +628,21 @@ export default {
     reloadLineage() {
       return Promise.all([this.retryPanel("ancestors"), this.retryPanel("siblings")]);
     },
-    /** 상태 전이 완료 — 내 뷰를 다시 받고(load), 다른 화면·부모에도 알린다(형제·부모 진척 갱신). */
-    onTransitioned() { this.stPick = null; this.onFieldSaved(); },
+    /** 확정된 목표 상태를 먼저 알리고, 상세·관련 패널은 조용히 다시 받는다. */
+    onTransitioned(view) {
+      const key = this.keyId;
+      const target = view || { key, status: this.stPick?.to, statusCategory: this.stPick?.toCategory };
+      this.stPick = null;
+      if (target.key && target.key !== key) return;
+      if (this.v) {
+        if (target.status) this.v.status = target.status;
+        if (target.statusCategory) this.v.statusCategory = target.statusCategory;
+        if (Object.prototype.hasOwnProperty.call(target, "resolved")) this.v.resolved = target.resolved;
+      }
+      this._fireChanged();
+      // Readback enriches detail without replaying an old category if the read fails.
+      this.load(true, true);
+    },
     stLabel(s) { return statusLabel(s); },
     /** 형제 목록 상태 라벨 — 한글 짧게(대기/진행/완료). */
     sstLabel(cat) { return { inprogress: "진행", done: "완료" }[cat] || "대기"; },
@@ -732,15 +761,10 @@ export default {
       }
     },
     hardRefresh() {
-      // 좌하단 강제 새로고침 — 서버측 파생 캐시(children/siblings/… SWR 옛 결과)까지 비운 **뒤**
-      // 다시 받는다. 순서가 중요: 먼저 서버 캐시를 털고 나서 load 해야 최신이 잡힌다.
+      // AppRoot invalidates once, then data-refresh quietly revalidates active surfaces.
       if (this.refreshing) return;
       this.refreshing = true;
-      const key = this.keyId;
-      api.evict(key);
-      Promise.resolve(api.ticketRefresh(key))
-        .then(() => this.load(true))
-        .finally(() => { setTimeout(() => { this.refreshing = false; }, 500); });
+      window.dispatchEvent(new CustomEvent('force-refresh'));
     },
     async load(force, quiet) {
       // quiet=true (필드 저장 후 재조회 등): v·패널을 **비우지 않는다** → 스켈레톤으로 돌아가 레이아웃이
@@ -752,16 +776,21 @@ export default {
       this._updateCommentsPending = null; this._updateCommentsFailedAt = 0;
       this._updateCommentsQueuedAfter = 0;
       const fresh = () => my === this._req && this.keyId === key;
-      this.err = "";
       if (!quiet) {
+        this.err = "";
         this.spineLoading = true; this.timelineLoading = true; this.timelineErr = "";
         this.panelState = {};
         this.v = api.cached('/api/ticket/' + encodeURIComponent(key)) || null;
         this.comments = api.cached('/api/issue/' + encodeURIComponent(key) + '/comments') || null;
-        this.ancestors = []; this.siblings = []; this.timeline = [];
+        const base = '/api/ticket/' + encodeURIComponent(key);
+        this.ancestors = api.cached(base + '/ancestors') || [];
+        this.siblings = api.cached(base + '/siblings') || []; this.timeline = [];
         this.childTimeline = []; this.childTimelineLoading = false; this.childTimelineLoaded = false;
         this.childTimelineErr = ""; this.showChildTimeline = false;
-        this.children = []; this.related = []; this.atts = []; this.docs = [];
+        this.children = api.cached(base + '/children') || [];
+        this.related = api.cached(base + '/related') || [];
+        this.atts = api.cached(base + '/attachments') || [];
+        this.docs = api.cached(base + '/documents') || [];
         this.pdesc = null; this.pdescOpen = false; this.pdescErr = "";
         this.composing = false; this.composeCollapsed = false; this.composePreview = ""; this.composeHasDraft = false;
         this.editingId = null; this.editInitial = ""; this.editErr = "";
@@ -771,9 +800,12 @@ export default {
       // ★ 본문(description)을 **가장 먼저** 큐에 넣는다 — 상류가 직렬(prod SSO)일 땐 먼저 보낸 게 먼저
       //   처리된다. 전엔 본문을 맨 마지막에 await 해, 사용자가 제일 먼저 읽는 본문이 다른 패널 8개 뒤로
       //   밀려 가장 늦게 떴다(지연 주입 측정: 본문 1023ms/가시 1506ms). 먼저 큐잉하면 체감이 확 준다.
+      let detailLoaded = false;
       const vp = api.ticket(key, force).then((v) => {          // force=강제면 서버 캐시도 건너뜀
         if (!fresh()) return;
         this.v = v;
+        detailLoaded = !!v;
+        this.err = "";
         this._updateDetailReady = !!v;
         // 검색창을 빈 상태로 열었을 때 보여줄 '최근 열어본 항목'에 남긴다.
         if (v) {
@@ -789,19 +821,23 @@ export default {
                        } });
         }
       }).catch((e) => {
-        if (fresh()) this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
+        if (fresh()) {
+          if ([403, 404].includes(e?.status)) this.v = null;
+          this.err = e && e.message === "HTTP 404" ? "티켓을 찾을 수 없습니다: " + key : (e.message || "불러오기 실패");
+        }
       });
 
       // 본문을 먼저 큐에 넣어 prod 직렬 SSO에서도 읽을 내용을 최우선으로 둔다.
       await vp;                                          // 1순위: 티켓정보·설명·일정
-      if (!fresh()) return;
+      if (!fresh()) return false;
       // 편집 권한을 가장 먼저, 그 뒤 보조 패널을 우선순위 순으로 **모두 출발**시킨다. 어느 하나도
       // 다음 요청의 시작을 막지 않고, 각 패널은 자기 성공/오류 상태만 갱신한다.
-      DIALOG_PANEL_ORDER.forEach((name) => this._loadDialogPanel(name, key, my));
+      DIALOG_PANEL_ORDER.forEach((name) => this._loadDialogPanel(name, key, my, quiet));
       this.loadTimeline(key, my);
 
       // 유휴 시 이 티켓의 편집 팝업(담당/보고 기본·상태 전이)·전역 기본목록을 미리 데운다(로그인 상태).
       if (fresh()) api.warmTicket(key);  // 전역 FieldEdit 목록은 AppRoot가 화면 데이터와 독립적으로 준비
+      return detailLoaded;
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
     typeLabel(t) { return typeLabel(t); },
@@ -929,18 +965,18 @@ export default {
       this.onFieldSaved();
     },
     /** 필드가 바뀌면 티켓을 다시 받는다 — 한 필드만 손대도 상태·이력이 같이 움직인다.
-     *  ★ 재조회가 끝난 뒤(this.v 최신) **바뀐 값까지 실어** 알린다 — Task 화면이 네트워크 없이
-     *  이 티켓이 현재 퀵필터에서 빠지는지 판정해 즉시 반영할 수 있게. */
+      *  재조회가 성공한 정본만 알린다. 전이는 확정된 목표 상태를 별도로 즉시 알린다. */
     async onFieldSaved() {
-      await this.load(true, true);   // force+quiet: 레이아웃 유지한 채 값만 제자리 갱신(스켈레톤 복귀 없음)
-      this._fireChanged();
+      const key = this.keyId;
+      const loaded = await this.load(true, true);   // force+quiet: 레이아웃과 편집 상태 유지
+      if (loaded && this.keyId === key) this._fireChanged();
     },
     _fireChanged() {
       const v = this.v || {};
       window.dispatchEvent(new CustomEvent("ticket-changed", { detail: {
         key: this.keyId,
         view: { key: this.keyId, assigneeId: v.assigneeId || null, reporterId: v.reporterId || null,
-                statusCategory: v.statusCategory || null, components: v.components || [],
+                 status: v.status || null, statusCategory: v.statusCategory || null, components: v.components || [],
                 resolved: v.resolved || null } } }));
     },
     /** 첨부·문서를 함께 다시 받는다 — 댓글/본문을 고치면 그 안의 첨부·문서도 같이 달라진다.
@@ -1906,7 +1942,7 @@ export default {
           </template>
           <!-- 강제 새로고침도 도크 안에 둬 작성창과 겹치지 않는다. -->
           <button class="tkt-refresh" :class="{ busy: refreshing }" @click="hardRefresh"
-                  :title="refreshing ? '새로 받는 중…' : '강제 새로고침 (캐시 비우고 다시 받기)'"
+                  :title="refreshing ? '새로 받는 중…' : '기존 내용을 유지하면서 최신 정보 받기'"
                   aria-label="강제 새로고침">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
                  stroke-linecap="round" stroke-linejoin="round">
@@ -1950,6 +1986,6 @@ export default {
       <!-- 상태 전이 — 카드 우클릭과 **같은 창**. 코멘트·담당자·해결책 같은 전이 화면 입력을
            여기서만 다르게 받으면 같은 일을 두 벌로 관리하게 된다. -->
       <TransitionDialog v-if="stPick" :ticket="tk" :transition="stPick"
-                        @close="stPick = null" @done="onTransitioned()" />
+                        @close="stPick = null" @done="onTransitioned($event)" />
     </div>`,
 };

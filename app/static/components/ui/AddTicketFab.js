@@ -51,7 +51,7 @@ export default {
     pickBulk(mode) { this.bulkPick = false; this.bulk = mode; },
     onBulkDone(r) {
       const n = ((r && r.created) || []).length;
-      if (n) window.dispatchEvent(new CustomEvent("force-refresh"));   // 목록 화면들 새로 받기
+      if (n) window.dispatchEvent(new CustomEvent("ticket-changed", { detail: { bulk: true } }));   // 목록 화면들 새로 받기
     },
     async onCreated(key) {
       this.showEpic = false; this.child = null;

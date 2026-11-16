@@ -17,6 +17,8 @@
 """
 
 import json
+import hashlib
+from copy import deepcopy
 import re
 import secrets
 import threading
@@ -54,6 +56,35 @@ MYTASK_PEOPLE_BATCH_SIZE = 5
 ASYNC_SYNC_TTL = 30 * 60
 TASK_STREAM_CONTRACT = "task-snapshot.v1"
 _TASK_SYNC_LOCK = threading.RLock()
+
+
+def _task_preview_key(client, user, include_done, limit, scope, open_filter, prog_filter, done_filter):
+    """Display snapshots never cross an actor, Jira environment or query scope."""
+    try:
+        actor = (client.current_user_for_authorization() or {}).get("id")
+    except Exception:
+        # A display-only identity cannot authorize reopening a previously stored board.
+        return None
+    if not actor:
+        return None
+    identity = [client.env, str(actor).casefold(), str(user or actor).casefold(),
+                str(client.s.jira_base), client.s.project_key,
+                scope, include_done, limit, open_filter, prog_filter, done_filter]
+    digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
+    return f"taskpreview:{client.env}:{digest}"
+
+
+def _task_display_preview(model):
+    preview = deepcopy(model)
+    preview.pop("syncId", None)
+    preview.pop("syncExpiresAt", None)
+    preview["displayOnly"] = True
+    preview["epicsPending"] = False
+    for group in preview.get("groups") or []:
+        group["childrenPending"] = False
+    for epic in preview.get("epics") or []:
+        epic["pending"] = False
+    return preview
 
 
 def _days_until(due, today):
@@ -467,7 +498,7 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
     sequence = 0
     axes = ["todo", "inprogress", "done"]
 
-    def event(model, *, done=False, replace=True, completed_leaf=None,
+    def event(model, *, done=False, replace=True, display_only=False, completed_leaf=None,
               completed_leaves=None, errors=(), leaf_done=0, leaf_total=0):
         nonlocal sequence
         partial_errors = []
@@ -486,6 +517,8 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
             "sequence": sequence,
             "replace": bool(replace),
             "done": bool(done),
+            "displayOnly": bool(display_only),
+            "authoritative": not display_only,
             "axes": axes,
             "model": model,
             "statistics": (model or {}).get("counts") if isinstance(model, dict) else None,
@@ -508,6 +541,16 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
         sequence += 1
         return payload
 
+    preview_key = _task_preview_key(client, user, include_done, limit, scope,
+                                    open_filter, prog_filter, done_filter)
+    preview_fence = client.cache.fence()
+    # Explicit read policies are evidence APIs, never display fallbacks. For ordinary UI reads,
+    # send the scoped last complete model before planning or any expired membership queries.
+    if preview_key and not current_read_policy().explicit:
+        saved = client.cache.get_alive(preview_key)
+        if saved and isinstance(saved[0], dict):
+            yield event(_task_display_preview(saved[0]), display_only=True)
+
     calls = []
     planner = _TaskRowsClient(client, (), recorder=calls)
     empty = build_my_tasks(
@@ -519,6 +562,7 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
         return
 
     query_results = [[] for _call in calls]
+    preview_sources = []
     query_failed = [False for _call in calls]
     errors = []
     query_total = len(calls)
@@ -618,6 +662,7 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
         # Preserve the historical mt:* aggregate cache only after this subquery is complete.  A
         # disconnected stream never publishes a partial list as a complete API-cache hit.
         if not query_failed[query_index]:
+            preview_sources.extend(query_sources)
             source_time = min((source["fetchedAt"] for source in query_sources), default=None)
             validated = bool(query_sources) and all(source.get("upstreamValidated", False) for source in query_sources)
             compliant = not any(source.get("invalidated") or source.get("compliant") is False for source in query_sources)
@@ -635,6 +680,15 @@ def iter_my_task_models(client, user=None, include_done=False, limit=None, scope
                                "message": "조회 중 데이터가 변경되거나 요청한 신선도 기간이 지났습니다. 다시 조회해 주세요."})
 
     complete = cumulative_model(create_sync=True)
+    if preview_key and any(error.get("kind") == "permission" for error in errors):
+        client.cache.forget(preview_key)
+    if preview_key and not errors and not complete.get("loadErrors") and not complete.get("error"):
+        # A completed membership query is sufficient for display. Its hydration token is never
+        # persisted: reopening a page cannot resume a previous stream's mutable sync session.
+        client.cache.set_if_fence(preview_key, _task_display_preview(complete),
+                                  client.s.cache_ttl_seconds, preview_fence,
+                                  fetched_at=min((row["fetchedAt"] for row in preview_sources), default=time.time()),
+                                  upstream_validated=False)
     yield event(complete, done=True, errors=errors,
                 leaf_done=leaf_done, leaf_total=leaf_total)
 
