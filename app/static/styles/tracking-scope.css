@@ -70,6 +70,11 @@
 .tracking .tr-report-group-scope { flex: none; min-height: 28px; border: 1px solid var(--border-hi); border-radius: 3px; background: var(--panel); padding: 3px 7px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .tracking .tr-report-group-scope:hover { color: var(--accent); border-color: var(--accent); }
 .tr-evidence-scope-label { margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 17px; word-break: keep-all; overflow-wrap: anywhere; }
+.tr-workspace.tr-workspace-scoped > .tr-evidence-inline { position: static; grid-column: 2; grid-row: 1; width: auto; height: auto; min-height: 430px; max-height: none; z-index: auto; border: 1px solid var(--border); border-radius: 3px; padding: 18px 22px; box-shadow: none; }
+.tr-evidence-inline .tr-evidence-close { align-self: flex-start; }
+.tr-evidence-inline .tr-evidence-events { overflow: visible; flex: none; min-height: 0; }
+.tr-evidence-inline .tr-evidence-event p { max-width: 88ch; }
+.tr-evidence-inline .tr-evidence-footer { padding-top: 18px; }
 
 @media (min-width: 1500px) {
   .tr-workspace.tr-workspace-scoped { grid-template-columns: 260px minmax(0, 1fr); gap: 20px; }

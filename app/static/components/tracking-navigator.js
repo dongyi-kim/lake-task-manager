@@ -1,10 +1,11 @@
 // Branches select a report scope; terminal tickets open their evidence directly.
+import { isTerminalTrackingRow } from './trackingModel.js';
 export default {
   name:'TrackingNavigator',
   props:{rows:Array,activeId:String,evidenceId:String,closed:Object,total:Number,mode:String,revealMatches:Boolean},
   emits:['scope','evidence','fold','inspect'],
   methods:{
-    opensEvidence(row) { return !!row.key && !row.children.length && !['module','wbs','epic'].includes(row.kind); },
+    opensEvidence:isTerminalTrackingRow,
     activate(row) { this.opensEvidence(row) ? this.$emit('evidence',row) : this.$emit('scope',row.id); },
     kind(row) { return ({module:'모듈',wbs:row.virtual?'가상 WBS':'WBS',epic:row.virtual?'분류 Epic':'Epic',task:'Task',story:'Task',subtask:'Subtask'})[row.kind] || row.kind; },
   },
