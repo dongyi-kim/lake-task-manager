@@ -51,4 +51,12 @@ pytest 임시·캐시·런타임 경로는 저장소 밖 `TemporaryDirectory`. �
 - 중복되는 종단 항목의 별도 근거 버튼 제거. 이름 아래 `상세 근거` 표시.
 - 기존 자동 검증 372건 통과. `inline-terminal-check.py` 브라우저 검증에서 추가 Tracking API 0회, JavaScript 오류 0건. 밝은/어두운 테마 스크린샷 확인.
 
-전체 CI·운영 Jira 재수집·실 AI 요약은 이번 변경의 검증 범위 밖. 브라우저 결과는 로컬 mock 저장 실행 기준.
+## 배포 전 집계·트리 보강
+
+- 과거 댓글의 수정만 있는 경우 신규 댓글 합계에 포함하지 않음. 신규+수정 혼합 사례와 같은 댓글 중복 제외 회귀 추가. 관련 자동 검증 **374건 통과**.
+- 계층 연결선, 마지막 형제의 꺾임, 유형별 텍스트 배지 추가. 접기·검색에 따라 연결선 재계산, Task/Subtask 들여쓰기 16px 차이 확인.
+- WBS 보라, Epic 파랑, Task 청록, Subtask 중립색 점선. 유형은 색과 텍스트로 함께 구분.
+- `tree-ui-check.py`: 밝음/어두움 1366px 패널 폭 280px, 1600px 패널 폭 310px. 가로 넘침·JavaScript 오류 없음, 추가 Tracking API 0회.
+- 최신 트리 캡처: `tree-light-1366.png`, `tree-dark-1366.png`, `tree-dark-1600.png`. 기존 종단 본문 이동과 필터·접기 동작 유지.
+
+브라우저 결과는 로컬 mock 저장 실행 기준. 전체 suite는 배포 PR의 GitHub Actions에서 별도 확인. 운영 Jira 재수집·실 AI 요약은 실행하지 않음.
