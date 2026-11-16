@@ -426,7 +426,7 @@ export default {
       const retained = new Map(preserve ? queue.filter(({pid}) => this.pstat[pid]
         && !this.pstat[pid].error && !this.pstat[pid].loading).map(({pid}) => [pid, this.pstat[pid]]) : []);
       let finish;
-      this._peopleLoadResolvers ||= new Set();
+      if (!this._peopleLoadResolvers) this._peopleLoadResolvers = new Set();
       const complete = new Promise(resolve => { finish = () => { this._peopleLoadResolvers.delete(finish); resolve(); }; });
       this._peopleLoadResolvers.add(finish);
       const failed = (pid, kind, message, retrying = false, attempt = 0) => {

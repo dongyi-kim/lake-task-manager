@@ -15,6 +15,7 @@ from app.infra.settings import is_manager, load_people, load_plan
 from app.domain.progress import VOC_COMPONENT
 from app.tracking.analysis import KST, analyze_issue, build_result, identity_aliases, instant, period_bounds, person
 from app.tracking.source import IncompleteSource, TrackingSource
+from app.tracking.presentation import present_comments
 from app.tracking.scope import module_candidates
 from app.tracking.storage import TrackingStore, encode
 
@@ -102,7 +103,8 @@ class TrackingManager:
         return snapshot, checkpoint
 
     def get(self, run_id):
-        return self._owned(run_id)[0]
+        snapshot, checkpoint = self._owned(run_id)
+        return present_comments(snapshot, self.client, checkpoint)
 
     def list(self):
         owner, scope = self.authorize()
@@ -126,7 +128,7 @@ class TrackingManager:
     def resume(self, run_id, *, background=True):
         snapshot, cp = self._owned(run_id)
         if snapshot["status"] == "complete":
-            return snapshot
+            return present_comments(snapshot, self.client, cp)
         if snapshot["status"] == "cancelled":
             raise ValueError("취소된 수집은 새 조회로 시작해 주세요.")
         if snapshot["status"] not in ("queued", "running"):
@@ -143,7 +145,7 @@ class TrackingManager:
             self.controls.setdefault(run_id, threading.Event()).set()
             snapshot["status"] = "cancelled"
             self.store.save(run_id, snapshot, cp)
-        return snapshot
+        return present_comments(snapshot, self.client, cp)
 
     def wait(self, run_id, timeout=60):
         worker = self.workers.get(run_id)

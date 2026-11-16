@@ -65,7 +65,7 @@ export function buildTrackingReport(run) {
   if (!run) return {items:[],summary};
   const originalIssues = Array.isArray(run.issues) ? run.issues : Object.values(run.issues || {});
   const issues = new Map(originalIssues.filter(issue=>issue?.key).map(issue=>[issue.key,issue]));
-  const treeInfo = new Map(), paths = new Map(), treeParents = new Map();
+  const treeInfo = new Map(), paths = new Map(), ancestors = new Map(), treeParents = new Map();
   function walk(node, labels=[], parentKey='', seen=new Set()) {
     if (!node || seen.has(node)) return;
     const key = issueKeyOf(node), label = node.name || node.summary || key;
@@ -74,6 +74,8 @@ export function buildTrackingReport(run) {
       if (!treeInfo.has(key)) treeInfo.set(key,node);
       if (!paths.has(key)) paths.set(key,new Set());
       paths.get(key).add(nextLabels.join(' › '));
+      if (!ancestors.has(key)) ancestors.set(key,new Set());
+      ancestors.get(key).add(labels.join(' › '));
       if (parentKey && !treeParents.has(key)) treeParents.set(key,parentKey);
     }
     for (const child of node.children || []) walk(child,nextLabels,key || parentKey,new Set([...seen,node]));
@@ -147,6 +149,7 @@ export function buildTrackingReport(run) {
       issue:issues.get(value),events:eventsByKey.get(value) || []}));
     const item = {key,rowId:'tracking-report:'+key,title:issue?.summary || key,issue,keys,
       paths:[...new Set(paths.get(key) || keys.flatMap(value=>[...(paths.get(value) || [])]))].sort(),events,eventIds:events.map(eventId),
+      ancestorPaths:[...new Set(ancestors.get(key) || keys.flatMap(value=>[...(ancestors.get(value) || [])]))].filter(Boolean).sort(),
       completedKeys:distinct(events.filter(event=>event.kind === 'completed').map(event=>event.issueKey)),
       createdKeys:distinct(events.filter(event=>event.kind === 'created').map(event=>event.issueKey)),
       reopenedKeys:distinct(events.filter(event=>event.kind === 'reopened').map(event=>event.issueKey)),

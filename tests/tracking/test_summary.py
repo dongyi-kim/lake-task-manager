@@ -48,6 +48,23 @@ def test_large_evidence_is_not_silently_truncated_or_sent(monkeypatch):
         summary.summarize_snapshot(data)
 
 
+def test_display_html_is_excluded_before_summary_input_limits(monkeypatch):
+    from app.tracking import summary
+    data = snapshot()
+    event = data["events"][0]
+    event["bodyHtml"] = "<p>" + "display markup " * 10_000 + "</p>"
+    original_event = dict(event)
+    monkeypatch.setattr(summary, "_ready", lambda: (True, ""))
+
+    def invoke(payload):
+        assert payload["events"] == [{key: value for key, value in original_event.items() if key != "bodyHtml"}]
+        return {"items": [{"text": "DL-123", "evidenceIds": ["comment:1"]}]}, {}
+
+    monkeypatch.setattr(summary, "_invoke", invoke)
+    summary.summarize_snapshot(data)
+    assert data["events"][0] == original_event
+
+
 def test_unconfigured_model_does_not_invoke(monkeypatch):
     from app.tracking import summary
     monkeypatch.setattr(summary, "_ready", lambda: (False, "연결 설정 필요"))

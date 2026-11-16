@@ -2,8 +2,6 @@
 .tr-workspace.tr-workspace-report,
 .tr-workspace.tr-report-wide { grid-template-columns: minmax(0, 1fr) 254px; align-items: start; gap: 16px; }
 .tr-workspace-report > .tr-results { border-color: var(--border); }
-.tr-workspace-report > .tr-evidence { position: fixed; top: 58px; right: 0; width: 500px; height: calc(100dvh - 58px); max-height: calc(100dvh - 58px); min-height: 0; z-index: 35; border-radius: 3px 0 0 0; border-right: 0; padding: 16px 20px 12px; box-shadow: -8px 0 32px #0002; }
-.tr-evidence-close { align-self: flex-end; margin: 0 0 10px; }
 .tr-report { min-width: 0; }
 .tr-report-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 14px; min-height: 38px; }
 .tr-report-head h2 { font-size: 14px; font-weight: 700; margin: 0; white-space: nowrap; }
@@ -50,7 +48,7 @@
 .tr-brief-meta { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 16px; }
 .tr-brief-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-brief-meta .tr-type { min-width: 0; padding-inline: 4px; font-size: 11px; line-height: 15px; }
-.tr-brief-context { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 11px; line-height: 16px; min-width: 0; margin-top: 1px; }
+.tr-brief-context { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--accent); font-size: 11px; line-height: 16px; min-width: 0; margin-top: 1px; }
 .tr-brief-context > span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tr-brief-context > span + span { flex: none; }
 .tr-brief-period > strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; font-weight: 600; }
@@ -133,3 +131,15 @@
   .tr-brief-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 120px 26px; gap: 9px; padding-inline: 12px 9px; }
   .tr-brief-title > button { flex-wrap: wrap; gap: 0 5px; }
 }
+
+/* Two stable grouping levels keep status and ancestry independently scannable. */
+.tr-report-grouping { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 6px 12px 10px; font-size: 12px; }
+.tr-report-grouping label { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-weight: 600; }
+.tr-report-grouping select { min-height: 30px; padding: 4px 28px 4px 8px; border: 1px solid var(--border-hi); border-radius: 3px; background: var(--panel); color: var(--text); font-size: 12px; font-weight: 500; }
+.tr-report-grouping > span { font-size: 11px; color: var(--muted); }
+.tr-report-group-kind { flex: none; color: var(--muted); font-size: 10px; font-weight: 500; white-space: nowrap; }
+.tr-report-section + .tr-report-section { border-top: 1px solid var(--border-hi); }
+.tr-workspace-scoped .tr-report-subsection-head { min-height: 32px; padding: 4px 12px 4px 28px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.tr-report-subsection-head .tr-report-group-title h4 { margin: 0; font-size: 12px; line-height: 18px; font-weight: 650; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-report-subsection + .tr-report-subsection { border-top: 1px solid var(--border); }
+.tr-brief-context.is-unlinked { color: var(--muted); }

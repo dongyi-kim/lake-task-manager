@@ -37,7 +37,7 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     assert.equal(calls[0][0],'/api/tracking/runs');
     assert.deepEqual(JSON.parse(calls[0][1].body),source.request);
     assert.equal(vm.provisional,true); assert.equal(vm.summaryLabel(0),'미확인');
-    assert.equal(vm.canResume,true);assert.equal(vm.selectedId,'t');
+    assert.equal(vm.canResume,true);assert.equal(vm.selectedId,'');
     assert.equal(vm.targetIssues.length,1);assert.equal(vm.historyConfirmed,0);
     assert.deepEqual(vm.peopleOptions.map(p=>p.name),['Same name (a)','Same name (b)']);
     assert.equal(vm.selectionLabel('people'),'Same name (a)');
@@ -71,12 +71,12 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     const nodes=[];
     function visit(node){if(!node || typeof node !== 'object')return;nodes.push(node);if(Array.isArray(node.children))node.children.forEach(visit)}
     visit(render.call(vm,vm,[]));
-    assert.ok(nodes.some(n=>n.children === '<script>unsafe</script>')); // untrusted comment is plain text
+    assert.ok(nodes.some(n=>n.props?.event?.body === '<script>unsafe</script>')); // rich component receives raw input; it escapes unsanitized fallback
     assert.ok(!nodes.some(n=>n.props?.innerHTML));
     const choices=nodes.filter(n=>n.type==='input' && n.props?.type==='checkbox' && n.props?.checked !== undefined);
     assert.equal(choices.length,2);assert.equal(choices[0].props.checked,true);
     choices[1].props.onChange();assert.deepEqual(vm.people,['a','b']);
-    vm.mode='feed';nodes.length=0;visit(render.call(vm,vm,[]));
+    vm.selectScope('');vm.mode='feed';nodes.length=0;visit(render.call(vm,vm,[]));
     const feedTicket=nodes.find(n=>n.props?.class==='tr-feed-ticket');
     assert.ok(feedTicket.children.some(n=>n.type==='strong' && n.children==='Work'));
     assert.ok(feedTicket.children.some(n=>n.type==='small' && n.children==='L-1'));
@@ -84,6 +84,7 @@ def test_collection_reopening_and_ai_use_saved_evidence_without_display_fetches(
     vm.run={...source,id:'orphan',issues:[{key:'S-1',summary:'Recovered evidence',type:'Sub-Task',isSubtask:true,parentKey:'T-404',coverage:{historyComplete:true,commentsComplete:true}}],
       events:[{id:'child-comment',issueKey:'S-1',kind:'comment',date:'2026-11-01T00:00:00Z',body:'Completed migration'}],
       tree:[{id:'orphan-sub',issueKey:'S-1',name:'Recovered evidence',kind:'Sub-Task'}]};
+    vm.query='';vm.highlightValue='';vm.matchedOnly=false;
     vm.mode='report';vm.selectReport(vm.report.items[0]);
     assert.equal(vm.reportEvidenceOpen,true);assert.equal(vm.selected.key,'T-404');
     assert.equal(vm.selectedEvents[0].id,'child-comment');

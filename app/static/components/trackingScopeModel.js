@@ -32,6 +32,37 @@ function clippedTree(node, seen = new Set()) {
   return {...node, children:(node.children || []).map(child => clippedTree(child, nextSeen)).filter(Boolean)};
 }
 
+// Some report roots exist only in issue.parentKey, outside the observed hierarchy.
+// Give their summary tab a local hierarchy bounded by the report's exact keys.
+function reportSelection(displayRun, scopeId, entries) {
+  const item = buildTrackingReport(displayRun).items.find(value => value.rowId === scopeId);
+  if (!item) return null;
+  const keys = new Set(item.keys), used = new Set([item.key]);
+  function clip(node, seen = new Set()) {
+    if (!node || seen.has(node)) return [];
+    const key = issueKeyOf(node), retain = keys.has(key) && !used.has(key);
+    if (retain) used.add(key);
+    const nextSeen = new Set([...seen, node]);
+    const children = (node.children || []).flatMap(child => clip(child, nextSeen));
+    return retain ? [{...node, children}] : children;
+  }
+  const original = entries.find(entry => issueKeyOf(entry.node) === item.key)?.node;
+  const children = (original?.children || []).flatMap(child => clip(child));
+  for (const child of item.children) {
+    if (used.has(child.key)) continue;
+    const entry = entries.find(value => issueKeyOf(value.node) === child.key);
+    if (entry) children.push(...clip(entry.node));
+    else {
+      used.add(child.key);
+      children.push({id:'tracking-report:'+child.key, issueKey:child.key,
+        name:child.title, kind:child.issue?.type || 'Sub-Task', children:[]});
+    }
+  }
+  const node = {...original, id:scopeId, issueKey:item.key, name:item.title,
+    kind:item.issue?.type || 'Task', contextOnly:item.issue?.contextOnly === true, children};
+  return {node, identity:scopeId, path:[]};
+}
+
 function reportGroups(report, entries, selection) {
   const byKey = new Map();
   for (const entry of entries) {
@@ -72,7 +103,8 @@ function reportGroups(report, entries, selection) {
 
 export function buildTrackingScope(displayRun, scopeId = '') {
   const entries = entriesFor(displayRun?.tree);
-  const selection = scopeId ? entries.find(entry => entry.node.id === scopeId) : null;
+  const selection = scopeId ? entries.find(entry => entry.node.id === scopeId) ||
+    (scopeId.startsWith('tracking-report:') ? reportSelection(displayRun, scopeId, entries) : null) : null;
   const valid = !scopeId || !!selection;
   let run = displayRun;
   let scopedEntries = entries;
