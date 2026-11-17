@@ -31,7 +31,7 @@ const epicChildren=[parent,
  {key:'DL-10060',title:'운영 가이드 정리',person:'이준서',current:'대기',events:[],comments:[]}
 ];
 const epic={key:'DL-101',title:'실시간 처리 안정화',rowLabel:'이 Epic',person:'최민서',current:'진행 중',events:[ev(12,9,30,'start','Epic 진행 시작','수집 안정화 작업의 개발·검증 착수.','progress')],comments:[ev(16,17,20,'note','인수 범위 재확인','중복 제거의 재오픈 경로를 포함해 운영 인수 범위 재확인.')]};
-let mode='task',scale='day',day=16,comments=true,fullDay=false,registry=[],activeTrigger=null;
+let mode='task',scale='day',day=16,comments=true,fullDay=false,expandedChildren=false,registry=[],activeTrigger=null;
 const color=s=>({progress:'blue',done:'green',reopen:'amber',new:'idle'}[s]||'unknown');
 const label=s=>({progress:'진행 중',done:'완료',reopen:'재오픈',new:'대기'}[s]||'근거 미확인');
 function range(){return scale==='day'?(fullDay?[at(day,0),at(day+1,0)]:[at(day,9),at(day,18)]):[at(11,0),at(18,0)];}
@@ -47,6 +47,26 @@ function groups(items){
   const last=out.at(-1);if(last&&e.at-last.at<threshold)last.members.push(e);else out.push({...e,members:[e]});
  }
  return out.map(e=>e.members.length>1?{...e,title:`댓글 ${e.members.length}건`}:e.members[0]);
+}
+function combinedAxis(owner,rows){
+ const [a,b]=range(),sources=[owner,...rows];
+ const changes=sources.flatMap(row=>row.events.filter(e=>e.at>=a&&e.at<=b).map(event=>({event,row})));
+ const notes=comments?sources.flatMap(row=>groups(row.comments).map(event=>({event,row}))):[];
+ const items=[...changes,...notes].sort((a,b)=>a.event.at-b.event.at||a.row.key.localeCompare(b.row.key));
+ let last=-100,stack=0;
+ const marks=items.map(({event,row})=>{const pos=x(event.at);stack=pos-last<3.5?stack+1:0;last=pos;
+  return dot(event,row,(event.members?'cluster ':'')+(row===owner?'own-marker':'child-marker'),stack?[0,-25,25,-50,50][stack%5]:0,122);
+ }).join('');
+ const trackEnds=[-100,-100];let callouts='';
+ for(const {event,row} of changes.filter(({event,row})=>['done','reopen'].includes(event.kind)||row===owner&&event.kind==='start')){
+  const pos=x(event.at);if(pos<10||pos>90)continue;
+  const track=trackEnds.findIndex(end=>pos-end>=20);if(track<0)continue;trackEnds[track]=pos;
+  const id=remember(event,row),source=row===owner?(mode==='task'?'이 Task':'이 Epic'):row.title;
+  const short=row===owner?event.title:({done:'완료',reopen:'재오픈',start:'진행 시작'}[event.kind]||event.title);
+  callouts+=`<button class="bubble summary-callout ${track?'below':''} ${event.kind==='done'?'done':event.kind==='reopen'?'reopen':'blue-top'}" style="--x:${pos}%;--callout-y:${track?181:27}px" data-event="${id}" aria-label="${esc(full(event.at)+' '+row.title+' '+event.title+' 근거')}"><span class="summary-source">${esc(source)}</span><span class="time">${scale==='period'?full(event.at):fmt(event.at)}</span><strong>${esc(short)}</strong></button>`;
+ }
+ const noteCount=notes.reduce((sum,{event})=>sum+(event.members?.length||1),0);
+ return `<div class="lane combined" data-change-count="${changes.length}" data-comment-count="${noteCount}"><div class="lane-label"><div class="lane-title">자체 + 하위 ${rows.length}개</div><div class="lane-meta">상태 변화 ${changes.length} · 댓글 ${noteCount}</div><p class="summary-label-note">같은 시간축에서<br>주요 변화 함께 보기</p></div><div class="lane-body" style="--rail-y:122px;height:258px"><div class="rail"></div>${marks}${callouts}${items.length?'':'<span class="summary-empty">이 구간에 확인된 활동 없음</span>'}</div></div>`;
 }
 function lane(row,primary=false,commentOnly=false){
  const [a,b]=range(),events=row.events.filter(e=>e.at>=a&&e.at<=b),all=row.events.filter(e=>e.at<=b).sort((a,b)=>a.at-b.at);
@@ -88,7 +108,9 @@ function render(){
  const outside=(mode==='task'?[parent,...rows]:[epic,...rows]).flatMap(r=>[...r.events,...r.comments]).filter(e=>e.at>=at(day,0)&&e.at<at(day+1,0)&&(e.at<at(day,9)||e.at>at(day,18))).length;
  $('#fullDay').hidden=scale==='period';$('#fullDay').textContent=fullDay?'09–18시 보기':outside?`24시간 · 시간 밖 ${outside}건`:'24시간 보기';$('#fullDay').setAttribute('aria-pressed',String(fullDay));
  $('#ticks').innerHTML=scale==='day'?(fullDay?Array.from({length:9},(_,i)=>`<time class="tick" style="left:${i/8*100}%">${i*3}:00</time>`).join(''):Array.from({length:10},(_,i)=>`<time class="tick" style="left:${i/9*100}%">${9+i}:00</time>`).join('')):Array.from({length:8},(_,i)=>`<time class="tick" style="left:${i/7*100}%">11.${11+i} 00시</time>`).join('');
- $('#lanes').innerHTML=(mode==='task'?lane(parent,true)+(comments?lane(parent,false,true):''):lane(epic))+`<div class="group-heading"><span>${mode==='task'?'Sub-task':'하위 Task'} ${rows.length}개</span><span>왼쪽: 현재 상태　선 위: 선택 구간의 기록</span></div>`+rows.map(r=>lane(r)).join('');
+ $('#lanes').innerHTML=combinedAxis(mode==='task'?parent:epic,rows);
+ $('#childrenToggle').innerHTML=`<span class="fold-symbol">${expandedChildren?'−':'+'}</span>하위 작업별 ${expandedChildren?'접기':'펼치기'} <small>${rows.length}</small>`;$('#childrenToggle').setAttribute('aria-expanded',String(expandedChildren));
+ $('#childLanes').hidden=!expandedChildren;$('#childLanes').innerHTML=expandedChildren?`<div class="group-heading"><span>${mode==='task'?'Sub-task':'하위 Task'}별 상태 흐름</span><span>위 통합 축과 같은 사건 · 선은 각 업무의 상태</span></div>`+rows.map(r=>lane(r)).join(''):'';
  $$('.lane-body').forEach(e=>e.style.backgroundSize=scale==='day'?(fullDay?'112.5% 100%':'100% 100%'):'128.5714% 100%');
  $('#chartHint').textContent=scale==='day'?'점·말풍선을 눌러 시각과 근거 확인':'날짜를 눌러 시간 확대 · 간격은 실제 경과 시간';
  $('#resultItems').innerHTML=mode==='task'?'<div class="result-item"><span class="result-icon">✓</span><div><b>하위 작업 3개 완료</b><p>대사 · 재처리 검증 · 모니터링 지표</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--amber)">↶</span><div><b>검증 후 재오픈</b><p>11.16 14:20 · 역순 이벤트 예외 발견</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--blue)">◷</span><div><b>예외 경로 수정 착수</b><p>11.16 16:40 · 운영 인수 점검 진행</p></div></div>':'<div class="result-item"><span class="result-icon">✓</span><div><b>Task 3개 완료</b><p>스키마 감지 · 재처리 · 지연 알림</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--amber)">↶</span><div><b>중복 제거 Task 재확인</b><p>검증 이후 예외 발견 · 수정 착수</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--blue)">◷</span><div><b>현재 진행 2개 · 대기 1개</b><p>활동량과 완료 비율을 구분해 표시</p></div></div>';
@@ -100,9 +122,10 @@ function openEvent(id,trigger){
  p.hidden=false;const rect=trigger.getBoundingClientRect();p.style.left=Math.max(12,Math.min(innerWidth-332,rect.left+rect.width/2-160))+'px';p.style.top=Math.max(12,Math.min(innerHeight-p.offsetHeight-12,rect.bottom+12))+'px';$('#closePopover').onclick=()=>closePopover();$('#closePopover').focus({preventScroll:true});
  $('#showEvidence').onclick=()=>{const evidence=$('#evidence');evidence.innerHTML=`<button id="closeEvidence">접기</button><h3>${esc(e.row.title)} · ${esc(e.title)}</h3><p>${esc(e.row.person)} · ${esc(e.row.key)} · 시안용 예시 근거</p>${(e.members||[e]).map(item=>`<blockquote><b>${esc(full(item.at)+' · '+item.title)}</b><br>${esc(item.body)}</blockquote>`).join('')}`;evidence.hidden=false;closePopover(false);$('#closeEvidence').onclick=()=>{evidence.hidden=true;};evidence.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'instant':'smooth',block:'nearest'});};
 }
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(b?.dataset.mode){mode=b.dataset.mode;render();}else if(b?.dataset.scale){scale=b.dataset.scale;render();}else if(b?.dataset.day){day=Number(b.dataset.day);scale='day';render();}else if(b?.dataset.event!==undefined)openEvent(Number(b.dataset.event),b);else if(!e.target.closest('#popover'))closePopover(false);});
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(b?.dataset.mode){mode=b.dataset.mode;expandedChildren=false;render();}else if(b?.dataset.scale){scale=b.dataset.scale;render();}else if(b?.dataset.day){day=Number(b.dataset.day);scale='day';render();}else if(b?.dataset.event!==undefined)openEvent(Number(b.dataset.event),b);else if(!e.target.closest('#popover'))closePopover(false);});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePopover();});
 $('#prevDay').onclick=()=>{day--;render();};$('#nextDay').onclick=()=>{day++;render();};$('#commentsToggle').onclick=()=>{comments=!comments;render();};
 $('#fullDay').onclick=()=>{fullDay=!fullDay;render();};
+$('#childrenToggle').onclick=()=>{expandedChildren=!expandedChildren;render();};
 $('#theme').onclick=()=>{const dark=document.documentElement.dataset.theme!=='dark';document.documentElement.dataset.theme=dark?'dark':'light';$('#theme').setAttribute('aria-label',dark?'밝은 테마로 보기':'어두운 테마로 보기');};
 window.addEventListener('resize',()=>closePopover(false));render();

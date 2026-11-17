@@ -20,15 +20,15 @@
     <nav class="breadcrumbs">ETL <span>/</span> 실시간 수집 체계 <span>/</span><span id="breadcrumb">실시간 처리 안정화</span></nav>
     <div class="title-row"><div><div class="ticket-meta"><span id="ticketType">TASK</span><span id="ticketKey">DL-10000</span><span class="status" id="currentStatus">진행 중</span></div><h1 id="ticketTitle">주문 이벤트 중복 제거</h1><p class="byline" id="byline">최민서 담당 · 선택 기간 중 재오픈 1회</p></div><div class="completion"><div><span id="progressLabel">Sub-task 완료</span><strong id="progressValue">3<span>/ 5</span></strong></div><div class="completion-track"><i id="progressFill" style="width:60%"></i></div><small id="progressNote">현재 조회 상태 기준 · 60%</small></div></div>
     <section class="timeline" aria-label="시간별 상태와 활동 시안">
-      <header class="timeline-header"><div><h2>상태와 활동</h2><p>선은 상태의 흐름, 점은 변화가 일어난 시각</p></div><div class="timeline-controls"><div class="segmented" aria-label="시간축 배율"><button data-scale="period" aria-pressed="false">전체 기간</button><button data-scale="day" class="selected" aria-pressed="true">시간 확대</button></div><button id="commentsToggle" class="outline selected" aria-pressed="true">댓글 표시</button></div></header>
+      <header class="timeline-header"><div><h2>상태와 활동</h2><p>자체 변화와 하위 작업의 주요 변화를 하나의 시간축으로</p></div><div class="timeline-controls"><div class="segmented" aria-label="시간축 배율"><button data-scale="period" aria-pressed="false">전체 기간</button><button data-scale="day" class="selected" aria-pressed="true">시간 확대</button></div><button id="commentsToggle" class="outline selected" aria-pressed="true">댓글 표시</button></div></header>
       <div class="period-strip"><div class="period-caption">전체 기간 <span>11.11 — 11.17</span></div><div class="overview" id="overview" aria-label="날짜를 선택해 시간 확대"></div></div>
       <div class="axis-toolbar"><div><button id="prevDay" class="square" aria-label="이전 날짜">←</button><strong id="windowLabel">11월 16일 월요일</strong><button id="nextDay" class="square" aria-label="다음 날짜">→</button><span class="window-time" id="windowTime">09:00 — 18:00 · KST</span><button id="fullDay" class="outline" aria-pressed="false">24시간 보기</button></div><div class="legend"><span><i class="legend-line blue"></i>진행</span><span><i class="legend-line green"></i>완료</span><span><i class="legend-line amber"></i>재오픈</span><span><i class="legend-line unknown"></i>근거 미확인</span></div></div>
-      <div class="chart-scroll"><div id="chart" class="chart"><div class="ruler"><div class="ruler-label">업무 / 현재 상태</div><div id="ticks" class="ticks"></div></div><div id="lanes"></div></div></div>
-      <div class="chart-footer"><span id="chartHint">점·말풍선을 눌러 시각과 근거 확인</span><span><i class="tiny-comment"></i>댓글만 묶음 표시 · 상태 전환은 개별 표시</span></div>
+      <div class="chart-scroll"><div id="chart" class="chart"><div class="ruler"><div class="ruler-label">통합 활동</div><div id="ticks" class="ticks"></div></div><div id="lanes"></div><div class="child-expansion"><button id="childrenToggle" aria-expanded="false" aria-controls="childLanes"><span class="fold-symbol">+</span>하위 작업별 펼치기</button><span>개별 업무의 상태 흐름이 필요할 때</span></div><div id="childLanes" hidden></div></div></div>
+      <div class="chart-footer"><span id="chartHint">점·말풍선을 눌러 시각과 근거 확인</span><span>채운 점: 자체　테두리 점: 하위 · 선은 시간 흐름</span></div>
       <div class="selected-evidence" id="evidence" hidden></div>
     </section>
     <section class="results"><div><h2 id="resultsTitle">이번 기간의 주요 진척</h2><span class="muted">확인된 사건 기준</span></div><div id="resultItems" class="result-items"></div></section>
-    <div class="design-note"><b>시안 조작</b> Task / Epic 전환 · 날짜 선택 · 전체 기간 / 시간 확대 · 사건 클릭 · 댓글 묶음 펼치기</div>
+    <div class="design-note"><b>시안 조작</b> Task / Epic 전환 · 시간 확대 · 사건 클릭 · 하위 작업별 펼치기</div>
   </main>
 </div>
 <div class="event-popover" id="popover" role="dialog" aria-modal="false" aria-labelledby="popoverTitle" hidden></div>
