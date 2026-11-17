@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 import time
+import urllib.error
 import urllib.request
 
 
@@ -34,13 +35,46 @@ def port_is_listening(port):
             return False
 
 
-def ltm_health(base):
-    """Identify LTM by its health contract instead of trusting any server on the port."""
+def _health_body(url, *, accept_unresponsive=False):
+    """Read a small identity response, including a live worker's deliberate 503."""
     try:
-        body = json.loads(urllib.request.urlopen(base + "/api/health", timeout=1.5).read() or b"{}")
+        try:
+            response = urllib.request.urlopen(url, timeout=1.5)
+        except urllib.error.HTTPError as exc:
+            if not accept_unresponsive or exc.code != 503:
+                exc.close()
+                return None
+            response = exc
+        with response:
+            data = response.read(4097)
+        if len(data) > 4096:
+            return None
+        body = json.loads(data or b"{}")
+        return body if isinstance(body, dict) else None
     except Exception:
         return None
-    if body.get("status") != "ok" or body.get("env") not in {"mock", "local", "prod"}:
+
+
+def ltm_health(base):
+    """Identify the existing app independently of business capacity or recovery.
+
+    The current live contract uses memory only. A recovering worker is still an
+    existing LTM instance; starting another process cannot help it recover.
+    Older releases retain the full-health identity fallback.
+    """
+    body = _health_body(base + "/api/health/live", accept_unresponsive=True)
+    if body is not None:
+        resources = body.get("resources")
+        if (body.get("status") in ("ok", "unresponsive")
+                and type(body.get("pid")) is int and body["pid"] > 0
+                and isinstance(body.get("instance"), str)
+                and isinstance(resources, dict)
+                and type(resources.get("busy")) is bool and type(resources.get("supported")) is bool):
+            return body
+    body = _health_body(base + "/api/health")
+    if body is None:
+        return None
+    if body.get("status") != "ok" or body.get("env") not in ("mock", "local", "prod"):
         return None
     if "projectKey" not in body or "rev" not in body:
         return None
