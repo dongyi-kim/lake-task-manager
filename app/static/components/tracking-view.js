@@ -248,7 +248,7 @@ export default {
     statusLabel(status) { return RUN_LABELS[status] || status; },
     selectAll(kind) { this[kind] = []; },
     isSelected(kind,id) { return this[kind].includes(id); },
-    kindLabel(kind) { return ({module:'모듈',wbs:'WBS',epic:'Epic',task:'Task',subtask:'Sub',sub:'Sub','sub-task':'Sub'})[String(kind).toLowerCase()] || kind || 'Task'; },
+    kindLabel(kind) { return ({module:'모듈',wbs:'WBS Task',epic:'Epic',task:'Task',subtask:'Sub',sub:'Sub','sub-task':'Sub'})[String(kind).toLowerCase()] || kind || 'Task'; },
     dateLabel(value) { if (!value || value === '날짜 미확인') return value || '미확인'; return value.replace(/^(\d{4})-(\d{2})-(\d{2}).*$/, '$1.$2.$3'); },
     timeLabel(value) { const d = new Date(value); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('ko-KR',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',hour12:false}) : ''; },
     timestamp(value) { const d = new Date(value); return Number.isFinite(d.getTime()) ? d.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : '미확인'; },

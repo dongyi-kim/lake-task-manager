@@ -106,8 +106,8 @@ def test_unassigned_scopes_keep_wbs_module_and_root_members_separate(tracking_br
     for index, context, titles in [
         (0, ['WBS A', UNASSIGNED], [TASK_A]),
         (1, ['WBS B', UNASSIGNED], ['두 번째 WBS의 독립 업무']),
-        (2, ['WBS 미연결 · 제품 모듈', UNASSIGNED], ['모듈 바로 아래 업무']),
-        (3, ['WBS 미연결', UNASSIGNED], ['최상위 독립 업무']),
+        (2, ['WBS Task 미연결 · 제품 모듈', UNASSIGNED], ['모듈 바로 아래 업무']),
+        (3, ['WBS Task 미연결', UNASSIGNED], ['최상위 독립 업무']),
     ]:
         select_group(page, index)
         expect(page.locator('.tb-briefing')).to_be_visible()
@@ -276,7 +276,7 @@ def test_mixed_legacy_roots_show_wbs_scopes_and_collapse_without_module_or_fetch
     page, reads, unexpected, errors = tracking_browser
     before = list(reads)
     nav = navigation(page)
-    expected_roots = Counter(['WBS A', 'WBS B', 'WBS 미연결 · 제품 모듈', 'WBS 미연결', 'WBS 미연결', '사용자 VOC'])
+    expected_roots = Counter(['WBS A', 'WBS B', 'WBS Task 미연결 · 제품 모듈', 'WBS Task 미연결', 'WBS Task 미연결', '사용자 VOC'])
     roots = nav.locator('.tp-tree-entry:not(.has-parent)')
     assert Counter(roots.locator('.tp-tree-label').all_text_contents()) == expected_roots
     assert roots.evaluate_all("els => els.every(el => el.style.getPropertyValue('--tp-depth') === '0')")
@@ -295,10 +295,28 @@ def test_mixed_legacy_roots_show_wbs_scopes_and_collapse_without_module_or_fetch
     nav.get_by_role('button', name='미연결 WBS의 Epic (EPIC-2) 범위 선택', exact=True).click()
     assert brief_titles(page) == ['미연결 WBS의 업무']
     expect(page.get_by_role('navigation', name='선택 범위 경로').locator('button')).to_have_text(
-        ['전체 업무', 'WBS 미연결', 'EPIC-2']
+        ['전체 업무', 'WBS Task 미연결', 'EPIC-2']
     )
     page.get_by_role('button', name='트리의 모든 항목 접기', exact=True).click()
     assert Counter(nav.locator('.tp-tree-label').all_text_contents()) == expected_roots
     expect(nav.locator('.tp-tree-entry.has-parent')).to_have_count(0)
     expect(roots.locator('.tp-tree-exp[aria-expanded="false"]')).to_have_count(sum(expected_roots.values()))
+    assert_clean(reads, before, unexpected, errors)
+
+
+def test_root_summary_and_selected_wbs_use_wbs_task_labels(tracking_browser):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    before = list(reads)
+    nav = navigation(page)
+    expect(nav.locator('.tp-side-kicker').first).to_have_text('WBS Task · Epic · Task · Subtask')
+    expect(page.locator('.tb-inventory-top strong')).to_contain_text('조회된 직속 하위 WBS Task')
+    expect(page.locator('.tb-work-header h2')).to_contain_text('직속 WBS Task 목록')
+    root_types = page.locator('.tb-row .tb-identity small > span').filter(has_text=re.compile(r'^(?:wbs|WBS Task)$'))
+    expect(root_types).to_have_count(6)
+    expect(root_types).to_have_text(['WBS Task'] * 6)
+
+    nav.get_by_role('button', name='WBS A 범위 선택', exact=True).click()
+    expect(page.locator('.tb-kicker')).to_have_text('현재 선택WBS Task')
     assert_clean(reads, before, unexpected, errors)

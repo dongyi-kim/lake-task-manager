@@ -104,9 +104,9 @@ def test_legacy_mixed_activity_recounts_every_tree_level_and_all_read_paths(tmp_
         assert run["summary"]["fieldChanges"] == 1
         assert run["summary"]["completed"] == run["summary"]["completedEvents"] == 1
         assert run["summary"]["reopened"] == run["summary"]["reopenedEvents"] == 1
-        module = run["tree"][0]
-        task, epic = module["children"][0], module["children"][0]["children"][0]
-        for node in (module, task, epic):
+        task = run["tree"][0]
+        epic = task["children"][0]
+        for node in (task, epic):
             assert node["counts"]["totalEvents"] == 4
             assert node["counts"]["uniqueIssues"] == 1
         assert epic["children"][1]["counts"]["totalEvents"] == 0

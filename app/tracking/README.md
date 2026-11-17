@@ -14,4 +14,6 @@ Date-only activity collection for configured people and modules. Uses the same J
 Routes: `app/routes/tracking.py`. UI: `tracking-view.js`, `trackingModel.js`, `tracking.css`.
 Design and measurement: `docs/design/tracking/plan.md`, `performance.md`.
 
+Hierarchy roots are **WBS Task** (`kind: wbs`), followed by Epic, Task and Subtask. Modules are query conditions and node metadata, never an extra hierarchy level. New runs return WBS Task roots directly; the frontend projects legacy module-wrapped runs into the same shape without fetching evidence again. Unlinked work remains under the virtual `WBS Task 미연결` root.
+
 Do not turn incomplete evidence into zero activity or skip failed query groups. Do not infer historical people from current assignees, or completion from current status alone. Additional field changes are observations from already-required histories, not another collection pass. Keep raw cache independent of report period and tree decomposition. Never trust stale display identity for authorization.

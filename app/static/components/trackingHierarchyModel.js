@@ -18,7 +18,7 @@ function wbsRoots(tree) {
   }
   count(tree);
   const displayId = (prefix, path) => 'tracking-hierarchy:' + prefix + ':' + encodeURIComponent(JSON.stringify(path));
-  const unlinked = (children, id, name = 'WBS 미연결') => ({id, kind:'wbs', name, virtual:true, wbsUnassigned:true, children});
+  const unlinked = (children, id, name = 'WBS Task 미연결') => ({id, kind:'wbs', name, virtual:true, wbsUnassigned:true, children});
   function lift(nodes, path = [], seen = new Set()) {
     const result = [], occurrences = new Map();
     for (const node of nodes || []) {
@@ -33,9 +33,9 @@ function wbsRoots(tree) {
         result.push(...children.filter(child => kindOf(child) === 'wbs'));
         const loose = children.filter(child => kindOf(child) !== 'wbs');
         if (loose.length) result.push(node.id === 'unmapped'
-          ? {...node, id, kind:'wbs', type:'wbs', virtual:true, wbsUnassigned:true, children:loose}
+          ? {...node, id, kind:'wbs', type:'wbs', name:'WBS Task 미연결', summary:'WBS Task 미연결', virtual:true, wbsUnassigned:true, children:loose}
           : unlinked(loose, displayId('wbs-unassigned', nextPath),
-            'WBS 미연결' + (node.name || node.summary ? ' · ' + (node.name || node.summary) : '')));
+            'WBS Task 미연결' + (node.name || node.summary ? ' · ' + (node.name || node.summary) : '')));
         continue;
       }
       result.push(id === node.id && sameNodes(children, node.children || []) ? node : {...node, id, children});

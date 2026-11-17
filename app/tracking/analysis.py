@@ -237,33 +237,25 @@ def build_result(issues, events, plan, selected_modules, complete):
                 "moduleId": module, "children": nested, "issueKeys": sorted(ids),
                 "contextOnly": not own_events, "counts": event_counts(descendant_events, not complete)}
 
-    module_nodes = {}
     for task in plan.get("wbs", []):
         module = task["module"]
         if selected_modules and module not in selected_modules:
             continue
-        mod = module_nodes.setdefault(module, {"id": "module:" + module, "key": module, "moduleId": module,
-            "name": module, "summary": module, "kind": "module", "type": "module", "children": []})
         task_id = "wbs:" + str(task.get("id") or task["name"])
         nodes = [issue_node(e.get("key") or e.get("ticket"), task_id, module, set()) for e in task.get("epics", [])]
         nodes = [n for n in nodes if n and any(k in by_key for k in n["issueKeys"])]
         if nodes:
             keys = {k for node in nodes for k in node["issueKeys"]}
-            mod["children"].append({"id": task_id, "key": task_id, "name": task["name"], "summary": task["name"],
+            tree.append({"id": task_id, "key": task_id, "name": task["name"], "summary": task["name"],
                 "kind": "wbs", "type": "wbs", "moduleId": module, "children": nodes,
                 "issueKeys": sorted(keys), "counts": event_counts([e for k in keys for e in by_events[k]], not complete)})
-    for mod in module_nodes.values():
-        if mod["children"]:
-            keys = {k for node in mod["children"] for k in node["issueKeys"]}
-            mod["issueKeys"] = sorted(keys)
-            mod["counts"] = event_counts([e for k in keys for e in by_events[k]], not complete)
-            tree.append(mod)
     orphans = [key for key in by_key if key not in covered and not (
         by_key[key].get("parentKey") in by_key or by_key[key].get("epicKey") in by_key)]
     orphan_nodes = [issue_node(key, "unmapped", "", set()) for key in sorted(orphans)]
     if orphan_nodes:
-        tree.append({"id": "unmapped", "key": "unmapped", "name": "WBS 미연결", "summary": "WBS 미연결",
-                     "kind": "module", "type": "module", "moduleId": "", "children": orphan_nodes,
+        tree.append({"id": "unmapped", "key": "unmapped", "name": "WBS Task 미연결", "summary": "WBS Task 미연결",
+                     "kind": "wbs", "type": "wbs", "virtual": True, "wbsUnassigned": True,
+                     "moduleId": "", "children": orphan_nodes,
                      "counts": event_counts([e for n in orphan_nodes for k in n["issueKeys"] for e in by_events[k]], not complete)})
     return {"issues": issues, "events": sorted(events, key=lambda e: (e["date"], e["id"]), reverse=True),
             "summary": event_counts(events, not complete), "tree": tree}

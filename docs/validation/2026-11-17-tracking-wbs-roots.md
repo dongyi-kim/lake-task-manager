@@ -25,3 +25,12 @@
 - 추가 중복 `unmapped` 검사와 문구 수정 후 모델·브리핑 19건 재실행 통과.
 - 계층·상세 패널 브라우저 12건 통과. 혼합 root의 WBS 깊이·접기, 기존 독립 범위, 검색·강조·원본 근거, 조회 무증가 확인.
 - 변경 JS 3개 구문 검사 및 `git diff --check` 통과.
+
+## WBS Task 명칭과 생성 구조 확정
+
+- 사용자 재확인: 최상단 유형은 정확히 **WBS Task**. `WBS Task → Epic → Task → Subtask`로 표시 명칭 통일.
+- 새 결과의 `build_result`에서도 module wrapper 생성 제거. 모듈 선택 조건과 `moduleId` 정보, WBS/티켓 ID·공유 Epic 경로·사건 집계 보존.
+- 트리 가이드, 직속 하위 목록, 유형 표시, 선택 항목 헤더를 `WBS Task`로 표시. 미연결 그룹은 `WBS Task 미연결`.
+- 기존 저장 결과의 module wrapper와 이전 `WBS 미연결` 이름도 같은 표시 구조로 변환. 재수집 불필요.
+- backend 회귀 변경 전 실패 확인 후 `tests/tracking` 190건 통과. 관련 frontend·정적 자산 399건 통과.
+- 최종 계층·상세 패널 브라우저 13건 통과. 최상단 목록·항목 유형·선택 헤더·트리 안내의 `WBS Task` 문구와 legacy 이름 변환 확인. 변경 JS 6개 구문 검사 통과.

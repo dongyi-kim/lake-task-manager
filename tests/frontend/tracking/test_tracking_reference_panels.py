@@ -101,6 +101,7 @@ def test_navigation_wraps_full_titles_and_keeps_disclosure_selection_and_panel_s
     expect(page.locator('.tp-tree-node.is-ancestor')).to_have_count(2)
     expect(page.locator('.tp-module-caption')).to_have_count(0)
     expect(page.get_by_role('button', name='데이터 수집 범위 선택', exact=True)).to_have_count(0)
+    expect(page.locator('.tp-side-kicker').first).to_have_text('WBS Task · Epic · Task · Subtask')
     fold = page.get_by_role('button', name='수집 신뢰성 접기', exact=True)
     fold.focus()
     page.keyboard.press('Space')

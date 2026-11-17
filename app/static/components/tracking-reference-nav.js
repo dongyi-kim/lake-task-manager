@@ -75,7 +75,7 @@ export default {
       <nav id="tracking-hierarchy-content" class="tp-navigation" aria-label="업무 계층 탐색" tabindex="0">
       <header class="tp-side-head"><span>업무 탐색</span><div class="tp-tree-panel-actions"><button type="button" class="tp-tree-collapse-all" @click="collapseAll" :disabled="revealMatches" aria-label="트리의 모든 항목 접기" :title="revealMatches?'일치 경로를 표시하고 있습니다.':'모든 항목 접기'"><span class="tp-disclosure" aria-hidden="true">−</span>모두 접기</button></div></header>
       <button type="button" class="tp-all-node" :class="{'is-active':!activeId}" :aria-current="!activeId?'page':null" @click="$emit('scope','')"><span><TrackingReferenceIcon name="layers" :size="15"/>전체 업무</span><span>{{ total ?? 0 }}</span></button>
-      <div class="tp-side-kicker">WBS · Epic · Task · Subtask</div>
+      <div class="tp-side-kicker">WBS Task · Epic · Task · Subtask</div>
       <ul class="tp-tree-roots" aria-label="업무 계층">
         <li v-for="entry in entries" :key="entry.row.id" class="tp-tree-entry" :style="{'--tp-depth':entry.row.depth}" :class="{'is-last':entry.last,'has-parent':entry.row.depth>0,'on-route':ancestorIds.has(entry.row.id),'is-expanded':entry.row.children?.length&&expanded(entry.row)}">
           <i v-for="guide in entry.guides" :key="guide" class="tp-tree-guide" :style="{left:(guide*18+12)+'px'}" aria-hidden="true"></i><i v-if="entry.row.depth" class="tp-tree-elbow" aria-hidden="true"></i>
@@ -89,7 +89,7 @@ export default {
       </ul>
       <div class="tp-side-kicker">고정한 주요 업무 · {{ pinnedRows.length }}</div>
       <div v-for="row in pinnedRows" :key="row.key||row.id" class="tp-pinned-row"><button class="tp-side-pin" type="button" :title="tooltip(row)" @click="select(row)"><span aria-hidden="true">☆</span>{{ row.title }}</button><button type="button" class="tp-unpin" :aria-label="row.title+' 고정 해제'" title="고정 해제" @click="$emit('pin',row.key||row.id)">×</button></div>
-      <footer class="tp-side-foot">WBS → Epic → Task → Subtask<br>파란색: 현재 선택 범위<br>연결선: 부모와 직속 하위 항목</footer>
+      <footer class="tp-side-foot">WBS Task → Epic → Task → Subtask<br>파란색: 현재 선택 범위<br>연결선: 부모와 직속 하위 항목</footer>
       </nav>
     </div>`,
 };

@@ -122,7 +122,7 @@ def test_modules_are_query_context_not_hierarchy_even_with_unmapped_and_voc_root
       assert.ok(output.tree.every(node=>node.kind.toLowerCase()==='wbs'));
       assert.ok(output.tree.flatMap(walk).every(node=>node.kind!=='module'));
       assert.equal(output.tree.find(node=>node.id==='wbs:a').name,'Same label');
-      assert.equal(output.tree.find(node=>node.id==='unmapped').name,'WBS 미연결');
+      assert.equal(output.tree.find(node=>node.id==='unmapped').name,'WBS Task 미연결');
       assert.equal(output.tree.find(node=>node.vocGrouping).name,'사용자 VOC');
       assert.deepEqual(buildTrackingScope(output,'wbs:a').breadcrumbs.map(n=>n.title),['Same label']);
       const rows=trackingRows(output);

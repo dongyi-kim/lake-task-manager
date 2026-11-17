@@ -40,7 +40,7 @@ def test_issue_badges_keep_bug_unknown_and_virtual_voc_semantics():
       const group={kind:'epic',virtual:true,epicUnassigned:true};
       assert.equal(ctx.kind(group),'미소속');
       assert.equal(ctx.typeColor(group),undefined);
-      assert.equal(ctx.kind({kind:'wbs'}),'WBS');
+      assert.equal(ctx.kind({kind:'wbs'}),'WBS Task');
       assert.equal(ctx.kind({kind:'module'}),'모듈');
     ''')
 
