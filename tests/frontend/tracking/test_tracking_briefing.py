@@ -71,6 +71,30 @@ def test_completion_provenance_never_guesses_from_current_done():
     """)
 
 
+def test_period_completion_metrics_count_resolved_and_closed_equally_without_counting_current_done():
+    run_js("""
+      const issues=[issue('resolved',{status:'Resolved',statusCategory:'done'}),
+        issue('closed',{status:'Closed',statusCategory:'done'}),
+        issue('sub',{type:'Sub-Task',isSubtask:true,status:'Closed',statusCategory:'done'}),
+        issue('old',{status:'Resolved',statusCategory:'done'}),
+        issue('reopened',{status:'Open',statusCategory:'new'}),
+        issue('unknown',{status:'Closed',statusCategory:null})];
+      const events=[event('r','resolved','completed'),event('c','closed','completed'),
+        event('sub-c','sub','completed'),event('reopened-c','reopened','completed'),
+        event('reopened-r','reopened','reopened'),event('c-again','closed','completed'),
+        event('closed-after-resolved','closed','fieldChanged',{field:'status',from:'Resolved',to:'Closed'})];
+      const view=m.buildTrackingBriefing(run(issues,events,issues.map(i=>leaf(i.key,i.key))));
+      assert.equal(view.metrics.completed,3,'unique non-subtask tickets with period completion history');
+      assert.equal(view.metrics.subCompleted,1);
+      assert.equal(view.items.find(i=>i.key==='resolved').state,'done');
+      assert.equal(view.items.find(i=>i.key==='closed').state,'done');
+      assert.equal(view.items.find(i=>i.key==='old').state,'done');
+      assert.equal(view.items.find(i=>i.key==='unknown').state,'unknown','Closed label is not category proof');
+      assert.equal(view.inventory.states.find(s=>s.key==='done').count,4,'snapshot done is a separate total');
+      assert.deepEqual(view.items.filter(i=>i.state==='done').map(i=>i.currentLabel).sort(),['Closed','Closed','Resolved','Resolved']);
+    """)
+
+
 def test_filters_copy_and_status_counts_use_visible_scope_without_losing_context():
     run_js("""
       const input=run([issue('T-1',{summary:'검색 대상',assigneeName:'가람'}),issue('T-2',{summary:'다른 업무',statusCategory:'done',status:'완료'})],

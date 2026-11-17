@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 
 from app.tracking.completion import current_completion
@@ -143,6 +144,8 @@ def analyze_issue(raw, comments, start, end, selected_people, status_categories,
             eid = f"history:{h.get('id', h.get('created'))}:{index}"
             details = {"field": field, "from": item.get("fromString") or item.get("from") or "",
                        "to": item.get("toString") or item.get("to") or ""}
+            if "".join(char for char in field.casefold() if char.isalnum()) in {"link", "issuelink", "issuelinks", "remoteissuelink"}:
+                details["linkChange"] = deepcopy(item)
             if field.casefold() == "status":
                 def category(side):
                     return status_categories.get(str(item.get(side) or "").casefold()) or status_categories.get(

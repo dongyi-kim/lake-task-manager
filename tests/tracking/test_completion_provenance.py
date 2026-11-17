@@ -56,6 +56,32 @@ def test_done_to_done_preserves_boundary_and_recompletion_uses_latest_boundary()
     assert events == []
 
 
+@pytest.mark.parametrize(("target", "label"), [("2", "Resolved"), ("3", "Closed")])
+def test_period_completion_uses_status_category_for_both_done_states(target, label):
+    raw = raw_issue(transition("2026-11-11T10:00:00+09:00", "1", target), current=target)
+    issue, events, missing = analyze(raw)
+    assert issue["status"] == label
+    assert issue["statusCategory"] == "done"
+    assert event_counts(events)["completed"] == 1
+    assert issue["currentCompletion"]["at"] == "2026-11-11T10:00:00+09:00"
+    assert missing == []
+
+
+def test_period_done_to_done_is_not_a_new_completion_and_unknown_labels_are_not_guessed():
+    raw = raw_issue(transition("2026-11-09T10:00:00+09:00"),
+                    transition("2026-11-11T10:00:00+09:00", "2", "3", "h2"), current="3")
+    issue, events, _ = analyze(raw)
+    assert event_counts(events)["completed"] == 0
+    assert issue["currentCompletion"]["at"] == "2026-11-09T10:00:00+09:00"
+    unknown = raw_issue(transition("2026-11-11T10:00:00+09:00", "1", "unknown"), current="3")
+    unknown["changelog"]["histories"][0]["items"][0]["toString"] = "Closed"
+    issue, events, missing = analyze_issue(unknown, [], datetime.fromisoformat("2026-11-10T00:00:00+09:00"),
+        datetime.fromisoformat("2026-11-13T00:00:00+09:00"), set(), {"1": "new"}, "epic", True, True)
+    assert event_counts(events)["completed"] == 0
+    assert "currentCompletion" not in issue
+    assert any(gap["source"] == "statusCategories" for gap in missing)
+
+
 def test_unattributable_completion_is_metadata_without_events_scope_or_counts():
     raw = raw_issue(transition("2026-11-11T10:00:00+09:00"))
     issue, events, missing = analyze(raw, selected={"selected"})
