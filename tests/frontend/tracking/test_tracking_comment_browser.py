@@ -87,7 +87,7 @@ def tracking_browser(request):
     # changing the compact comment/grouping fixtures above.
     if isinstance(getattr(request, 'param', None), dict):
         run.update(request.param)
-    styles = ["tokens", "base", "ticket", "tracking", "tracking-report", "tracking-overview", "tracking-scope", "tracking-comment", "tracking-reference", "tracking-reference-panels", "tracking-briefing"]
+    styles = ["tokens", "base", "ticket", "tracking", "tracking-report", "tracking-overview", "tracking-scope", "tracking-comment", "tracking-reference", "tracking-reference-panels", "tracking-briefing", "tracking-ticket-timeline"]
     html = '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>Tracking comment regression</title>'
     html += ''.join(f'<link rel="stylesheet" href="/styles/{name}.css">' for name in styles)
     html += '''</head><body><div id="app" class="wrap"></div><script type="module">
