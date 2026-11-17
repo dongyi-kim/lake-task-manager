@@ -10,6 +10,7 @@ import re
 from app.content.htmlsafe import mark_explicit_jira_links, sanitize_html, shorten_mention_names, text_to_html, tidy_html
 from app.content.wikihtml import wiki_to_html
 from app.tracking.activity import project_activity
+from app.tracking.names import cached_tracking_names, observe_tracking_names
 
 
 class _CommentText(HTMLParser):
@@ -98,6 +99,8 @@ def _comment_html(body, rich, fmt, cached_name):
 
 def present_comments(snapshot, client, checkpoint=None):
     snapshot = project_activity(snapshot)
+    observe_tracking_names(snapshot, client, checkpoint)
+    cached_name = cached_tracking_names(snapshot, client)
     fmt = str(getattr(client.s, "comment_format", "") or "").lower()
     if fmt not in ("html", "wiki"):
         fmt = "html" if client.env == "prod" else "wiki"
@@ -106,7 +109,6 @@ def present_comments(snapshot, client, checkpoint=None):
         for key, source in (checkpoint or {}).get("sources", {}).items()
         for comment in source.get("comments", [])
     }
-    cached_name = getattr(client, "display_name_cached", None)
     proxy_media = getattr(client, "_proxy_media", None)
     rendered = {}
     events = list(snapshot.get("events") or [])
