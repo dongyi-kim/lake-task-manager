@@ -1,6 +1,8 @@
 """Saved comment HTML renders and folds on every actual TrackingView surface."""
 import mimetypes
 import re
+from html import escape
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
@@ -56,6 +58,31 @@ def tracking_browser(request):
             {"id": "other-change", "issueKey": "TASK-2", "kind": "fieldChanged", "date": "2026-11-13T08:00:00Z",
              "field": "priority", "from": "Low", "to": "High", "actorName": "별도 담당자"},
         ])
+    if getattr(request, 'param', None) == 'legacy-comments':
+        from app.tracking.presentation import present_comments
+
+        # Exercise the real saved-run projection rather than injecting bodyHtml.
+        body = (RICH_HTML + '<pre><code>&lt;div&gt; &amp; x &lt; 3</code></pre>'
+                '<script>window.commentUnsafe = true</script>'
+                '<a href="javascript:window.commentUnsafe=true" onclick="window.commentUnsafe=true">Unsafe link</a>')
+        sources, run['events'] = [], []
+        for index, variant in enumerate(['raw', 'encoded', 'quoted', 'mismatch']):
+            stored_body = escape(body, quote=False) if variant == 'encoded' else body
+            run['events'].append({
+                'id': variant, 'issueKey': 'TASK-1', 'kind': 'commentEdited' if index % 2 else 'comment',
+                'commentId': str(index), 'date': f'2026-11-{13-index:02}T09:00:00Z',
+                'body': stored_body, 'excerpt': stored_body, 'actorName': '저장된 작성자',
+            })
+            if variant in ('quoted', 'mismatch'):
+                sources.append({'id': str(index), 'body': body if variant == 'quoted' else '<p>Newer</p>',
+                                'renderedBody': '<p>' + escape(body, quote=False) + '</p>' if variant == 'quoted' else '<p>Newer</p>'})
+        run = present_comments(run, SimpleNamespace(env='test', s=SimpleNamespace(comment_format='wiki')),
+                               {'sources': {'TASK-1': {'comments': sources}}})
+    if getattr(request, 'param', None) == 'plain-html-config':
+        from app.tracking.presentation import present_comments
+
+        run['events'] = [run['events'][1]]
+        run = present_comments(run, SimpleNamespace(env='prod', s=SimpleNamespace(comment_format='html')))
     # Other saved-run regressions can opt into their own hierarchy without
     # changing the compact comment/grouping fixtures above.
     if isinstance(getattr(request, 'param', None), dict):
@@ -195,6 +222,47 @@ def test_summary_preview_is_plain_text_and_plain_comment_keeps_line_folding(trac
     expect(plain.get_by_role('button', name='댓글 접기', exact=True)).to_have_attribute('aria-expanded', 'true')
     expect(plain).not_to_have_class(re.compile(r'\bis-collapsed\b'))
     assert reads == requests_before
+    assert not unexpected
+    assert not errors
+
+
+@pytest.mark.parametrize('tracking_browser', ['legacy-comments'], indirect=True)
+@pytest.mark.parametrize('surface', ['summary', 'feed', 'detail'])
+def test_legacy_stored_comments_reach_every_surface_as_safe_rich_content(tracking_browser, surface):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    previews = page.locator('.tb-comment-preview')
+    assert not re.search(r'<(?:p|table)\b|&lt;(?:p|table)', previews.inner_text())
+    before = list(reads)
+    area = open_surface(page, surface)
+    comments = area.locator('.tr-comment')
+    expect(comments).to_have_count(4)
+    for comment in comments.all():
+        expect(comment.locator('table')).to_have_count(1)
+        expect(comment.locator('pre code')).to_have_text('<div> & x < 3')
+        assert not re.search(r'<(?:p|table)\b|&lt;(?:p|table)', comment.inner_text())
+        assert_folded_comment(comment).click()
+        expect(comment.get_by_role('button', name='댓글 접기', exact=True)).to_have_attribute('aria-expanded', 'true')
+        assert comment.locator('script, [onclick], [href^="javascript:"]').count() == 0
+    assert page.evaluate('window.commentUnsafe') is None
+    assert reads == before
+    assert not unexpected
+    assert not errors
+
+
+@pytest.mark.parametrize('tracking_browser', ['plain-html-config'], indirect=True)
+def test_plain_comment_projected_under_html_configuration_still_folds(tracking_browser):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    before = list(reads)
+    area = open_surface(page, 'detail')
+    comment = area.locator('.tr-comment')
+    assert comment.locator('.tr-comment-body').inner_text() == PLAIN_TEXT
+    assert_folded_comment(comment).click()
+    expect(comment.get_by_role('button', name='댓글 접기', exact=True)).to_have_attribute('aria-expanded', 'true')
+    assert reads == before
     assert not unexpected
     assert not errors
 

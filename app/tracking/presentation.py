@@ -3,9 +3,11 @@
 Only local renderers and cached display names are used: reading a saved run must
 never fetch Jira comments, attachment metadata, or mentioned users again.
 """
+from html import unescape
 from html.parser import HTMLParser
+import re
 
-from app.content.htmlsafe import mark_explicit_jira_links, sanitize_html, shorten_mention_names, tidy_html
+from app.content.htmlsafe import mark_explicit_jira_links, sanitize_html, shorten_mention_names, text_to_html, tidy_html
 from app.content.wikihtml import wiki_to_html
 from app.tracking.activity import project_activity
 
@@ -47,6 +49,53 @@ def _comment_text(html):
     return "".join(parser.parts).strip()
 
 
+# A saved run may outlive a change from Jira's HTML editor to wiki configuration.
+# Recognize whole block documents, not incidental tags in prose or wiki code.
+_HTML_DOCUMENT_START = re.compile(
+    r"^\s*<(?:p|div|section|article|table|ul|ol|dl|blockquote|pre|h[1-6])(?:\s[^>]*|)>", re.I)
+_HTML_DOCUMENT_END = re.compile(r"</[a-z][\w:-]*>\s*$", re.I)
+
+
+def _stored_html(body):
+    """Recover an outer HTML document without decoding entities inside its code.
+
+    Some legacy comments were escaped once or twice before storage. Stop at the
+    first actual document; recursively unescaping its contents would turn code
+    samples into markup. Wiki {code}/{noformat} and prose never match this shape.
+    The returned value still MUST pass through the shared sanitizer.
+    """
+    candidate = body
+    for _ in range(3):
+        if _HTML_DOCUMENT_START.match(candidate) and _HTML_DOCUMENT_END.search(candidate):
+            return candidate
+        decoded = unescape(candidate)
+        if decoded == candidate:
+            break
+        candidate = decoded
+    return None
+
+
+def _comment_html(body, rich, fmt, cached_name):
+    document = _stored_html(body)
+    if rich:
+        rich = str(rich)
+        # Jira's wiki renderer can quote a comment whose stored body is already
+        # HTML. That is a matching source, but its renderedBody displays raw tags.
+        # Only unwrap when the quoted text is precisely this observed document;
+        # an intentional <pre><code> sample must remain a code sample.
+        quoted = _comment_text(sanitize_html(rich))
+        if document and not re.search(r"<(?:pre|code)\b", rich, re.I) and quoted in (body.strip(), document.strip()):
+            return document
+        return _stored_html(rich) or rich
+    if document:
+        return document
+    if fmt == "html":
+        # Even an HTML-configured Jira can contain plain legacy comments. Keep
+        # their line breaks visible so the shared rendered-line fold can work.
+        return body if re.search(r"</?[a-z][\w:-]*(?:\s[^<>]*|)/?>", body, re.I) else text_to_html(body)
+    return wiki_to_html(body, cached_name)
+
+
 def present_comments(snapshot, client, checkpoint=None):
     snapshot = project_activity(snapshot)
     fmt = str(getattr(client.s, "comment_format", "") or "").lower()
@@ -72,7 +121,7 @@ def present_comments(snapshot, client, checkpoint=None):
         rich = source.get("renderedBody") if source.get("body") == body else None
         cache_key = (*identity, body, str(rich or ""))
         if cache_key not in rendered:
-            html = str(rich) if rich else (body if fmt == "html" else wiki_to_html(body, cached_name))
+            html = _comment_html(body, rich, fmt, cached_name)
             html = shorten_mention_names(mark_explicit_jira_links(tidy_html(sanitize_html(html)), body))
             rendered[cache_key] = (proxy_media(html) if proxy_media else html, _comment_text(html))
         # Never trust previously saved HTML: derive and sanitize on every response.
