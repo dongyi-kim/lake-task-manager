@@ -10,9 +10,11 @@ from app.auth.base import UpstreamUnavailable
 from app.auth.sso_session import SsoSessionProvider
 
 
-def test_repeated_sso_reads_release_native_response_bodies():
+@pytest.mark.parametrize("body_bytes,requests", [(128 * 1024, 64), (2 * 1024 * 1024, 8)],
+                         ids=["many-pages", "multi-megabyte-bodies"])
+def test_repeated_sso_reads_release_native_response_bodies(body_bytes, requests):
     api = pytest.importorskip("playwright.sync_api")
-    payload = json.dumps({"issues": [], "padding": "x" * (128 * 1024)}).encode()
+    payload = json.dumps({"issues": [], "padding": "x" * body_bytes}).encode()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -42,7 +44,7 @@ def test_repeated_sso_reads_release_native_response_bodies():
             provider.base = "http://127.0.0.1:%s" % server.server_port
             provider._context = SimpleNamespace(request=SimpleNamespace(get=get))
             try:
-                for index in range(64):
+                for index in range(requests):
                     if index % 8 == 0:
                         with pytest.raises(UpstreamUnavailable):
                             provider._fetch("/unavailable", None, False)
