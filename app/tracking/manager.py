@@ -112,15 +112,15 @@ class TrackingManager:
         self._start(snapshot["id"], background=background)
         return self.get(snapshot["id"])
 
-    def _owned(self, run_id):
+    def _owned(self, run_id, *, checkpoint_fields=None):
         owner, scope = self.authorize()
-        stored_owner, stored_scope, snapshot, checkpoint = self.store.read(run_id)
+        stored_owner, stored_scope, snapshot, checkpoint = self.store.read(run_id, checkpoint_fields=checkpoint_fields)
         if owner != stored_owner or scope != stored_scope:
             raise PermissionError("다른 Jira 계정 또는 연결의 수집 결과입니다.")
         return snapshot, checkpoint
 
     def get(self, run_id):
-        snapshot, checkpoint = self._owned(run_id)
+        snapshot, checkpoint = self._owned(run_id, checkpoint_fields=("issues", "sources"))
         return present_comments(snapshot, self.client, checkpoint)
 
     def list(self):
@@ -180,10 +180,9 @@ class TrackingManager:
         return result
 
     def _work(self, run_id):
-        _, _, snapshot, cp = self.store.read(run_id)
+        owner, scope, snapshot, cp = self.store.read(run_id)
         initial_elapsed = snapshot["metrics"]["elapsedMs"]
         started = time.monotonic()
-        owner, scope, _, _ = self.store.read(run_id)
         signal = self.controls[run_id]
         request = snapshot["request"]
         start, _ = period_bounds(request["startDate"], request["endDate"])
