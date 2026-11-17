@@ -17,7 +17,7 @@ def seed_bodies(env):
     return keys
 
 
-def test_three_bodies_use_one_jira_search_without_per_issue_gets(build_env):
+def test_search_discovers_then_batches_three_bodies_without_per_issue_gets(build_env):
     env = build_env()
     keys = seed_bodies(env)
     async def scenario():
@@ -36,9 +36,10 @@ def test_three_bodies_use_one_jira_search_without_per_issue_gets(build_env):
             assert {row["fields"]["description"] for row in data["issues"]} == {
                 f"complete source body {number}" for number in range(3)}
             searches = [call for call in env.calls if call[1] == "/rest/api/2/search"]
-            assert len(searches) == 1, env.calls
+            assert len(searches) == 2, env.calls
             assert not [call for call in env.calls if call[1].startswith("/rest/api/2/issue/")]
-            requested = set(searches[0][2]["params"]["fields"].split(","))
+            assert "description" not in searches[0][2]["params"]["fields"].split(",")
+            requested = set(searches[1][2]["params"]["fields"].split(","))
             assert "description" in requested and not {"attachment", "issuelinks"} & requested
             before = len(env.calls)
             compact = await client.call_tool("search_issues", {**args, "detail": "summary"})
@@ -130,7 +131,7 @@ def test_body_off_strips_cached_raw_and_rendered_bodies_without_mutating_snapsho
     anyio.run(scenario)
 
 
-def test_description_pagination_uses_direct_pages_and_respects_configured_scope(build_env):
+def test_description_pagination_reuses_light_discovery_and_respects_configured_scope(build_env):
     env = build_env()
     keys = seed_bodies(env)
     async def scenario():
@@ -154,9 +155,9 @@ def test_description_pagination_uses_direct_pages_and_respects_configured_scope(
             second = await client.call_tool("search_issues", {**args, "start_at": data["nextStartAt"]})
             assert not second.is_error
             assert "description" in second.structured_content["data"]["issues"][0]["fields"]
-            assert len(env.calls) == after_metadata + 1
+            assert len(env.calls) == after_metadata + 2
             warm = await client.call_tool("search_issues", {**args, "start_at": data["nextStartAt"]})
-            assert not warm.is_error and len(env.calls) == after_metadata + 1
+            assert not warm.is_error and len(env.calls) == after_metadata + 2
             env.runtime.settings.search_jira_projects = ["XX"]
             denied_scope = await client.call_tool("search_issues", args)
             assert not denied_scope.is_error

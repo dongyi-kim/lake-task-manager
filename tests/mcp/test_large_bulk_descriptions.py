@@ -1,5 +1,6 @@
 """Raw bulk bodies are physical pages, never a whole-result snapshot or truncation."""
 import hashlib
+import re
 from types import SimpleNamespace
 
 import anyio
@@ -12,7 +13,7 @@ from app.jira.body_search import BODY_PAGE_SIZE
 from app.jira.jira_client import JiraClient
 
 
-def install_source(env, *, total, body="complete body", server_cap=None):
+def install_source(env, *, total, body="complete body", server_cap=None, body_cap=None):
     calls = []
 
     def get(path, *, params=None, **kwargs):
@@ -20,12 +21,16 @@ def install_source(env, *, total, body="complete body", server_cap=None):
         params = dict(params or {})
         calls.append(params)
         start = params.get("startAt", 0)
-        size = min(params["maxResults"], server_cap or params["maxResults"])
         fields = params["fields"].split(",")
-        return {"startAt": start, "maxResults": size, "total": total, "issues": [
+        cap = body_cap if "description" in fields and body_cap is not None else server_cap
+        size = min(params["maxResults"], cap or params["maxResults"])
+        requested = re.findall(r"DL-\d+", params["jql"])
+        selected = [int(key.split("-")[1]) - 1 for key in requested] if requested else list(range(total))
+        return {"startAt": start, "maxResults": size, "total": len(selected), "issues": [
             {"key": f"DL-{index + 1}", "fields": {"summary": f"Issue {index + 1}",
+                "updated": "2026-11-17T10:00:00.000+0900",
                 **({"description": body} if "description" in fields or "*all" in fields else {})}}
-            for index in range(start, min(start + size, total))]}
+            for index in selected[start:start + size]]}
 
     env.provider.get_json = get
     return calls
@@ -46,11 +51,13 @@ def test_one_requested_description_does_not_fetch_or_snapshot_ten_thousand_candi
             assert page["total"] == 10_000 and page["returned"] == 1
             assert page["nextStartAt"] == 1 and page["hasMore"]
             assert page["snapshotId"] is None and page["snapshotFrozen"] is False
-            assert len(calls) == 1 and calls[0]["maxResults"] == 1
+            assert len(calls) == 2 and calls[0]["maxResults"] == 1
+            assert "description" not in calls[0]["fields"].split(",")
+            assert calls[1]["maxResults"] == 1
             again = await mcp.call_tool("search_issues", args)
-            assert not again.is_error and len(calls) == 1
+            assert not again.is_error and len(calls) == 2
             previous_cursor = await mcp.call_tool("search_issues", {**args, "snapshot_id": "old-snapshot"})
-            assert previous_cursor.is_error and len(calls) == 1
+            assert previous_cursor.is_error and len(calls) == 2
             assert "first page" in previous_cursor.structured_content["error"]["message"]
             with env.cache._lock:
                 keys = [row[0] for row in env.cache._conn.execute("SELECT key FROM cache")]
@@ -69,7 +76,7 @@ def test_large_description_pages_reject_oversized_page_then_recover_every_full_b
             too_large = await mcp.call_tool("search_issues", args)
             assert too_large.is_error and too_large.structured_content.get("data") is None
             assert "16 MiB" in too_large.structured_content["error"]["message"]
-            assert len(calls) == 1 and calls[0]["maxResults"] == BODY_PAGE_SIZE
+            assert len(calls) == 2 and calls[0]["maxResults"] == 100 and calls[1]["maxResults"] == BODY_PAGE_SIZE
             seen, start = set(), 0
             while True:
                 result = await mcp.call_tool("search_issues", {**args, "max_results": 5, "start_at": start})
@@ -85,7 +92,8 @@ def test_large_description_pages_reject_oversized_page_then_recover_every_full_b
                 assert page["nextStartAt"] == start + page["returned"]
                 start = page["nextStartAt"]
             assert seen == {f"DL-{index}" for index in range(1, 12)}
-            assert [call["startAt"] for call in calls] == [0, 0, 5, 10]
+            assert [call["startAt"] for call in calls if "description" not in call["fields"].split(",")] == [0, 0, 5, 10]
+            assert [call["startAt"] for call in calls if "description" in call["fields"].split(",")] == [0, 0, 0, 0]
     anyio.run(scenario)
 
 
@@ -101,7 +109,7 @@ def test_known_key_batch_stops_at_aggregate_budget_without_false_missing_or_part
             assert result.structured_content.get("data") is None
             message = result.structured_content["error"]["message"]
             assert "batch exceeds 16 MiB" in message and "max_results=1" in message
-            assert [call["startAt"] for call in calls] == [0, 5]
+            assert [call["startAt"] for call in calls] == [0, 0, 5, 0]
     anyio.run(scenario)
 
 
@@ -128,20 +136,20 @@ def test_body_page_cache_obeys_read_modes_mutation_generation_and_source_age(bui
     query, fields = "project = DL", "summary,description"
     with read_scope(cache_mode="hot") as cold_sources:
         first = env.client.search_issues_page(query, fields=fields, light=False)
-    assert len(calls) == 1 and cold_sources
+    assert len(calls) == 2 and cold_sources
     with read_scope(cache_mode="hot") as warm_sources:
         warm = env.client.search_issues_page(query, fields=fields, light=False)
     assert warm["issues"] == first["issues"]
-    assert first["execution"]["physicalQueryCount"] == 1
+    assert first["execution"]["physicalQueryCount"] == 2
     assert warm["execution"]["physicalQueryCount"] == 0
-    assert len(calls) == 1
-    assert cold_sources[-1]["fetchedAt"] == warm_sources[-1]["fetchedAt"]
+    assert len(calls) == 2
+    assert min(row["fetchedAt"] for row in cold_sources) == min(row["fetchedAt"] for row in warm_sources)
     with read_scope(cache_mode="live") as live_sources:
         env.client.search_issues_page(query, fields=fields, light=False)
-    assert len(calls) == 2 and live_sources[-1]["upstreamValidated"]
+    assert len(calls) == 4 and live_sources[-1]["upstreamValidated"]
     env.client.advance_jql_generation()
     env.client.search_issues_page(query, fields=fields, light=False)
-    assert len(calls) == 3
+    assert len(calls) == 6
 
 
 def test_body_page_cache_separates_context_and_projection_and_preserves_explicit_order(build_env, monkeypatch):
@@ -154,7 +162,7 @@ def test_body_page_cache_separates_context_and_projection_and_preserves_explicit
     env.client.search_issues_page("project = DL", fields="description", light=False)
     monkeypatch.setattr(env.client, "_jql_user_context", lambda: "different-scope")
     env.client.search_issues_page("project = DL", fields="summary,description", light=False)
-    assert len(calls) == 4
+    assert len(calls) == 6
 
 
 def test_one_oversized_description_is_an_explicit_error_not_cached_or_truncated(build_env):
@@ -162,9 +170,9 @@ def test_one_oversized_description_is_an_explicit_error_not_cached_or_truncated(
     calls = install_source(env, total=1, body="z" * (16 * 1024 * 1024))
     with pytest.raises(ValueError, match="get_ticket"):
         env.client.search_issues_page("project = DL", max_results=1, fields="description", light=False)
-    assert len(calls) == 1 and calls[0]["maxResults"] == 1
+    assert len(calls) == 2 and calls[0]["maxResults"] == calls[1]["maxResults"] == 1
     with env.cache._lock:
-        assert not env.cache._conn.execute("SELECT key FROM cache WHERE key LIKE 'search:body:%'").fetchall()
+        assert not env.cache._conn.execute("SELECT key FROM cache WHERE key LIKE 'ticketbodymeta:%'").fetchall()
 
 
 def test_body_page_refuses_mutation_during_physical_fetch_and_never_publishes_stale_rows(build_env):
@@ -192,6 +200,7 @@ def actor_provider(client, actor):
             calls.append(actor[0])
             return {"startAt": 0, "maxResults": params["maxResults"], "total": 1,
                     "issues": [{"key": "DL-1", "fields": {"summary": "Actor scope",
+                                                          "updated": "2026-11-17T10:00:00.000+0900",
                                                           "description": "body-for-" + actor[0]}}]}
         def close(self):
             pass
@@ -210,11 +219,11 @@ def test_body_cache_cannot_cross_actor_change_and_provider_reset(build_env):
     env, actor = build_env(), ["a"]
     calls = actor_provider(env.client, actor)
     assert body_for(env.client) == "body-for-a"
-    assert body_for(env.client) == "body-for-a" and calls == ["a"]
+    assert body_for(env.client) == "body-for-a" and calls == ["a", "a"]
     actor[0] = "b"
     env.client.reset_provider()
     assert body_for(env.client) == "body-for-b"
-    assert calls == ["a", "b"]
+    assert calls == ["a", "a", "b", "b"]
 
 
 def test_current_user_identity_changes_partition_body_pages_without_provider_replacement(build_env):
@@ -223,7 +232,7 @@ def test_current_user_identity_changes_partition_body_pages_without_provider_rep
     assert body_for(env.client) == "body-for-a"
     actor[0] = "b"
     assert body_for(env.client) == "body-for-b"
-    assert calls == ["a", "b"]
+    assert calls == ["a", "a", "b", "b"]
 
 
 def test_new_client_does_not_reuse_previous_permission_session_body_cache(build_env):
@@ -233,7 +242,7 @@ def test_new_client_does_not_reuse_previous_permission_session_body_cache(build_
     restarted = JiraClient(env.client.s, env.cache)
     calls = actor_provider(restarted, ["b"])
     assert body_for(restarted, "project = DL") == "body-for-b"
-    assert calls == ["b"]
+    assert calls == ["b", "b"]
 
 
 def test_inflight_provider_generation_change_refuses_and_does_not_cache_old_actor_body(build_env):
@@ -263,4 +272,26 @@ def test_silent_sso_revision_change_partitions_body_cache_without_identity_probe
     assert body_for(env.client, "project = DL") == "body-for-a"
     actor[0], revision[0] = "b", 2
     assert body_for(env.client, "project = DL") == "body-for-b"
-    assert calls == ["a", "b"]
+    assert calls == ["a", "a", "b", "b"]
+
+
+def test_two_phase_hydration_stops_before_retaining_or_storing_oversized_aggregate(build_env):
+    env = build_env()
+    calls = install_source(env, total=10, body="x" * (15 * 1024 * 1024), body_cap=1)
+    with pytest.raises(ValueError, match="16 MiB"):
+        env.client.search_issues_page("project = DL", fields="summary,updated,description", light=False)
+    body_calls = [call for call in calls if "description" in call["fields"].split(",")]
+    assert len(body_calls) == 2
+    with env.cache._lock:
+        assert env.cache._conn.execute("SELECT COUNT(*) FROM cache WHERE key LIKE 'ticketbodymeta:%'").fetchone()[0] == 1
+
+
+def test_one_query_budget_uses_direct_bounded_fallback_and_keeps_warm_reuse(build_env):
+    env = build_env()
+    calls = install_source(env, total=3)
+    args = {"fields": "summary,updated,description", "light": False, "max_parts": 1}
+    first = env.client.search_issues_page("project = DL", **args)
+    assert first["returned"] == 3 and first["execution"]["physicalQueryCount"] == 1
+    assert len(calls) == 1 and "description" in calls[0]["fields"].split(",")
+    warm = env.client.search_issues_page("project = DL", **args)
+    assert warm["issues"] == first["issues"] and len(calls) == 1
