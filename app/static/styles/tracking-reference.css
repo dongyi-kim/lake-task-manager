@@ -19,18 +19,12 @@
 .tracking-reference button {transition:background .14s,border-color .14s,color .14s}
 .tracking-reference .rf-muted {color:var(--tr-muted)}
 .tracking-reference .rf-sr {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.tracking-reference .rf-header {height:64px;flex:none;padding:0 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--tr-line);background:var(--tr-panel)}
-.tracking-reference .rf-brand {display:flex;align-items:center;gap:10px}
-.tracking-reference .rf-brand-icon {width:34px;height:34px;border-radius:9px;background:var(--tr-blue);color:#fff;display:grid;place-items:center}
-.tracking-reference .rf-brand h1 {margin:0;font-size:17px;line-height:1.3;font-weight:750;letter-spacing:-.5px}
-.tracking-reference .rf-brand p {margin:1px 0 0;color:var(--tr-muted);font-size:10px}
-.tracking-reference .rf-header-actions {display:flex;gap:8px;align-items:center}
-.tracking-reference .rf-header-actions>button,.tracking-reference .rf-query button,.tracking-reference .rf-dialog button {border:1px solid var(--tr-line);background:var(--tr-panel);border-radius:7px;padding:7px 12px;white-space:nowrap;font-size:12px;font-weight:600}
-.tracking-reference .rf-header-actions>button:hover,.tracking-reference .rf-query button:hover,.tracking-reference .rf-dialog button:hover {background:var(--tr-bg)}
-.tracking-reference .rf-beta {margin-left:5px;color:var(--tr-blue);font-size:9px;font-weight:750}
+.tracking-reference .rf-query-actions {display:flex;gap:6px;align-items:center;margin-left:auto;padding-left:14px;border-left:1px solid var(--tr-line)}
+.tracking-reference .rf-query button,.tracking-reference .rf-dialog button {border:1px solid var(--tr-line);background:var(--tr-panel);border-radius:7px;padding:7px 12px;white-space:nowrap;font-size:12px;font-weight:600}
+.tracking-reference .rf-query button:hover,.tracking-reference .rf-dialog button:hover {background:var(--tr-bg)}
 .tracking-reference button.rf-primary {background:var(--tr-blue);border-color:var(--tr-blue);color:#fff;box-shadow:0 1px 2px #1b28400a}
 .tracking-reference button.rf-primary:hover {background:color-mix(in srgb,var(--tr-blue),#000 9%)}
-.tracking-reference .rf-query {min-height:62px;flex:none;padding:12px 24px;display:flex;align-items:center;gap:18px;border-bottom:1px solid var(--tr-line);background:var(--tr-panel);z-index:12}
+.tracking-reference .rf-query {min-height:58px;flex:none;padding:10px 24px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;border-bottom:1px solid var(--tr-line);background:var(--tr-panel);z-index:12}
 .tracking-reference .rf-query fieldset {display:flex;align-items:center;gap:8px;margin:0;padding:0;border:0;min-width:0}
 .tracking-reference .rf-query :is(fieldset>label,.rf-picker>span) {font-size:11px;font-weight:650;color:var(--tr-muted);white-space:nowrap}
 .tracking-reference .rf-query input[type=date] {height:32px;padding:4px 8px;width:132px;font-size:12px;background:var(--tr-panel);border:1px solid var(--tr-line);border-radius:6px}
@@ -60,10 +54,10 @@
 .tracking-reference .rf-main {flex:1;min-width:0;overflow:auto;overscroll-behavior:contain;background:var(--tr-panel);padding:14px 24px 32px}
 .tracking-reference .rf-workspace.is-leaf .rf-main {display:none}
 .tracking-reference .rf-workspace.is-leaf .tp-evidence {flex:1;width:auto;max-width:none;border-left:0}
-.tracking-reference .tr-splitter {width:8px;flex:0 0 8px;cursor:col-resize;position:relative;background:var(--tr-panel);touch-action:none;border:0;z-index:2}
-.tracking-reference .tr-splitter::after {content:"";position:absolute;top:0;bottom:0;left:3px;width:1px;background:var(--tr-line);transition:background .15s,width .15s}
-.tracking-reference .tr-splitter::before {content:"";position:absolute;left:2px;top:50%;width:3px;height:32px;border-radius:3px;background:var(--tr-line);z-index:1}
-.tracking-reference .tr-splitter:hover::after,.tracking-reference .tr-splitter.is-dragging::after,.tracking-reference .tr-splitter:focus-visible::after {background:var(--tr-blue);width:2px}
+.tracking-reference .tr-splitter {width:7px;flex:0 0 7px;cursor:col-resize;position:relative;background:var(--tr-panel);touch-action:none;border:0;z-index:2}
+.tracking-reference .tr-splitter::after {content:"";position:absolute;top:0;bottom:0;left:3px;width:2px;background:transparent;transition:background .15s}
+.tracking-reference .tr-splitter::before {display:none}
+.tracking-reference .tr-splitter:hover::after,.tracking-reference .tr-splitter.is-dragging::after,.tracking-reference .tr-splitter:focus-visible::after {background:var(--tr-blue)}
 .tracking-reference .rf-start {display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;padding:40px;text-align:center}
 .tracking-reference .rf-start>svg {color:var(--tr-blue);margin-bottom:12px}
 .tracking-reference .rf-start h2 {font-size:22px;font-weight:650;margin:0 0 8px}
@@ -100,7 +94,7 @@ html[data-theme=dark] .tracking-reference,[data-theme=dark] .tracking-reference 
 [data-theme=dark] .tracking-reference button.rf-primary {background:#4764d1;border-color:#4764d1}
 [data-theme=dark] .tracking-reference input[type=date] {color-scheme:dark}
 @media(max-width:1280px) {
-  .tracking-reference .rf-header,.tracking-reference .rf-query {padding-left:18px;padding-right:18px}
+  .tracking-reference .rf-query {padding-left:18px;padding-right:18px}
   .tracking-reference .rf-query {gap:12px}
   .tracking-reference .rf-query input[type=date] {width:125px}
   .tracking-reference .rf-presets button {padding-left:4px;padding-right:4px}

@@ -212,7 +212,7 @@ def test_tree_folding_resizing_and_collapse_remain_local_and_keyboard_operable(t
     expect(separator).to_have_attribute('aria-valuenow', '236')
     separator.press('Home')
     expect(separator).to_have_attribute('aria-valuenow', '252')
-    nav.get_by_role('button', name='업무 탐색 패널 접기', exact=True).click()
+    page.get_by_role('button', name='업무 탐색 패널 접기', exact=True).click()
     expect(page.locator('.tp-nav-rail')).to_be_visible()
     page.get_by_role('button', name='업무 탐색 패널 펼치기', exact=True).click()
     expect(navigation(page)).to_be_visible()

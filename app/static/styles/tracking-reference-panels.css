@@ -1,10 +1,14 @@
 /* Reference hierarchy and evidence. Geometry follows the supplied final CSS. */
-.tracking-reference .tp-navigation{width:252px;flex:0 0 252px;min-width:0;background:var(--tr-panel);overflow:auto;padding:16px 10px 30px;box-sizing:border-box}
+.tracking-reference .tp-navigation-panel{position:relative;width:252px;flex:0 0 252px;min-width:0;min-height:0;background:var(--tr-panel)}
+.tracking-reference .tp-navigation{width:100%;height:100%;overflow:auto;scrollbar-width:none;padding:16px 10px 30px;box-sizing:border-box}
+.tracking-reference .tp-navigation::-webkit-scrollbar{display:none}
+.tracking-reference .tp-navigation:focus-visible{outline:2px solid var(--tr-blue);outline-offset:-2px}
 .tracking-reference .tp-module-caption{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:0 6px 10px;margin-bottom:9px;border-bottom:1px solid var(--tr-line);font-size:12px;font-weight:600;overflow-wrap:anywhere}
 .tracking-reference .tp-module-caption>span{font-size:9px;font-weight:400;color:var(--tr-muted);white-space:nowrap}
 .tracking-reference .tp-side-head{display:flex;justify-content:space-between;align-items:center;padding:0 3px 12px 6px;gap:6px;font-size:11px;font-weight:600;color:var(--tr-muted)}
-.tracking-reference .tp-panel-toggle{display:flex;align-items:center;justify-content:center;flex:0 0 28px;width:28px;height:28px;padding:0;border:1px solid #d9e3f3;background:#fff;border-radius:7px;color:#657da5}
-.tracking-reference .tp-panel-toggle:hover{background:#edf2fc;color:var(--tr-blue);border-color:#b9c9ed}
+.tracking-reference .tp-panel-toggle,.tracking-reference .tp-panel-reopen{position:absolute;top:50%;right:-9px;transform:translateY(-50%);z-index:3;display:flex;align-items:center;justify-content:center;width:18px;height:54px;padding:0;border:1px solid #d9e3f3;border-radius:6px;background:var(--tr-panel);color:#657da5;font-size:13px;line-height:1;box-shadow:0 1px 4px #273d6b29}
+.tracking-reference .tp-panel-toggle:hover,.tracking-reference .tp-panel-reopen:hover{background:#edf2fc;color:var(--tr-blue);border-color:#b9c9ed}
+.tracking-reference .tp-panel-toggle:focus-visible,.tracking-reference .tp-panel-reopen:focus-visible{outline:2px solid var(--tr-blue);outline-offset:2px}
 .tracking-reference .tp-tree-panel-actions{display:flex;align-items:center;gap:7px}
 .tracking-reference .tp-tree-collapse-all{display:flex;align-items:center;gap:3px;font-size:9px;color:var(--tr-muted);white-space:nowrap}
 .tracking-reference .tp-all-node{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:10px;margin:0 0 12px;border:1px solid #e5eaf4;border-radius:6px;background:#f7f9fd;color:#61738e;font-size:12px;font-weight:600;text-align:left}
@@ -28,10 +32,8 @@
 .tracking-reference .tp-tree-exp,.tracking-reference .tp-tree-exp-spacer{display:flex;align-items:center;justify-content:center;width:24px;height:24px;flex:0 0 24px;padding:0;color:#879bb9}
 .tracking-reference .tp-tree-exp{border-radius:6px;background:transparent;border:0}
 .tracking-reference .tp-tree-exp:hover{background:#e8eefc}
-.tracking-reference .tp-disclosure{stroke:currentColor;stroke-width:1.5;stroke-linecap:round}
-.tracking-reference .tp-disclosure rect{fill:#f9fbff;stroke:#bdcbe0}
-.tracking-reference .tp-tree-node.is-selected .tp-disclosure{color:#fff}
-.tracking-reference .tp-tree-node.is-selected .tp-disclosure rect{fill:#6380db;stroke:#a8bbf0}
+.tracking-reference .tp-disclosure{display:inline-flex;align-items:center;justify-content:center;flex:none;width:13px;height:13px;box-sizing:border-box;border:1px solid #bdcbe0;border-radius:2px;background:#f9fbff;color:#879bb9;font-size:12px;line-height:1}
+.tracking-reference .tp-tree-node.is-selected .tp-disclosure{background:#6380db;border-color:#a8bbf0;color:#fff}
 .tracking-reference .tp-tree-node.is-selected .tp-tree-exp:hover{background:#4f70d5}
 .tracking-reference .tp-tree-type-icon{display:flex;align-items:center;justify-content:center;flex:0 0 13px;margin-top:5px;color:#7287ad;z-index:1}
 .tracking-reference .tp-kind-epic{color:#8366b3}.tracking-reference .tp-kind-bug{color:#ab762b}.tracking-reference .tp-kind-story{color:#27866c}.tracking-reference .tp-kind-chat{color:#9070b5}.tracking-reference .tp-kind-subtask{color:#4c80ad}
@@ -46,10 +48,8 @@
 .tracking-reference .tp-side-pin>span{color:var(--tr-blue)}
 .tracking-reference .tp-unpin{padding:5px 6px;color:#8792a6;font-size:14px}
 .tracking-reference .tp-side-foot{margin:20px 9px 0;border-top:1px solid var(--tr-line);padding-top:14px;color:var(--tr-muted);font-size:10px;line-height:1.8}
-.tracking-reference .tp-nav-rail{display:flex;flex:0 0 44px;width:44px;align-items:flex-start;justify-content:center;padding-top:16px;background:var(--tr-panel);border-right:1px solid #e1e7f2;box-sizing:border-box}
-.tracking-reference .tp-panel-reopen{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;width:34px;padding:8px 2px;border:1px solid #dae3f3;background:#f7f9fe;border-radius:8px;color:#627ba8}
-.tracking-reference .tp-panel-reopen>span{font-size:9px;line-height:1.55}
-.tracking-reference .tp-panel-reopen:hover{background:#edf2ff;border-color:#b5c7ed;color:var(--tr-blue)}
+.tracking-reference .tp-nav-rail{position:relative;display:flex;flex:0 0 44px;width:44px;align-items:flex-start;justify-content:center;padding-top:18px;background:var(--tr-panel);border-right:1px solid #e1e7f2;box-sizing:border-box}
+.tracking-reference .tp-panel-rail-label{writing-mode:vertical-rl;font-size:11px;color:var(--tr-muted);letter-spacing:2px}
 .tracking-reference .tp-evidence{width:438px;flex:0 0 438px;min-width:0;min-height:0;background:var(--tr-panel);border-left:1px solid #dce2ed;display:flex;flex-direction:column;box-shadow:-5px 0 16px #273d6b05;z-index:4;box-sizing:border-box;color:var(--tr-ink)}
 .tracking-reference .tp-evidence-top{padding:17px 20px;border-bottom:1px solid var(--tr-line)}
 .tracking-reference .tp-evidence-kicker{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:10px;color:var(--tr-muted)}
@@ -123,7 +123,7 @@
 .tracking-reference .tp-evidence-leaf .tp-event-title{font-size:12px}
 .tracking-reference .tp-evidence-leaf .tr-comment-body{font-size:12px}
 .tracking-reference .tp-visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-@media(max-width:1359px){.tracking-reference .tp-navigation{width:236px;flex-basis:236px}.tracking-reference .tp-evidence:not(.tp-evidence-leaf){width:430px;flex-basis:430px}}
+@media(max-width:1359px){.tracking-reference .tp-navigation-panel{width:236px;flex-basis:236px}.tracking-reference .tp-evidence:not(.tp-evidence-leaf){width:430px;flex-basis:430px}}
 @media(max-width:800px){.tracking-reference .tp-evidence:not(.tp-evidence-leaf){width:min(438px,100%);flex-basis:min(438px,100%)}.tracking-reference .tp-evidence-top{padding:14px}.tracking-reference .tp-evidence-scroll{padding:14px}.tracking-reference .tp-evidence-tabs{flex-wrap:wrap}.tracking-reference .tp-evidence-leaf .tp-evidence-top,.tracking-reference .tp-evidence-leaf .tp-evidence-scroll{padding-inline:18px}.tracking-reference .tp-evidence-leaf .tp-evidence-top h2{font-size:20px}}
 /* The reference palette stays literal in light mode; saved evidence remains legible in dark mode. */
 [data-theme=dark] .tracking-reference .tp-panel-toggle,
@@ -139,7 +139,7 @@
 [data-theme=dark] .tracking-reference .tp-all-node.is-active{background:var(--tr-blue-light);color:var(--tr-blue);border-color:var(--tr-line)}
 [data-theme=dark] .tracking-reference .tp-tree-node.is-selected{background:#3f5dcd;color:#fff}
 [data-theme=dark] .tracking-reference .tp-tree-exp:hover{background:var(--tr-blue-light)}
-[data-theme=dark] .tracking-reference .tp-disclosure rect{fill:var(--tr-panel);stroke:#60718b}
+[data-theme=dark] .tracking-reference .tp-disclosure{background:var(--tr-panel);border-color:#60718b;color:#91a7ce}
 [data-theme=dark] .tracking-reference .tp-tree-guide,
 [data-theme=dark] .tracking-reference .tp-tree-elbow,
 [data-theme=dark] .tracking-reference .tp-tree-entry:after,

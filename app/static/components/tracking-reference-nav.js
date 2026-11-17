@@ -64,21 +64,28 @@ export default {
     },
     tooltip(row){return row.title+(row.key?' ('+row.key+')':'');},
     select(row){this.$emit('scope',row.id);},
+    togglePanel(collapsed){
+      this.$emit('collapse',collapsed);
+      this.$nextTick(()=>this.$refs.panelToggle?.focus());
+    },
   },
   template:`
     <nav v-if="collapsed" class="tp-nav-rail" aria-label="접힌 업무 탐색">
-      <button type="button" class="tp-panel-reopen" @click="$emit('collapse',false)" aria-label="업무 탐색 패널 펼치기" title="업무 탐색 패널 펼치기" aria-expanded="false"><TrackingReferenceIcon name="reopen" :size="20"/><span aria-hidden="true">업무<br>탐색</span></button>
+      <button type="button" ref="panelToggle" class="tp-panel-reopen" @click="togglePanel(false)" aria-controls="tracking-hierarchy-content" aria-label="업무 탐색 패널 펼치기" title="업무 탐색 패널 펼치기" aria-expanded="false"><span aria-hidden="true">+</span></button>
+      <span class="tp-panel-rail-label" aria-hidden="true">업무 탐색</span>
     </nav>
-    <nav v-else class="tp-navigation" aria-label="업무 계층 탐색" :style="width ? {width:width+'px',flexBasis:width+'px'} : null">
+    <div v-else class="tp-navigation-panel" :style="width ? {width:width+'px',flexBasis:width+'px'} : null">
+      <button ref="panelToggle" type="button" class="tp-panel-toggle" @click="togglePanel(true)" aria-label="업무 탐색 패널 접기" title="업무 탐색 패널 접기" aria-expanded="true" aria-controls="tracking-hierarchy-content"><span aria-hidden="true">−</span></button>
+      <nav id="tracking-hierarchy-content" class="tp-navigation" aria-label="업무 계층 탐색" tabindex="0">
       <div v-if="moduleCaption" class="tp-module-caption">{{ moduleCaption }}<span>현재 모듈</span></div>
-      <header class="tp-side-head"><span>업무 탐색</span><div class="tp-tree-panel-actions"><button type="button" class="tp-tree-collapse-all" @click="collapseAll" :disabled="revealMatches" aria-label="트리의 모든 항목 접기" :title="revealMatches?'일치 경로를 표시하고 있습니다.':'모든 항목 접기'"><svg class="tp-disclosure" width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2.75" y="2.75" width="18.5" height="18.5" rx="5"/><path d="M7.75 12h8.5"/></svg>모두 접기</button><button type="button" class="tp-panel-toggle" @click="$emit('collapse',true)" aria-label="업무 탐색 패널 접기" title="업무 탐색 패널 접기" aria-expanded="true"><TrackingReferenceIcon name="panel" :size="16"/></button></div></header>
+      <header class="tp-side-head"><span>업무 탐색</span><div class="tp-tree-panel-actions"><button type="button" class="tp-tree-collapse-all" @click="collapseAll" :disabled="revealMatches" aria-label="트리의 모든 항목 접기" :title="revealMatches?'일치 경로를 표시하고 있습니다.':'모든 항목 접기'"><span class="tp-disclosure" aria-hidden="true">−</span>모두 접기</button></div></header>
       <button type="button" class="tp-all-node" :class="{'is-active':!activeId}" :aria-current="!activeId?'page':null" @click="$emit('scope','')"><span><TrackingReferenceIcon name="layers" :size="15"/>전체 업무</span><span>{{ total ?? 0 }}</span></button>
       <div class="tp-side-kicker">WBS · Epic · Task · Subtask</div>
       <ul class="tp-tree-roots" aria-label="업무 계층">
         <li v-for="entry in entries" :key="entry.row.id" class="tp-tree-entry" :style="{'--tp-depth':entry.row.depth}" :class="{'is-last':entry.last,'has-parent':entry.row.depth>0,'on-route':ancestorIds.has(entry.row.id),'is-expanded':entry.row.children?.length&&expanded(entry.row)}">
           <i v-for="guide in entry.guides" :key="guide" class="tp-tree-guide" :style="{left:(guide*18+12)+'px'}" aria-hidden="true"></i><i v-if="entry.row.depth" class="tp-tree-elbow" aria-hidden="true"></i>
           <div class="tp-tree-node" :class="{'is-selected':activeId===entry.row.id,'is-ancestor':ancestorIds.has(entry.row.id),'is-detail':detailId===entry.row.id&&activeId!==entry.row.id}">
-            <button v-if="entry.row.children?.length" type="button" class="tp-tree-exp" :aria-expanded="expanded(entry.row)" :aria-label="entry.row.title+(expanded(entry.row)?' 접기':' 펼치기')" :title="entry.row.title+(expanded(entry.row)?' 접기':' 펼치기')" @click="$emit('fold',entry.row)"><svg class="tp-disclosure" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2.75" y="2.75" width="18.5" height="18.5" rx="5"/><path d="M7.75 12h8.5"/><path v-if="!expanded(entry.row)" d="M12 7.75v8.5"/></svg></button><span v-else class="tp-tree-exp-spacer" aria-hidden="true"></span>
+            <button v-if="entry.row.children?.length" type="button" class="tp-tree-exp" :aria-expanded="expanded(entry.row)" :aria-label="entry.row.title+(expanded(entry.row)?' 접기':' 펼치기')" :title="entry.row.title+(expanded(entry.row)?' 접기':' 펼치기')" @click="$emit('fold',entry.row)"><span class="tp-disclosure" aria-hidden="true">{{ expanded(entry.row)?'−':'+' }}</span></button><span v-else class="tp-tree-exp-spacer" aria-hidden="true"></span>
             <span class="tp-tree-type-icon" :class="'tp-kind-'+icon(entry.row)"><TrackingReferenceIcon :name="icon(entry.row)" :size="13"/></span>
             <button type="button" class="tp-tree-label" :title="tooltip(entry.row)" :aria-label="tooltip(entry.row)+' 범위 선택'" :aria-current="activeId===entry.row.id?'page':null" @click="select(entry.row)">{{ entry.row.title }}</button>
             <span v-if="activeId===entry.row.id" class="tp-tree-selected-tag">선택</span><span v-else-if="detailId===entry.row.id" class="tp-tree-focus-tag">근거</span><span v-else-if="entry.row.children?.length" class="tp-node-count" :title="'직속 하위 '+entry.row.children.length+'개'">{{ entry.row.children.length }}</span>
@@ -88,5 +95,6 @@ export default {
       <div class="tp-side-kicker">고정한 주요 업무 · {{ pinnedRows.length }}</div>
       <div v-for="row in pinnedRows" :key="row.key||row.id" class="tp-pinned-row"><button class="tp-side-pin" type="button" :title="tooltip(row)" @click="select(row)"><span aria-hidden="true">☆</span>{{ row.title }}</button><button type="button" class="tp-unpin" :aria-label="row.title+' 고정 해제'" title="고정 해제" @click="$emit('pin',row.key||row.id)">×</button></div>
       <footer class="tp-side-foot">전체 업무 = 선택 모듈 전체<br>파란색: 현재 선택 범위<br>연결선: 부모와 직속 하위 항목</footer>
-    </nav>`,
+      </nav>
+    </div>`,
 };
