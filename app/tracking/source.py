@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 
 from app.auth.base import UpstreamError
-from app.tracking.storage import encode
+from app.tracking.storage import encode, encoded_size
 
 
 class IncompleteSource(RuntimeError):
@@ -22,6 +22,54 @@ def completeness(value, rows_key):
     total = value.get("total")
     return (type(total) is int and total >= 0 and value.get("startAt", 0) == 0 and
             len(ids) == len(set(ids)) == total)
+
+
+def _page_metadata(page, rows_key):
+    return {**{key: value for key, value in page.items() if key != rows_key},
+            "rowCount": len(page[rows_key])}
+
+
+def _canonical_pages(checkpoint, pages_key, rows_key, identity_key, complete_key):
+    """Migrate old full pages, retaining raw rows only in their canonical list.
+
+    Validate both legacy copies before discarding either. A contradictory checkpoint
+    must remain incomplete instead of silently resuming with missing or stale text.
+    Embedded comment prefixes have no pages yet and are not pagination progress.
+    """
+    message = "저장된 수집 결과가 일치하지 않아 이어 수집할 수 없습니다. 새로 조회해 주세요."
+    pages = checkpoint.setdefault(pages_key, [])
+    if not isinstance(pages, list) or any(not isinstance(page, dict) for page in pages):
+        raise IncompleteSource(message)
+    if not pages:
+        return pages
+    rows = checkpoint.get(rows_key)
+    if rows is None:
+        if any(not isinstance(page.get(rows_key), list) for page in pages):
+            raise IncompleteSource(message)
+        rows = [row for page in pages for row in page[rows_key]]
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise IncompleteSource(message)
+    metadata, offset, total = [], 0, None
+    for page in pages:
+        legacy_rows = page.get(rows_key)
+        count = len(legacy_rows) if isinstance(legacy_rows, list) else page.get("rowCount")
+        page_total = page.get("total")
+        if (type(count) is not int or count < 0 or type(page_total) is not int or page_total < 0
+                or page.get("startAt", offset) != offset or (total is not None and total != page_total)):
+            raise IncompleteSource(message)
+        if legacy_rows is not None and legacy_rows != rows[offset:offset + count]:
+            raise IncompleteSource(message)
+        metadata.append({**{key: value for key, value in page.items() if key != rows_key}, "rowCount": count})
+        offset += count
+        total = page_total
+    ids = [str(row.get(identity_key)) for row in rows if row.get(identity_key) is not None]
+    if (len(rows) != offset or len(ids) != len(rows) or len(set(ids)) != len(ids)
+            or offset > total or (checkpoint.get(complete_key) and offset != total)
+            or (checkpoint.get("total") is not None and checkpoint["total"] != total)):
+        raise IncompleteSource(message)
+    checkpoint[rows_key] = rows
+    checkpoint[pages_key] = metadata
+    return metadata
 
 
 class TrackingSource:
@@ -56,9 +104,9 @@ class TrackingSource:
         with self.admission(), self.client._query_scheduler.page_scope(parallel_capable=getattr(provider, "supports_parallel", False)):
             self.check()
             self.metrics["restRequests"] += 1
-            self.metrics["requestBytes"] += len(encode({"path": path, "params": params}).encode())
+            self.metrics["requestBytes"] += encoded_size({"path": path, "params": params})
             result = provider.get_json(path, params=params) if params is not None else provider.get_json(path)
-            self.metrics["responseBytes"] += len(encode(result).encode())
+            self.metrics["responseBytes"] += encoded_size(result)
             self.source_times.append(time.time())
             if isinstance(result, dict) and (result.get("errorMessages") or result.get("errors")) and not result.get("key"):
                 # Some provider adapters preserve Jira's JSON validation body but not
@@ -91,6 +139,7 @@ class TrackingSource:
         return result
 
     def search(self, jql, fields, checkpoint, save, *, expand=True, allow_cache=True):
+        pages = _canonical_pages(checkpoint, "pages", "issues", "key", "complete")
         generation = self.client._jql_generation() if hasattr(self.client, "_jql_generation") else 0
         signature = {"jql": jql, "fields": fields, "generation": generation, "expand": expand}
         cache_key = self.key("search", signature)
@@ -100,11 +149,11 @@ class TrackingSource:
                 self.metrics["cacheHits"] += 1
                 self.source_times.append(cached["fetchedAt"])
                 checkpoint.update(cached["data"])
+                _canonical_pages(checkpoint, "pages", "issues", "key", "complete")
                 save()
                 return checkpoint["issues"]
-        pages = checkpoint.setdefault("pages", [])
         while not checkpoint.get("complete"):
-            offset = sum(len(page.get("issues") or []) for page in pages)
+            offset = sum(page["rowCount"] for page in pages)
             params = {"jql": jql, "fields": fields, "startAt": offset, "maxResults": 100}
             if expand and checkpoint.get("expandSupported", True):
                 params["expand"] = "changelog"
@@ -138,7 +187,7 @@ class TrackingSource:
                 raise IncompleteSource("검색 페이지의 전체 개수를 확인할 수 없습니다.")
             if checkpoint.get("total") is not None and checkpoint["total"] != total:
                 raise IncompleteSource("검색 도중 대상이 변경되었습니다. 새 조회가 필요합니다.")
-            previous = {row["key"] for p in pages for row in p.get("issues", [])}
+            previous = {row["key"] for row in checkpoint.get("issues", [])}
             if len({row.get("key") for row in rows}) != len(rows) or any(not row.get("key") or row.get("key") in previous for row in rows):
                 raise IncompleteSource("검색 페이지에 중복되거나 식별할 수 없는 항목이 있습니다.")
             if not rows and offset < total:
@@ -148,9 +197,9 @@ class TrackingSource:
             page["_trackingFetchedAt"] = fetched_at
             for row in rows:
                 row["_trackingFetchedAt"] = fetched_at
-            pages.append(page)
+            pages.append(_page_metadata(page, "issues"))
             checkpoint["complete"] = offset + len(rows) == total
-            checkpoint["issues"] = [row for p in pages for row in p["issues"]]
+            checkpoint.setdefault("issues", []).extend(rows)
             save()
             if offset + len(rows) > total:
                 raise IncompleteSource("검색 전체 개수가 일치하지 않습니다.")
@@ -188,11 +237,13 @@ class TrackingSource:
         return cp["history"], complete
 
     def comments(self, raw, cp, save):
+        pages = _canonical_pages(cp, "commentPages", "comments", "id", "commentsComplete")
         if cp.get("commentsComplete"):
             return cp["comments"], True
         embedded = (raw.get("fields") or {}).get("comment")
         if completeness(embedded, "comments"):
             cp.update(comments=embedded["comments"], commentsComplete=True)
+            cp.pop("commentPages", None)
             return embedded["comments"], True
         if isinstance(embedded, dict) and isinstance(embedded.get("comments"), list):
             cp.setdefault("comments", embedded["comments"])
@@ -203,14 +254,14 @@ class TrackingSource:
             self.metrics["cacheHits"] += 1
             self.source_times.append(cached["fetchedAt"])
             cp.update(comments=cached["data"], commentsComplete=True)
+            cp.pop("commentPages", None)
             return cp["comments"], True
         embedded = (raw.get("fields") or {}).get("comment")
         if completeness(embedded, "comments"):
             cp.update(comments=embedded["comments"], commentsComplete=True)
         else:
-            pages = cp.setdefault("commentPages", [])
             while True:
-                offset = sum(len(page.get("comments") or []) for page in pages)
+                offset = sum(page["rowCount"] for page in pages)
                 page = self.read("/rest/api/2/issue/" + raw["key"] + "/comment", {"startAt": offset, "maxResults": 100})
                 rows, total = page.get("comments"), page.get("total")
                 if not isinstance(rows, list) or type(total) is not int or page.get("startAt", offset) != offset:
@@ -219,13 +270,15 @@ class TrackingSource:
                 if pages and pages[0].get("total") != total:
                     cp["commentsComplete"] = False
                     break
-                ids = [str(c.get("id")) for p in pages for c in p.get("comments", [])]
+                ids = [str(c.get("id")) for c in cp.get("comments", [])] if pages else []
                 new_ids = [str(c.get("id")) for c in rows if c.get("id") is not None]
                 if len(new_ids) != len(rows) or len(set(ids + new_ids)) != len(ids) + len(rows):
                     cp["commentsComplete"] = False
                     break
-                pages.append(page)
-                cp["comments"] = [c for p in pages for c in p.get("comments", [])]
+                if not pages:
+                    cp["comments"] = []
+                pages.append(_page_metadata(page, "comments"))
+                cp["comments"].extend(rows)
                 cp["commentsComplete"] = len(cp["comments"]) == total
                 if not cp["commentsComplete"]:
                     save()
