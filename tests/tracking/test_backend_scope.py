@@ -1,110 +1,111 @@
 import pytest
 
+from app.domain.mytasks import _matches_scope
 from app.tracking.scope import module_candidates
+
+
+PEOPLE = {'A': ['member'], 'B': ['other']}
 
 
 def row(key, components, epic=None, parent=None, subtask=False):
     return {'key': key, 'fields': {'components': [{'name': c} for c in components], 'epic': epic,
-        'parent': {'key': parent} if parent else None, 'issuetype': {'name': 'Sub-Task' if subtask else 'Task', 'subtask': subtask}}}
+        'assignee': None, 'reporter': None, 'parent': {'key': parent} if parent else None,
+        'issuetype': {'name': 'Sub-Task' if subtask else 'Task', 'subtask': subtask}}}
 
 
 def test_module_scope_inherits_parent_and_shared_epic_and_retains_unknown_parent():
     rows = [row('P-1', ['A']), row('P-2', ['Other'], parent='P-1', subtask=True),
             row('P-3', ['Other'], epic='P-100'), row('P-4', ['Other']),
             row('P-5', [], parent='P-unknown', subtask=True)]
-    kept, missing, uncertain = module_candidates(rows, ['A'], ['P-100'], 'epic')
+    kept, missing, uncertain = module_candidates(rows, ['A'], ['P-100'], 'epic', module_people=PEOPLE)
     assert {r['key'] for r in kept} == {'P-1', 'P-2', 'P-3', 'P-5'}
     assert missing == {'P-unknown'}
     assert uncertain == {'P-5'}
-    kept, missing, uncertain = module_candidates(rows, ['A'], ['P-100'], 'epic', {'P-unknown': row('P-unknown', ['Other'])})
+    kept, missing, uncertain = module_candidates(rows, ['A'], ['P-100'], 'epic',
+        {'P-unknown': row('P-unknown', ['Other'])}, module_people=PEOPLE)
     assert {r['key'] for r in kept} == {'P-1', 'P-2', 'P-3'}
     assert not missing and not uncertain
 
 
-@pytest.mark.parametrize('assignee', [{'name': 'MEMBER'}, {'key': 'member'}, {'accountId': 'member'}])
-def test_voc_uses_current_assignee_immutable_identity_for_configured_module(assignee):
-    raw = row('P-1', ['Configured VOC'])
-    raw['fields']['assignee'] = assignee
-    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic',
-        voc_component='Configured VOC', module_people={'A': ['member'], 'B': ['other']})
-    assert [r['key'] for r in kept] == ['P-1']
-    assert not missing and not uncertain
-
-
-def test_voc_module_supplement_does_not_expand_other_voc_or_ordinary_ticket_scope():
-    other_voc = row('P-1', ['Configured VOC'])
-    other_voc['fields']['assignee'] = {'name': 'other'}
-    ordinary = row('P-2', ['Other'])
-    ordinary['fields']['assignee'] = {'name': 'member'}
-    wrong_component = row('P-3', ['Different VOC'])
-    wrong_component['fields']['assignee'] = {'name': 'member'}
-    kept, missing, uncertain = module_candidates([other_voc, ordinary, wrong_component], ['A'], [], 'epic',
-        voc_component='Configured VOC', module_people={'A': ['member'], 'B': ['other']})
-    assert not kept and not missing and not uncertain
-
-
-@pytest.mark.parametrize('assignee_present,assignee', [(False, None), (True, None), (True, {}), (True, {'displayName': 'member'})])
-def test_voc_without_confirmed_current_assignee_stays_unknown(assignee_present, assignee):
-    raw = row('P-1', ['Configured VOC'])
-    if assignee_present:
-        raw['fields']['assignee'] = assignee
-    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic',
-        voc_component='Configured VOC', module_people={'A': ['member']})
-    assert [r['key'] for r in kept] == ['P-1']
-    assert not missing and uncertain == {'P-1'}
-
-
-@pytest.mark.parametrize('assignee', [
-    {'key': 'JIRAUSER123'}, {'accountId': 'account-123'},
-    {'key': 'JIRAUSER123', 'displayName': 'member'},
+@pytest.mark.parametrize('components,assignee,reporter,epic', [
+    pytest.param(['A'], 'other', 'bot', None, id='component-union'),
+    pytest.param(['사용자 voc'], 'member', 'bot', None, id='voc-assignee-with-bot-reporter'),
+    pytest.param(['사용자 voc'], 'other', 'member', None, id='voc-reporter'),
+    pytest.param(['사용자 voc', 'B'], 'member', 'bot', None, id='other-module-component'),
+    pytest.param(['사용자 voc'], 'member', 'bot', 'P-200', id='other-module-epic'),
+    pytest.param(['B'], 'member', 'other', None, id='ordinary-assignee'),
+    pytest.param([], 'other', 'member', None, id='ordinary-reporter'),
+    pytest.param(['A'], None, None, 'P-200', id='component-despite-other-epic'),
+    pytest.param(['사용자 voc'], 'other', 'bot', None, id='unrelated-voc'),
+    pytest.param(['B'], 'other', None, 'P-200', id='unrelated-ordinary'),
+    pytest.param([], None, None, None, id='unassigned'),
 ])
-def test_voc_unresolved_assignee_namespace_is_retained_as_uncertain(assignee):
-    raw = row('P-1', ['Configured VOC'])
-    raw['fields']['assignee'] = assignee
-    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic',
-        voc_component='Configured VOC', module_people={'A': ['member']})
+def test_current_module_membership_matches_task_window_union(components, assignee, reporter, epic):
+    raw = row('P-1', components, epic=epic)
+    raw['fields'].update(assignee={'name': assignee} if assignee else None,
+                         reporter={'name': reporter} if reporter else None)
+    task_match = _matches_scope({'assigneeId': assignee, 'reporterId': reporter,
+                                'components': components},
+                               {'scopeKind': 'module', 'moduleIds': PEOPLE['A'], 'moduleComponents': ['A']})
+    kept, missing, uncertain = module_candidates([raw], ['A'], ['P-100'], 'epic', module_people=PEOPLE)
+    assert [r['key'] for r in kept] == (['P-1'] if task_match else [])
+    assert not missing and not uncertain
+
+
+@pytest.mark.parametrize('role', ['assignee', 'reporter'])
+@pytest.mark.parametrize('identity', [{'name': ' MEMBER '}, {'key': 'MEMBER'}, {'accountId': 'member'}])
+def test_person_membership_uses_immutable_identity(role, identity):
+    raw = row('P-1', ['B'])
+    raw['fields'][role] = identity
+    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic', module_people=PEOPLE)
+    assert [r['key'] for r in kept] == ['P-1']
+    assert not missing and not uncertain
+
+
+@pytest.mark.parametrize('role', ['assignee', 'reporter'])
+@pytest.mark.parametrize('identity', [
+    pytest.param('absent', id='absent'), pytest.param('malformed', id='malformed'),
+    pytest.param({}, id='empty'), pytest.param({'displayName': 'member'}, id='display-only'),
+    pytest.param({'key': 'JIRAUSER123'}, id='unresolved-key'),
+    pytest.param({'accountId': 'account-123'}, id='unresolved-account'),
+])
+def test_incomplete_person_identity_retains_unknown_scope(role, identity):
+    raw = row('P-1', ['사용자 voc'])
+    if identity == 'absent':
+        raw['fields'].pop(role)
+    else:
+        raw['fields'][role] = identity
+    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic', module_people=PEOPLE)
     assert [r['key'] for r in kept] == ['P-1']
     assert not missing and uncertain == {'P-1'}
 
 
-def test_voc_explicit_outside_username_is_excluded_despite_matching_display_name():
-    raw = row('P-1', ['Configured VOC'])
-    raw['fields']['assignee'] = {'name': 'outsider', 'key': 'JIRAUSER123', 'displayName': 'member'}
-    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic',
-        voc_component='Configured VOC', module_people={'A': ['member']})
+@pytest.mark.parametrize('role', ['assignee', 'reporter'])
+def test_confirmed_outside_username_is_excluded_despite_matching_display_name(role):
+    raw = row('P-1', ['사용자 voc'])
+    raw['fields'][role] = {'name': 'outsider', 'key': 'JIRAUSER123', 'displayName': 'member'}
+    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic', module_people=PEOPLE)
     assert not kept and not missing and not uncertain
 
 
-def test_subtask_inherits_voc_parent_configured_module_membership():
-    parent = row('P-10', ['Configured VOC'])
-    parent['fields']['assignee'] = {'name': 'member'}
-    child = row('P-1', [], parent='P-10', subtask=True)
-    child['fields']['assignee'] = {'name': 'outsider'}
-    kept, missing, uncertain = module_candidates([child], ['A'], [], 'epic', {'P-10': parent},
-        voc_component='Configured VOC', module_people={'A': ['member']})
+@pytest.mark.parametrize('role', ['assignee', 'reporter'])
+@pytest.mark.parametrize('parent_kind', ['missing', 'other-module', 'cycle'])
+def test_own_person_match_is_certain_before_parent_resolution(role, parent_kind):
+    raw = row('P-1', ['사용자 voc'], parent='P-10', subtask=True)
+    raw['fields'][role] = {'name': 'member'}
+    parent = row('P-10', ['B'], parent='P-1' if parent_kind == 'cycle' else None)
+    parents = {} if parent_kind == 'missing' else {'P-10': parent}
+    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic', parents, module_people=PEOPLE)
     assert [r['key'] for r in kept] == ['P-1']
     assert not missing and not uncertain
 
 
-@pytest.mark.parametrize('components,epic', [(['Configured VOC', 'B'], None), (['Configured VOC'], 'P-200')])
-def test_voc_assignee_supplement_cannot_override_explicit_other_module_or_wbs_epic(components, epic):
-    raw = row('P-1', components, epic=epic)
-    raw['fields']['assignee'] = {'name': 'member'}
-    kept, missing, uncertain = module_candidates([raw], ['A'], ['P-100'], 'epic',
-        voc_component='Configured VOC', module_people={'A': ['member'], 'B': ['other']},
-        configured_epics={'P-100', 'P-200'})
-    assert not kept and not missing and not uncertain
-
-
-def test_voc_supplement_allows_unmapped_epic_but_preserves_explicit_parent_module():
-    raw = row('P-1', ['Configured VOC'], epic='P-unmapped')
-    raw['fields']['assignee'] = {'name': 'member'}
-    options = dict(voc_component='Configured VOC', module_people={'A': ['member'], 'B': ['other']},
-                   configured_epics={'P-100', 'P-200'})
-    kept, missing, uncertain = module_candidates([raw], ['A'], ['P-100'], 'epic', **options)
+@pytest.mark.parametrize('role', ['assignee', 'reporter'])
+def test_subtask_inherits_parent_person_membership(role):
+    parent = row('P-10', ['사용자 voc'])
+    parent['fields'][role] = {'name': 'member'}
+    child = row('P-1', ['B'], parent='P-10', subtask=True)
+    child['fields'].update(assignee={'name': 'other'}, reporter={'name': 'bot'})
+    kept, missing, uncertain = module_candidates([child], ['A'], [], 'epic', {'P-10': parent}, module_people=PEOPLE)
     assert [r['key'] for r in kept] == ['P-1']
     assert not missing and not uncertain
-    raw['fields']['parent'] = {'key': 'P-10'}
-    kept, missing, uncertain = module_candidates([raw], ['A'], ['P-100'], 'epic',
-        {'P-10': row('P-10', ['B'])}, **options)
-    assert not kept and not missing and not uncertain

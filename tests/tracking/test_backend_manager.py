@@ -1,9 +1,12 @@
 from types import SimpleNamespace
+from copy import deepcopy
+import json
 
 import pytest
 
 from app.auth.base import UpstreamError, UpstreamUnavailable
 from app.jira.jql_scheduling import BoundedQueryScheduler
+from app.jira.jql import And, Atom, Or, _Parser, _split_order, tokenize
 from app.tracking.manager import TrackingManager
 
 
@@ -25,7 +28,7 @@ class Provider:
         if path.endswith('/comment'):
             return {"total": 1, "startAt": 0, "comments": [{"id": "1", "created": "2026-11-11T10:00:00+0900", "author": {"name": "a"}, "body": "hello"}]}
         raw = {"key": "P-1", "fields": {"summary": "Work", "created": "2026-11-11T00:00:00+0900",
-            "updated": "2026-11-11T10:00:00+0900", "creator": {"name": "a"}, "assignee": {"name": "a"},
+            "updated": "2026-11-11T10:00:00+0900", "creator": {"name": "a"}, "assignee": {"name": "a"}, "reporter": None,
             "issuetype": {"name": "Task"}, "status": {"statusCategory": {"key": "new"}}},
             "changelog": {"startAt": 0, "total": 0, "histories": []}}
         if path.endswith('/search'):
@@ -142,7 +145,8 @@ def test_module_metadata_prunes_unrelated_ticket_before_heavy_sources_and_keeps_
                 result['issues'][0]['fields'].update(components=[{'name': 'M'}], epic=None,
                                                      assignee={'name': 'outsider'})
                 other = {'key': 'P-2', 'fields': {'updated': '2026-11-11T10:00:00+0900',
-                    'components': [{'name': 'Other'}], 'epic': None, 'issuetype': {'name': 'Task'}}}
+                    'components': [{'name': 'Other'}], 'epic': None, 'issuetype': {'name': 'Task'},
+                    'assignee': {'name': 'outsider'}, 'reporter': None}}
                 result['issues'].append(other)
                 result['total'] = 2
                 return result
@@ -173,6 +177,7 @@ def test_module_scope_keeps_subtask_when_only_its_parent_component_matches(tmp_p
             result = super().get_json(path, params)
             if path.endswith('/search'):
                 result['issues'][0]['fields'].update(components=[], epic=None,
+                    assignee={'name': 'outsider'},
                     parent={'key': 'P-10'}, issuetype={'name': 'Sub-task', 'subtask': True})
             return result
 
@@ -194,11 +199,13 @@ def test_resume_can_finish_when_resolved_parent_proves_ticket_outside_module(tmp
                 self.calls.append((path, dict(params)))
                 rows = [{'key': 'P-10', 'fields': {'summary': 'Other parent',
                     'updated': '2026-01-01T00:00:00+0900', 'components': [{'name': 'Other'}],
+                    'assignee': {'name': 'outsider'}, 'reporter': None,
                     'epic': None, 'issuetype': {'name': 'Task'}}}] if self.visible else []
                 return {'startAt': 0, 'total': len(rows), 'issues': rows}
             result = super().get_json(path, params)
             if path.endswith('/search'):
                 result['issues'][0]['fields'].update(components=[], epic=None,
+                    assignee={'name': 'outsider'},
                     parent={'key': 'P-10'}, issuetype={'name': 'Sub-task', 'subtask': True})
             return result
 
@@ -217,8 +224,8 @@ def test_resume_can_finish_when_resolved_parent_proves_ticket_outside_module(tmp
     assert len(provider.calls) == calls + 1
 
 
-@pytest.mark.parametrize('assignee,expected_status', [({'name': 'a'}, 'complete'), (None, 'partial')])
-def test_module_voc_current_assignee_survives_both_prune_and_publish_without_extra_reads(tmp_path, assignee, expected_status):
+@pytest.mark.parametrize('assignee,retained', [({'name': 'a'}, True), (None, False)])
+def test_module_voc_current_assignee_or_known_unassigned_without_extra_reads(tmp_path, assignee, retained):
     class VocProvider(Provider):
         def get_json(self, path, params=None):
             result = super().get_json(path, params)
@@ -231,14 +238,14 @@ def test_module_voc_current_assignee_survives_both_prune_and_publish_without_ext
     m = manager(tmp_path, provider)
     m.client.s.voc_component = 'Configured VOC'
     run = m.create({'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': ['M']}, background=False)
-    assert run['status'] == expected_status
-    assert {issue['key'] for issue in run['issues']} == {'P-1'}
-    assert run['summary']['created'] == run['summary']['comments'] == 1
-    assert run['coverage']['issuesTotal'] == 1
+    assert run['status'] == 'complete'
+    assert {issue['key'] for issue in run['issues']} == ({'P-1'} if retained else set())
+    assert run['summary']['created'] == run['summary']['comments'] == int(retained)
+    assert run['coverage']['issuesTotal'] == int(retained)
     discovery = [params for path, params in provider.calls if path.endswith('/search') and 'project in' in params.get('jql', '')]
     assert 'assignee' in discovery[0]['fields'].split(',')
-    assert len(provider.calls) == 4  # Existing status, metadata, batch source, and comment source only.
-    assert bool([gap for gap in run['coverage']['missing'] if gap['source'] == 'moduleScope']) == (assignee is None)
+    assert len(provider.calls) == (4 if retained else 2)
+    assert not [gap for gap in run['coverage']['missing'] if gap['source'] == 'moduleScope']
 
 
 def test_voc_module_supplement_preserves_explicit_historical_person_filter(tmp_path):
@@ -301,11 +308,14 @@ def test_voc_key_only_discovery_preserves_unknown_scope_until_rich_identity_reso
 
 
 @pytest.mark.parametrize('components,epic', [(['Configured VOC', 'Other'], None), (['Configured VOC'], 'P-200')])
-def test_voc_other_module_mapping_is_pruned_before_sources_even_when_assignee_matches(tmp_path, components, epic):
+def test_other_module_mapping_does_not_veto_selected_member_assignee(tmp_path, components, epic):
     class MappedVocProvider(Provider):
         def get_json(self, path, params=None):
-            if path.endswith('/search'):
-                assert 'project in' in params['jql'], 'Explicitly unrelated VoC must not hydrate heavy sources.'
+            if path.endswith('/search') and 'P-200' in params['jql']:
+                self.calls.append((path, dict(params)))
+                return {'startAt': 0, 'total': 1, 'issues': [{'key': 'P-200', 'fields': {
+                    'summary': 'Other Epic', 'issuetype': {'name': 'Epic'}, 'components': [],
+                    'assignee': None, 'reporter': None}}]}
             result = super().get_json(path, params)
             if path.endswith('/search'):
                 result['issues'][0]['fields'].update(components=[{'name': name} for name in components], epic=epic)
@@ -319,7 +329,174 @@ def test_voc_other_module_mapping_is_pruned_before_sources_even_when_assignee_ma
     run = m.create({'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': ['M']}, background=False)
     assert run['status'] == 'complete'
     assert run['coverage']['candidatesDiscovered'] == 1
-    assert run['coverage']['issuesTotal'] == 0
-    assert run['summary']['totalEvents'] == 0
-    assert run['issues'] == []
-    assert len(provider.calls) == 2  # Status metadata plus candidate metadata only.
+    assert run['coverage']['issuesTotal'] == run['coverage']['issuesComplete'] == 1
+    assert run['summary']['created'] == run['summary']['comments'] == 1
+    assert 'P-1' in {issue['key'] for issue in run['issues']}
+    assert len(provider.calls) == (5 if epic else 4)
+
+
+@pytest.mark.parametrize('member_role', ['assignee', 'reporter'])
+def test_current_module_member_voc_survives_projected_discovery_publish_and_warm_cache(tmp_path, member_role):
+    class ProjectedProvider(Provider):
+        def get_json(self, path, params=None):
+            params = params or {}
+            assert 'P-2' not in path and 'P-2' not in params.get('jql', ''), 'Outside ticket must not hydrate.'
+            result = super().get_json(path, params)
+            if not path.endswith('/search'):
+                return result
+            fields = result['issues'][0]['fields']
+            fields.update(components=[{'name': '사용자 VoC'}], epic=None,
+                          assignee={'name': 'outsider'}, reporter={'name': 'reporter-bot'})
+            fields[member_role] = {'name': 'a'}
+            if 'project in' in params['jql']:
+                result['issues'].append({'key': 'P-2', 'fields': {
+                    **fields, 'assignee': {'name': 'outsider'}, 'reporter': {'name': 'reporter-bot'}}})
+                result['total'] = 2
+            # Jira returns only requested fields; an unrequested reporter cannot
+            # accidentally make a deficient discovery projection pass this test.
+            requested = set(params['fields'].split(','))
+            for row in result['issues']:
+                row['fields'] = {name: value for name, value in row['fields'].items() if name in requested}
+                if 'expand' not in params:
+                    row.pop('changelog', None)
+            return result
+
+    provider = ProjectedProvider()
+    m = manager(tmp_path, provider)
+    m.people_loader = lambda: {'ETL': ['a'], 'Other': ['b']}
+    # Current membership must not depend on the configured generic VoC label.
+    m.client.s.voc_component = 'Configured VOC'
+    request = {'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': ['ETL']}
+    run = m.create(request, background=False)
+    assert run['status'] == 'complete'
+    assert run['coverage']['scopeComplete'] is True
+    assert run['coverage']['candidatesDiscovered'] == 2
+    assert run['coverage']['issuesTotal'] == run['coverage']['issuesComplete'] == 1
+    assert run['summary']['created'] == run['summary']['comments'] == 1
+    assert {issue['key'] for issue in run['issues']} == {'P-1'}
+    assert {event['issueKey'] for event in run['events']} == {'P-1'}
+    assert m.get(run['id'])['events'] == run['events']
+    assert len(provider.calls) == 4  # Status, discovery, rich batch, and comments; no identity REST reads.
+    discovery = provider.calls[1][1]
+    assert {'assignee', 'reporter'} <= set(discovery['fields'].split(','))
+    assert run['metrics']['restRequests'] == 4
+
+    count = len(provider.calls)
+    warm = m.create(request, background=False)
+    assert warm['status'] == 'complete'
+    assert warm['summary']['created'] == warm['summary']['comments'] == 1
+    assert {issue['key'] for issue in warm['issues']} == {'P-1'}
+    assert warm['metrics']['restRequests'] == 1
+    assert len(provider.calls) == count + 1
+    assert provider.calls[-1][0].endswith('/search')
+    assert 'project in' in provider.calls[-1][1]['jql']
+
+
+def project_scope_provider(module, member, *, configured_member=False):
+    class QueryProvider(Provider):
+        def get_json(self, path, params=None):
+            result = super().get_json(path, params)
+            if not path.endswith('/search'):
+                return result
+            template = result['issues'][0]
+            rows = []
+            for key, assignee, reporter, component, updated in [
+                ('P-1', member if configured_member else 'outsider', 'reporter-bot', 'Other', '2026-11-11T10:00:00+0900'),
+                ('VOC-1', member, 'reporter-bot', '사용자 VoC', '2026-11-11T10:00:00+0900'),
+                ('VOC-2', 'outsider', member, '사용자 VoC', '2026-11-11T10:00:00+0900'),
+                ('P-2', 'outsider', 'reporter-bot', module, '2026-11-11T10:00:00+0900'),
+                ('VOC-4', 'outsider', 'reporter-bot', '사용자 VoC', '2026-11-11T10:00:00+0900'),
+                ('VOC-5', member, 'reporter-bot', '사용자 VoC', '2026-01-01T10:00:00+0900'),
+            ]:
+                row = deepcopy(template)
+                row['key'] = key
+                row['fields'].update(assignee={'name': assignee}, reporter={'name': reporter},
+                                     components=[{'name': component}], epic=None, updated=updated)
+                rows.append(row)
+
+            # Use the existing parser for parentheses/escaping, then evaluate only
+            # the supported boundary predicates. Unknown clauses fail this fake.
+            body, _ = _split_order(tokenize(params['jql']))
+            query = _Parser(body).parse()
+
+            def matches(node, row):
+                if isinstance(node, (And, Or)):
+                    results = [matches(child, row) for child in node.children]
+                    return all(results) if isinstance(node, And) else any(results)
+                assert isinstance(node, Atom)
+                tokens = tokenize(node.value)
+                field, op = tokens[0].value.casefold(), tokens[1].value.casefold()
+                # A roster module need not name a Jira component. Jira validates
+                # these predicates before searching, even inside an OR union.
+                if field in {'component', 'components'}:
+                    raise UpstreamError(400, path, 'The component does not exist.')
+                values = [json.loads(token.value) if token.kind == 'STRING' else token.value
+                          for token in tokens[2:] if token.kind in {'STRING', 'WORD'}]
+                fields = row['fields']
+                if field == 'updated' and op == '>=':
+                    return fields['updated'][:10] >= values[0][:10]
+                assert op == 'in', node.value
+                actual = {'project': row['key'].split('-')[0], 'key': row['key'],
+                          'assignee': fields['assignee']['name'], 'reporter': fields['reporter']['name'],
+                          'component': fields['components'][0]['name'],
+                          'components': fields['components'][0]['name']}
+                assert field in actual, node.value
+                return actual[field] in values
+
+            matched = [row for row in rows if matches(query, row)]
+            requested = set(params['fields'].split(','))
+            for row in matched:
+                row['fields'] = {name: value for name, value in row['fields'].items() if name in requested}
+                if 'expand' not in params:
+                    row.pop('changelog', None)
+            return {'startAt': 0, 'total': len(matched), 'issues': matched}
+
+    return QueryProvider()
+
+
+@pytest.mark.parametrize('selected,module,member', [
+    (False, 'ETL', 'a'),
+    (True, 'ETL', 'a'),
+    (True, 'ETL "delivery"\\module', 'quoted"person\\name'),
+])
+def test_module_discovery_includes_cross_project_current_union_and_preserves_date_bound(
+        tmp_path, selected, module, member):
+    provider = project_scope_provider(module, member)
+    m = manager(tmp_path, provider)
+    m.people_loader = lambda: {module: [member]}
+    request = {'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': [module] if selected else []}
+    run = m.create(request, background=False)
+    assert run['status'] == 'complete'
+    expected = {'VOC-1', 'VOC-2', 'P-2'} if selected else {'P-1', 'P-2'}
+    assert {issue['key'] for issue in run['issues']} == expected
+    assert {event['issueKey'] for event in run['events']} == expected
+    assert run['coverage']['candidatesDiscovered'] == (4 if selected else 2)
+    assert run['summary']['created'] == run['summary']['comments'] == len(expected)
+    assert all('VOC-4' not in path and 'VOC-5' not in path for path, _ in provider.calls)
+
+
+def test_legacy_paused_module_run_rediscovers_cross_project_candidates_and_reuses_rich_sources(tmp_path):
+    provider = project_scope_provider('ETL', 'a', configured_member=True)
+    m = manager(tmp_path, provider)
+    m.people_loader = lambda: {'ETL': ['a']}
+    # Seed the durable, complete project-only candidate/source checkpoints that
+    # an older process could leave behind before its final publish was paused.
+    first = m.create({'startDate': '2026-11-10', 'endDate': '2026-11-12'}, background=False)
+    assert {issue['key'] for issue in first['issues']} == {'P-1', 'P-2'}
+    _, _, snapshot, cp = m.store.read(first['id'])
+    snapshot['request']['modules'] = ['ETL']
+    snapshot['status'] = 'paused'
+    cp.pop('moduleScopeVersion', None)
+    m.store.save(first['id'], snapshot, cp)
+    count = len(provider.calls)
+
+    resumed = m.resume(first['id'], background=False)
+    assert resumed['status'] == 'complete'
+    assert resumed['asOf'] == first['asOf']
+    assert {issue['key'] for issue in resumed['issues']} == {'P-1', 'P-2', 'VOC-1', 'VOC-2'}
+    assert resumed['summary']['created'] == resumed['summary']['comments'] == 4
+    new_calls = provider.calls[count:]
+    assert len(new_calls) == 4  # Rediscovery, new rich batch, and two new comment reads.
+    assert all(key not in path and key not in params.get('jql', '')
+               for path, params in new_calls for key in ('P-1', 'P-2'))
+    assert resumed['metrics']['cacheHits'] > first['metrics']['cacheHits']
