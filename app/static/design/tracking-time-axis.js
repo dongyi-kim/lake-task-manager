@@ -39,7 +39,7 @@ function x(t){const [a,b]=range();return Math.max(0,Math.min(100,(t-a)/(b-a)*100
 function remember(e,row){const id=registry.length;registry.push({...e,row});return id;}
 function dot(e,row,extra='',offset=0,base=27){
  const id=remember(e,row),type=e.kind==='note'?'note':e.kind;
- return (offset?`<i class="marker-stem" style="left:${x(e.at)}%;top:${Math.min(base,base+offset)}px;height:${Math.abs(offset)}px"></i>`:'')+`<button class="event-dot ${type} ${extra}" style="--x:${x(e.at)}%;${offset?'top:'+(base+offset)+'px':''}" data-event="${id}" aria-expanded="false" aria-label="${esc(full(e.at)+' '+row.title+' '+e.title)}">${svg(e.kind)}${e.members?e.members.length:''}</button>`;
+ return (offset?`<i class="marker-stem" data-stem="${id}" style="left:${x(e.at)}%;top:${Math.min(base,base+offset)}px;height:${Math.abs(offset)}px"></i>`:'')+`<button class="event-dot ${type} ${extra}" style="--x:${x(e.at)}%;${offset?'top:'+(base+offset)+'px':''}" data-event="${id}" data-offset="${offset}" aria-expanded="false" aria-label="${esc(full(e.at)+' '+row.title+' '+e.title)}">${svg(e.kind)}${e.members?e.members.length:''}</button>`;
 }
 function groups(items){
  const [a,b]=range(),threshold=(b-a)*.035,out=[];
@@ -53,20 +53,52 @@ function combinedAxis(owner,rows){
  const changes=sources.flatMap(row=>row.events.filter(e=>e.at>=a&&e.at<=b).map(event=>({event,row})));
  const notes=comments?sources.flatMap(row=>groups(row.comments).map(event=>({event,row}))):[];
  const items=[...changes,...notes].sort((a,b)=>a.event.at-b.event.at||a.row.key.localeCompare(b.row.key));
- let last=-100,stack=0;
- const marks=items.map(({event,row})=>{const pos=x(event.at);stack=pos-last<3.5?stack+1:0;last=pos;
-  return dot(event,row,(event.members?'cluster ':'')+(row===owner?'own-marker':'child-marker'),stack?[0,-25,25,-50,50][stack%5]:0,122);
+ const occupied=[],width=$('#ticks').clientWidth||900;
+ const marks=items.map(item=>{const {event,row}=item,pos=x(event.at)/100*width;
+  let level=occupied.findIndex(last=>pos-last>=34);if(level<0)level=occupied.length;occupied[level]=pos;
+  const offset=level?(level%2?-1:1)*Math.ceil(level/2)*22:0;item.markerId=registry.length;
+  return dot(event,row,(event.members?'cluster ':'')+(row===owner?'own-marker':'child-marker'),offset,122);
  }).join('');
- const trackEnds=[-100,-100];let callouts='';
- for(const {event,row} of changes.filter(({event,row})=>['done','reopen'].includes(event.kind)||row===owner&&event.kind==='start')){
-  const pos=x(event.at);if(pos<10||pos>90)continue;
-  const track=trackEnds.findIndex(end=>pos-end>=20);if(track<0)continue;trackEnds[track]=pos;
+ let callouts='';
+ for(const {event,row,markerId} of changes){
   const id=remember(event,row),source=row===owner?(mode==='task'?'이 Task':'이 Epic'):row.title;
-  const short=row===owner?event.title:({done:'완료',reopen:'재오픈',start:'진행 시작'}[event.kind]||event.title);
-  callouts+=`<button class="bubble summary-callout ${track?'below':''} ${event.kind==='done'?'done':event.kind==='reopen'?'reopen':'blue-top'}" style="--x:${pos}%;--callout-y:${track?181:27}px" data-event="${id}" aria-label="${esc(full(event.at)+' '+row.title+' '+event.title+' 근거')}"><span class="summary-source">${esc(source)}</span><span class="time">${scale==='period'?full(event.at):fmt(event.at)}</span><strong>${esc(short)}</strong></button>`;
+  const short=row===owner?event.title:({done:'완료',reopen:'재오픈',start:'착수',new:'생성'}[event.kind]||event.title);
+  callouts+=`<button class="bubble summary-callout ${event.kind==='done'?'done':event.kind==='reopen'?'reopen':'blue-top'}" data-event="${id}" data-anchor="${markerId}" title="${esc(row.key+' · '+source+' · '+short)}" aria-label="${esc(full(event.at)+' '+row.title+' '+event.title+' 근거')}"><span class="summary-source">${esc(source)}</span><span class="callout-key" hidden>${row.key}</span><span class="callout-separator" aria-hidden="true">·</span><strong>${esc(short)}</strong></button>`;
  }
  const noteCount=notes.reduce((sum,{event})=>sum+(event.members?.length||1),0);
- return `<div class="lane combined" data-change-count="${changes.length}" data-comment-count="${noteCount}"><div class="lane-label"><div class="lane-title">자체 + 하위 ${rows.length}개</div><div class="lane-meta">상태 변화 ${changes.length} · 댓글 ${noteCount}</div><p class="summary-label-note">같은 시간축에서<br>주요 변화 함께 보기</p></div><div class="lane-body" style="--rail-y:122px;height:258px"><div class="rail"></div>${marks}${callouts}${items.length?'':'<span class="summary-empty">이 구간에 확인된 활동 없음</span>'}</div></div>`;
+ return `<div class="lane combined" data-change-count="${changes.length}" data-comment-count="${noteCount}"><div class="lane-label"><div class="lane-title">자체 + 하위 ${rows.length}개</div><div class="lane-meta">주요 변화 ${changes.length} · 댓글 ${noteCount}</div><p class="summary-label-note">같은 시간축에서<br>주요 변화 함께 보기</p></div><div class="lane-body" style="--rail-y:122px;height:220px"><div class="rail"></div><svg class="callout-leaders" aria-hidden="true"></svg>${marks}${callouts}${items.length?'':'<span class="summary-empty">이 구간에 확인된 활동 없음</span>'}</div></div>`;
+}
+function layoutCallouts(){
+ const body=$('.combined .lane-body');if(!body)return;
+ const width=body.clientWidth,padding=4,gap=10,rowHeight=24,rowGap=10;
+ const occupied=[];
+ const markers=[...body.querySelectorAll('.event-dot')].sort((a,b)=>registry[Number(a.dataset.event)].at-registry[Number(b.dataset.event)].at);
+ body.querySelectorAll('.marker-stem').forEach(stem=>stem.remove());
+ for(const marker of markers){const pos=x(registry[Number(marker.dataset.event)].at)/100*width;let level=occupied.findIndex(last=>pos-last>=34);if(level<0)level=occupied.length;occupied[level]=pos;
+  const offset=level?(level%2?-1:1)*Math.ceil(level/2)*22:0;marker.dataset.offset=String(offset);
+  if(offset)body.insertAdjacentHTML('beforeend',`<i class="marker-stem" data-stem="${marker.dataset.event}" style="left:${x(registry[Number(marker.dataset.event)].at)}%;height:${Math.abs(offset)}px"></i>`);
+ }
+ const buttons=[...body.querySelectorAll('.summary-callout')];
+ const sourceCounts=new Map();for(const b of buttons){const title=registry[Number(b.dataset.event)].row.title;sourceCounts.set(title,(sourceCounts.get(title)||new Set()).add(registry[Number(b.dataset.event)].row.key));}
+ for(const b of buttons){const source=b.querySelector('.summary-source'),e=registry[Number(b.dataset.event)];b.querySelector('.callout-key').hidden=source.scrollWidth<=source.clientWidth&&sourceCounts.get(e.row.title).size<2;}
+ const tracks=[[],[]],used=[0,0];
+ const labels=buttons.map(button=>({button,width:button.getBoundingClientRect().width,anchor:x(registry[Number(button.dataset.event)].at)/100*width})).sort((a,b)=>a.anchor-b.anchor);
+ for(const item of labels){let index=-1;for(let i=0;i<tracks.length;i++){if(used[i]+(tracks[i].length?gap:0)+item.width<=width-padding*2&&(index<0||used[i]<used[index]))index=i;}if(index<0){index=tracks.length;tracks.push([]);used.push(0);}used[index]+=(tracks[index].length?gap:0)+item.width;tracks[index].push(item);}
+ const offsets=[...body.querySelectorAll('.event-dot')].map(b=>Number(b.dataset.offset)||0),above=Math.max(0,...offsets.map(n=>-n)),below=Math.max(0,...offsets);
+ const upperCount=Math.ceil(tracks.length/2),lowerCount=Math.floor(tracks.length/2),baseline=12+upperCount*(rowHeight+rowGap)+above+22;
+ const lowerStart=baseline+below+24,height=lowerStart+lowerCount*(rowHeight+rowGap)+10;
+ body.style.setProperty('--rail-y',baseline+'px');body.style.height=height+'px';
+ body.querySelectorAll('.event-dot').forEach(b=>b.style.top=baseline+Number(b.dataset.offset)+'px');
+ body.querySelectorAll('[data-stem]').forEach(stem=>{const offset=Number(body.querySelector(`[data-event="${stem.dataset.stem}"]`).dataset.offset);stem.style.top=baseline+Math.min(0,offset)+'px';});
+ let paths='';
+ tracks.forEach((track,index)=>{let end=padding-gap;for(const item of track){item.left=Math.max(padding,item.anchor-item.width/2,end+gap);end=item.left+item.width;}let limit=width-padding;for(const item of [...track].reverse()){item.left=Math.min(item.left,limit-item.width);limit=item.left-gap;}
+  const upper=index%2===0,y=upper?12+Math.floor(index/2)*(rowHeight+rowGap):lowerStart+Math.floor(index/2)*(rowHeight+rowGap);
+  for(const {button,left,width:labelWidth,anchor} of track){button.style.left=left+'px';button.style.top=y+'px';button.dataset.track=String(index);
+   const marker=body.querySelector(`.event-dot[data-event="${button.dataset.anchor}"]`),my=baseline+Number(marker.dataset.offset),tipY=upper?y+rowHeight:y,bendY=upper?baseline-above-14:baseline+below+14;
+   paths+=`<path data-anchor="${button.dataset.anchor}" d="M ${anchor} ${my+(upper?-8:8)} L ${anchor} ${bendY} L ${left+labelWidth/2} ${tipY}"/>`;
+  }
+ });
+ const leaders=body.querySelector('.callout-leaders');leaders.setAttribute('viewBox',`0 0 ${width} ${height}`);leaders.innerHTML=paths;
 }
 function lane(row,primary=false,commentOnly=false){
  const [a,b]=range(),events=row.events.filter(e=>e.at>=a&&e.at<=b),all=row.events.filter(e=>e.at<=b).sort((a,b)=>a.at-b.at);
@@ -112,6 +144,7 @@ function render(){
  $('#childrenToggle').innerHTML=`<span class="fold-symbol">${expandedChildren?'−':'+'}</span>하위 작업별 ${expandedChildren?'접기':'펼치기'} <small>${rows.length}</small>`;$('#childrenToggle').setAttribute('aria-expanded',String(expandedChildren));
  $('#childLanes').hidden=!expandedChildren;$('#childLanes').innerHTML=expandedChildren?`<div class="group-heading"><span>${mode==='task'?'Sub-task':'하위 Task'}별 상태 흐름</span><span>위 통합 축과 같은 사건 · 선은 각 업무의 상태</span></div>`+rows.map(r=>lane(r)).join(''):'';
  $$('.lane-body').forEach(e=>e.style.backgroundSize=scale==='day'?(fullDay?'112.5% 100%':'100% 100%'):'128.5714% 100%');
+ layoutCallouts();
  $('#chartHint').textContent=scale==='day'?'점·말풍선을 눌러 시각과 근거 확인':'날짜를 눌러 시간 확대 · 간격은 실제 경과 시간';
  $('#resultItems').innerHTML=mode==='task'?'<div class="result-item"><span class="result-icon">✓</span><div><b>하위 작업 3개 완료</b><p>대사 · 재처리 검증 · 모니터링 지표</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--amber)">↶</span><div><b>검증 후 재오픈</b><p>11.16 14:20 · 역순 이벤트 예외 발견</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--blue)">◷</span><div><b>예외 경로 수정 착수</b><p>11.16 16:40 · 운영 인수 점검 진행</p></div></div>':'<div class="result-item"><span class="result-icon">✓</span><div><b>Task 3개 완료</b><p>스키마 감지 · 재처리 · 지연 알림</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--amber)">↶</span><div><b>중복 제거 Task 재확인</b><p>검증 이후 예외 발견 · 수정 착수</p></div></div><div class="result-item"><span class="result-icon" style="color:var(--blue)">◷</span><div><b>현재 진행 2개 · 대기 1개</b><p>활동량과 완료 비율을 구분해 표시</p></div></div>';
 }
@@ -128,4 +161,14 @@ $('#prevDay').onclick=()=>{day--;render();};$('#nextDay').onclick=()=>{day++;ren
 $('#fullDay').onclick=()=>{fullDay=!fullDay;render();};
 $('#childrenToggle').onclick=()=>{expandedChildren=!expandedChildren;render();};
 $('#theme').onclick=()=>{const dark=document.documentElement.dataset.theme!=='dark';document.documentElement.dataset.theme=dark?'dark':'light';$('#theme').setAttribute('aria-label',dark?'밝은 테마로 보기':'어두운 테마로 보기');};
-window.addEventListener('resize',()=>closePopover(false));render();
+function highlightConnection(target){
+ $$('.is-related').forEach(e=>e.classList.remove('is-related'));
+ const button=target?.closest?.('.combined .event-dot,.summary-callout');if(!button)return;
+ const anchor=button.dataset.anchor||button.dataset.event;
+ $$('.combined [data-anchor="'+anchor+'"],.combined .event-dot[data-event="'+anchor+'"]').forEach(e=>e.classList.add('is-related'));
+}
+document.addEventListener('pointerover',e=>highlightConnection(e.target));
+document.addEventListener('pointerout',e=>highlightConnection(e.relatedTarget));
+document.addEventListener('focusin',e=>highlightConnection(e.target));
+document.addEventListener('focusout',e=>highlightConnection(e.relatedTarget));
+window.addEventListener('resize',()=>{closePopover(false);layoutCallouts();});render();

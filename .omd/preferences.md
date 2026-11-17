@@ -34,3 +34,18 @@ source_context: "docs/design/tracking/time-axis-proposal.md"
 ```
 
 Summarize parent and child task events on one shared timeline axis by default; show individual child timelines only through an explicit expansion option.
+
+## 2026-11-17T01:48:54.592Z — compact-callouts-with-leader-lines
+
+```omd-meta
+id: pref_mwk1afgg_7cbe165c
+timestamp: 2026-11-17T01:48:54.592Z
+scope: components.timeline
+signal: user-correction
+confidence: explicit
+status: pending
+source_agent: codex
+source_context: "docs/design/tracking/time-axis-proposal.md"
+```
+
+Use smaller timeline icons and short single-line callouts without visible dates or times. Route leader lines from icons to offset callouts when annotations are dense.
