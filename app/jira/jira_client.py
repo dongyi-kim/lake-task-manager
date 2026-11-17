@@ -445,28 +445,29 @@ def _sync_checkboxes(rendered_html, raw_field):
     return _SANITIZED_CB_RE.sub(repl, rendered_html)
 
 
-def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_field=None):
+def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_field=None, *, detail="full"):
     """티켓 상세 다이얼로그용 리치 뷰(순수 함수 — 테스트 용이).
     description: prod 의 renderedFields.description(HTML)이 있으면 **sanitize**, 없으면 평문→escape+nl2br.
     """
     f = raw.get("fields", {}) or {}
-    rendered = raw.get("renderedFields") or {}
-    rhtml = rendered.get("description")
-    raw_desc = f.get("description")
-    if rhtml and str(rhtml).strip():
-        # 렌더 HTML 로 리치 내용을 그리되, 체크박스의 상태·id 는 **raw 원문**에서 덧씌운다
-        # (prod renderedFields 는 checked 를 input 에 안 실어 늘 해제로 보이던 문제).
-        desc = _sync_checkboxes(tidy_html(sanitize_html(_revive_checkboxes(rhtml))), raw_desc)
-        desc = mark_explicit_jira_links(desc, raw_desc)
-        desc, fmt = shorten_mention_names(desc), "html"
-    elif _looks_like_html(raw_desc):
-        # 사내 인스턴스는 WYSIWYG 에디터(Jira Editor 계열 — 'jePanel_*' class)를 써서
-        # fields.description **원문 자체가 HTML** 이다. 이때 평문 취급하면 태그가
-        # 글자로 보인다(<p>안녕하세요</p>). renderedFields 가 빌 때의 방어. (raw 라 상태 이미 정확)
-        desc = mark_explicit_jira_links(tidy_html(sanitize_html(raw_desc)), raw_desc)
-        desc, fmt = shorten_mention_names(desc), "html"
-    else:
-        desc, fmt = tidy_html(text_to_html(raw_desc or "")), "text"
+    if detail != "summary":
+        rendered = raw.get("renderedFields") or {}
+        rhtml = rendered.get("description")
+        raw_desc = f.get("description")
+        if rhtml and str(rhtml).strip():
+            # 렌더 HTML 로 리치 내용을 그리되, 체크박스의 상태·id 는 **raw 원문**에서 덧씌운다
+            # (prod renderedFields 는 checked 를 input 에 안 실어 늘 해제로 보이던 문제).
+            desc = _sync_checkboxes(tidy_html(sanitize_html(_revive_checkboxes(rhtml))), raw_desc)
+            desc = mark_explicit_jira_links(desc, raw_desc)
+            desc, fmt = shorten_mention_names(desc), "html"
+        elif _looks_like_html(raw_desc):
+            # 사내 인스턴스는 WYSIWYG 에디터(Jira Editor 계열 — 'jePanel_*' class)를 써서
+            # fields.description **원문 자체가 HTML** 이다. 이때 평문 취급하면 태그가
+            # 글자로 보인다(<p>안녕하세요</p>). renderedFields 가 빌 때의 방어. (raw 라 상태 이미 정확)
+            desc = mark_explicit_jira_links(tidy_html(sanitize_html(raw_desc)), raw_desc)
+            desc, fmt = shorten_mention_names(desc), "html"
+        else:
+            desc, fmt = tidy_html(text_to_html(raw_desc or "")), "text"
     st = f.get("status") or {}
     itype = f.get("issuetype") or {}
 
@@ -479,7 +480,7 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
         return (u.get("displayName") or u.get("name")) if u else None
 
     key = raw.get("key", "")
-    return {
+    view = {
         "key": key,
         "summary": f.get("summary", ""),
         "type": itype.get("name", ""),
@@ -521,13 +522,14 @@ def _build_ticket_view(raw, sp_field, jira_base="", epic_field=None, epic_name_f
         # Epic 티켓 자체를 최근 항목/선택기에서 즉시 재사용할 때 쓰는 단축 이름.
         # 상세 응답에 이미 포함된 필드만 전달하므로 사용자 조작 시 추가 Jira 호출은 없다.
         "epicName": (f.get(epic_name_field) if epic_name_field else None) or None,
-        "descriptionHtml": desc,           # 항상 안전(정화됨). 프론트는 그대로 v-html.
-        "descriptionFormat": fmt,          # 'html'(정화됨) | 'text'(평문→nl2br)
-        # '=== 제목 ===' 구분선으로 나눈 영역. 구분선이 없으면 1개(title=None)라
-        # 프론트는 항상 이것만 그리면 된다(descriptionHtml 은 검색·언급스캔용으로 유지).
-        "descriptionSections": split_sections(desc),
         "url": (jira_base.rstrip("/") + "/browse/" + key) if jira_base else "",
     }
+    if detail != "summary":
+        view.update(descriptionHtml=desc, descriptionFormat=fmt)
+        if detail == "full":
+            # '=== 제목 ===' 구분선으로 나눈 UI 영역. MCP 단일 본문 모드는 사용하지 않는다.
+            view["descriptionSections"] = split_sections(desc)
+    return view
 
 
 class _CachedJqlLeafResult(NamedTuple):
@@ -4841,16 +4843,17 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "delete", key, parent_key=parent_key, epic_key=epic_key))
         return {"ok": True}
 
-    def ticket_view(self, key, fresh=False):
+    def ticket_view(self, key, fresh=False, *, detail="full"):
         """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML.
 
         fresh=True 면 캐시를 건너뛰고 상류를 직접 본다(본문 편집 시작·충돌 감시).
+        detail은 응답 조립만 제한하며 원본 조회·캐시는 그대로 공유한다.
         """
         raw = self._get_issue_view(key, fresh=fresh)
         if not raw:
             return None
         view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base,
-                                  self.s.epic_link_field_id, self.s.epic_name_field_id)
+                                  self.s.epic_link_field_id, self.s.epic_name_field_id, detail=detail)
         # 권한·projection에 따라 issue 응답의 사용자 객체가 username만 담는 경우가 있다. 필드
         # 트리거에 그 id가 그대로 보이지 않도록 기존 장기 user 캐시로 표시명을 보강한다.
         fields = raw.get("fields") or {}
@@ -4865,13 +4868,19 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 view[field + "Display"] = display
         # 화면 표시형 user-hover 앵커는 그대로 유지하고, 편집기에만 TipTap mention 노드를 준다.
         # 같은 descriptionHtml을 양쪽에 쓰면 수정 진입 때 일반 링크로 파싱돼 재저장 후 파란 링크가 된다.
-        view["descriptionEditHtml"] = self._description_edit_html(view["descriptionHtml"])
-        view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
-        view["descriptionEditHtml"] = self._proxy_media(view["descriptionEditHtml"])
+        if detail in ("full", "edit"):
+            view["descriptionEditHtml"] = self._description_edit_html(view["descriptionHtml"])
+        if detail in ("full", "read"):
+            view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
+        elif detail == "edit":
+            del view["descriptionHtml"]
+        if detail in ("full", "edit"):
+            view["descriptionEditHtml"] = self._proxy_media(view["descriptionEditHtml"])
         # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다
-        for sec in view.get("descriptionSections") or []:
-            sec["html"] = self._proxy_media(sec["html"])
-        _log_sections(key, view)
+        if detail == "full":
+            for sec in view.get("descriptionSections") or []:
+                sec["html"] = self._proxy_media(sec["html"])
+            _log_sections(key, view)
         return view
 
     # ── 계보(좌측 스파인 패널) — 조상 체인 + 형제 ──

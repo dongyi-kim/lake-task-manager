@@ -139,7 +139,7 @@ def register_reads(register, runtime):
         editable body. These modes avoid duplicate body representations. Default full is unchanged.
         """
         runtime.check_key(key)
-        result = runtime.client.ticket_view(key, fresh=fresh)
+        result = runtime.client.ticket_view(key, fresh=fresh, **({"detail": detail} if detail != "full" else {}))
         if result is None:
             raise ValueError("티켓을 찾을 수 없거나 조회 권한이 없습니다.")
         return ticket_projection(result, detail)
