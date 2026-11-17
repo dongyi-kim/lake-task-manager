@@ -1,6 +1,6 @@
 # Tracking 시간축 시안
 
-상태: 제안. 실제 Tracking 컴포넌트는 변경하지 않음.
+상태: 승인된 시안의 실제 Tracking 적용 완료. 검증 결과: `docs/validation/2026-11-17-tracking-time-axis.md`.
 시안: `/design/tracking-time-axis.html` — Task / Epic, 전체 기간 / 시간 확대 전환.
 
 ## 요청과 방향
@@ -58,7 +58,13 @@
 작은 아이콘·한 줄 안내 후 1540/1280px에서 일반 6개·밀집 12개 말풍선의 겹침 없음 확인.
 말풍선 높이 24px, 연결선 시작점과 실제 아이콘 좌표 일치, 크기 변경 시 재배치 검증.
 일반 통합 축 높이 258px → 158px. 밀집 12개는 화면 폭에 따라 268/290px로 확장.
-제품 적용 전 사용자가 시안을 검토할 수 있는 독립 HTML/CSS/JS 산출물.
+독립 HTML/CSS/JS는 디자인 비교용 예시 데이터 산출물로 유지.
+
+## 실제 데이터 적용 시 차이
+
+- 단일 사건·안내 클릭은 기존 상세 근거의 원본 사건으로 바로 이동. 정확한 시각·업무명·키·본문은 해당 근거에서 확인. 같은 출처 댓글 묶음만 로컬 목록을 열고 개별 근거를 선택.
+- 하위 작업별 축은 실제 사건 표식과 중립 점선으로 표시. 시안의 연속 상태 색 선은 적용하지 않음. 저장 사건은 기간·사람 조건으로 필터링되어 있어 `historyComplete`가 참이어도 화면의 인접 사건 사이에 다른 담당자의 상태 전환이 누락될 수 있음. 현재 상태로 과거 구간을 채우지 않음.
+- 전체 기간을 기본으로 표시하고 날짜 선택 시 시간 확대. 기존 조회 기간·수집 상태·진척 집계 유지.
 
 정적 미리보기: `/design/tracking-time-axis-task.png`, `/design/tracking-time-axis-epic.png`, `/design/tracking-time-axis-comments.png`.
 확장 예시: `/design/tracking-time-axis-expanded.png`.
