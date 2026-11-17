@@ -8,6 +8,7 @@ Date-only activity collection for configured people and modules. Uses the same J
 | `source.py` | Batched REST collection, strict completeness, revision cache and shared admission |
 | `analysis.py` | Pure event-time responsibility, event classification and hierarchy aggregation |
 | `scope.py` | Conservative module membership, including parent inheritance |
+| `diagnostics.py` | Persisted unique total/VOC counts through collection stages, using existing sources only |
 | `storage.py` | Durable run checkpoints and separately expiring raw sources in SQLite |
 | `summary.py` | Optional synthesis from collected evidence only, citation checks and usage |
 
@@ -17,3 +18,5 @@ Design and measurement: `docs/design/tracking/plan.md`, `performance.md`.
 Hierarchy roots are **WBS Task** (`kind: wbs`), followed by Epic, Task and Subtask. Modules are query conditions and node metadata, never an extra hierarchy level. New runs return WBS Task roots directly; the frontend projects legacy module-wrapped runs into the same shape without fetching evidence again. Unlinked work remains under the virtual `WBS Task 미연결` root.
 
 Do not turn incomplete evidence into zero activity or skip failed query groups. Do not infer historical people from current assignees, or completion from current status alone. Additional field changes are observations from already-required histories, not another collection pass. Keep raw cache independent of report period and tree decomposition. Never trust stale display identity for authorization.
+
+`coverage.funnel` records discovery, module filtering, hydration, analysis and published target counts with the collection-time VOC component name. Unknown or unrecorded counts are not zero; stage completion means processing finished, not that all source history is complete. Context ancestors are excluded from published targets. The audit dialog separates these frozen counts from current display classification, navigation matches and scoped event counts. An in-scope ticket updated within the query window remains a collected target even when its creation/completion was earlier or no displayable event is available.
