@@ -1,16 +1,8 @@
 // Reference dashboard chrome. Collection remains in TrackingView; local exploration
 // is delegated to the briefing, navigation, and evidence components.
 export default `
-<section class="tracking-reference" aria-labelledby="tracking-title" @keydown.esc="picker = ''">
-  <header class="rf-header">
-    <div class="rf-brand"><span class="rf-brand-icon"><TrackingReferenceIcon name="layers" :size="21" /></span><div><h1 id="tracking-title">Tracking</h1><p>기간의 성과, 지금의 진척</p></div></div>
-    <div class="rf-header-actions">
-      <button @click="showOverlay('history')" :disabled="!recent.length">이전 조회</button>
-      <button @click="showOverlay('ai')" :disabled="!run">AI 요약 <span class="rf-beta">AI</span></button>
-      <button class="rf-primary" @click="showOverlay('copy')" :disabled="!run">보고서 복사</button>
-    </div>
-  </header>
-  <form class="rf-query" @submit.prevent="collect">
+<section class="tracking-reference" aria-label="Tracking" @keydown.esc="picker = ''">
+  <form class="rf-query" aria-label="조회 조건과 보고 도구" @submit.prevent="collect">
     <fieldset><legend class="rf-sr">조회 기간 · 한국 시간, 양끝 날짜 포함</legend><label for="tracking-start">기간</label>
       <input id="tracking-start" type="date" v-model="startDate" :max="endDate || today" aria-label="시작일" required><span class="rf-muted">—</span><input type="date" v-model="endDate" :min="startDate" :max="today" aria-label="종료일" required>
       <div class="rf-presets"><button type="button" @click="preset('today')">오늘</button><button type="button" @click="preset('week')">최근 7일</button><button type="button" @click="preset('lastWeek')">지난주</button><button type="button" @click="preset('month')">30일</button></div>
@@ -22,6 +14,11 @@ export default `
       </div>
     </div>
     <button type="submit" class="rf-primary" :disabled="!!validation || busy || !optionsLoaded">{{ busy ? '수집 중…' : '조회' }}</button>
+    <div class="rf-query-actions" role="group" aria-label="저장 결과와 보고서">
+      <button type="button" @click="showOverlay('history')" :disabled="!recent.length">이전 조회</button>
+      <button type="button" @click="showOverlay('ai')" :disabled="!run">AI 요약</button>
+      <button type="button" @click="showOverlay('copy')" :disabled="!run">보고서 복사</button>
+    </div>
   </form>
   <div v-if="picker" class="rf-picker-backdrop" @click="picker = ''"></div>
   <p v-if="validation" class="rf-alert" role="alert">{{ validation }}</p>
@@ -38,7 +35,7 @@ export default `
       <TrackingReferenceNav id="tracking-hierarchy" :rows="navigationRows" :all-rows="allRows" :active-id="reportEvidenceOpen && summaryDisabled ? selectedId : scopeId" :detail-id="reportEvidenceOpen ? selectedId : ''" :closed="scopeClosed" :pins="pins" :width="hierarchyWidth" :collapsed="treeCollapsed" :reveal-matches="matchedOnly && !!(query || highlight)" :total="rootWorkCount" :scope-label="scopeLabel" @scope="selectScope" @fold="foldScope" @collapse="setTreeCollapsed" @pin="togglePin" @inspect="inspectReference" />
       <TrackingSplitter v-if="!treeCollapsed" :width="hierarchyWidth" :default-width="referenceNavWidth" :minimum-width="220" :maximum-width="440" @resize="hierarchyWidth = $event" />
       <main class="rf-main" v-show="!(reportEvidenceOpen && summaryDisabled)">
-        <TrackingBriefing ref="briefing" :key="run.id" :run="displayRun" :scope-id="scopeId" :query="query" :highlight="highlight" :matched-only="matchedOnly" :pins="pins" @scope="selectScope" @inspect="inspectReference" @evidence="focusEvidence" @ticket="openTicket" @query="query = $event" @highlight="setHighlight" @matched-only="matchedOnly = $event" @pin="togglePin" />
+        <TrackingBriefing ref="briefing" :key="run.id" :run="displayRun" :scope-id="scopeId" :query="query" :highlight="highlight" :matched-only="matchedOnly" :pins="pins" :evidence-open="reportEvidenceOpen" @scope="selectScope" @inspect="inspectReference" @evidence="focusEvidence" @ticket="openTicket" @query="query = $event" @highlight="setHighlight" @matched-only="matchedOnly = $event" @pin="togglePin" />
       </main>
       <TrackingReferenceDetail ref="referenceDetail" v-if="reportEvidenceOpen" :row="selected" :run="displayRun" :events="allSelectedEvents" :match-keys="[...matchKeys]" :has-match="!!(query || highlight)" :selected-event-id="selectedEventId" :leaf="summaryDisabled" @close="closeReferenceDetail" @scope="selectScope" @ticket="openTicket" @focus="focusEvidence" />
     </div>

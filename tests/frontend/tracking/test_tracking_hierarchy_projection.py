@@ -82,6 +82,12 @@ def test_equal_labels_and_shared_tickets_have_distinct_stable_branch_groups():
         container('module-a',[container('same-wbs',[ticket('shared','T-1'),ticket('two','T-2')])],'module'),
         container('module-b',[container('same-wbs',[ticket('shared','T-1'),ticket('three','T-3')])],'module')]);
       const output=projectTrackingHierarchy(input), [a,b]=groups(output);
+      assert.ok(output.tree.every(node=>node.kind==='wbs'));
+      assert.notEqual(output.tree[0].id,output.tree[1].id);
+      assert.deepEqual(buildTrackingScope(output,output.tree[0].id).run.issues.map(i=>i.key),['T-1','T-2']);
+      assert.deepEqual(buildTrackingScope(output,output.tree[1].id).run.issues.map(i=>i.key),['T-1','T-3']);
+      const displayNodes=output.tree.flatMap(walk);
+      assert.equal(new Set(displayNodes.map(n=>n.id)).size,displayNodes.length);
       assert.notEqual(a.id,b.id);
       const selected=buildTrackingScope(output,a.id);
       assert.deepEqual(selected.run.issues.map(i=>i.key),['T-1','T-2']);
@@ -95,6 +101,37 @@ def test_equal_labels_and_shared_tickets_have_distinct_stable_branch_groups():
       const duplicates=projectTrackingHierarchy(run([issue('T-1')],[container('dup',[
         container('same',[ticket('shared','T-1')]),container('same',[ticket('shared','T-1')])])]));
       assert.equal(new Set(groups(duplicates).map(g=>g.id)).size,2);
+      const unmapped=projectTrackingHierarchy(run([issue('T-1'),issue('T-2')],[
+        container('unmapped',[ticket('one','T-1')],'module'),
+        container('unmapped',[ticket('two','T-2')],'module')]));
+      assert.notEqual(unmapped.tree[0].id,unmapped.tree[1].id);
+      assert.deepEqual(buildTrackingScope(unmapped,unmapped.tree[0].id).run.issues.map(i=>i.key),['T-1']);
+      assert.deepEqual(buildTrackingScope(unmapped,unmapped.tree[1].id).run.issues.map(i=>i.key),['T-2']);
+      assert.deepEqual(projectTrackingHierarchy(unmapped),unmapped);
+    """)
+
+
+def test_modules_are_query_context_not_hierarchy_even_with_unmapped_and_voc_roots():
+    run_js("""
+      const input=run([issue('T-1'),issue('T-2'),issue('T-3'),
+        issue('V-1',{voc:true,summary:'[계정 - 권한] 접근 요청'})],[
+        {id:'module:ETL',kind:'module',name:'ETL',children:[container('wbs:a',[ticket('one','T-1')])]},
+        {id:'unmapped',kind:'module',name:'WBS 미연결',children:[ticket('two','T-2')]},
+        ticket('three','T-3'),ticket('voc','V-1')]);
+      const original=JSON.stringify(input), voc=projectTrackingVoc(input), output=projectTrackingHierarchy(voc);
+      assert.ok(output.tree.every(node=>node.kind.toLowerCase()==='wbs'));
+      assert.ok(output.tree.flatMap(walk).every(node=>node.kind!=='module'));
+      assert.equal(output.tree.find(node=>node.id==='wbs:a').name,'Same label');
+      assert.equal(output.tree.find(node=>node.id==='unmapped').name,'WBS Task 미연결');
+      assert.equal(output.tree.find(node=>node.vocGrouping).name,'사용자 VOC');
+      assert.deepEqual(buildTrackingScope(output,'wbs:a').breadcrumbs.map(n=>n.title),['Same label']);
+      const rows=trackingRows(output);
+      assert.ok(rows.every(row=>row.path.every(node=>node.kind!=='module')));
+      assert.deepEqual([...new Set(rows.filter(row=>row.key).map(row=>row.key))].sort(),['T-1','T-2','T-3','V-1']);
+      assert.equal(output.events,voc.events); assert.equal(output.issues,voc.issues);
+      assert.equal(output.summary,voc.summary); assert.equal(output.coverage,voc.coverage);
+      assert.equal(JSON.stringify(input),original);
+      assert.deepEqual(projectTrackingHierarchy(output),output);
     """)
 
 

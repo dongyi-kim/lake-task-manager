@@ -5,6 +5,48 @@ const kindOf = node => String(node?.kind || node?.type || '').toLowerCase().repl
 const groupId = path => 'tracking-hierarchy:epic-unassigned:' + encodeURIComponent(JSON.stringify(path));
 const sameNodes = (left, right) => left.length === right.length && left.every((node, index) => node === right[index]);
 
+// Module membership is a query condition, not a visible hierarchy level. Retain
+// source paths only for stable IDs when legacy branches reuse a node ID.
+function wbsRoots(tree) {
+  const counts = new Map();
+  function count(nodes, seen = new Set()) {
+    for (const node of nodes || []) {
+      if (!node || seen.has(node)) continue;
+      if (node.id) counts.set(node.id, (counts.get(node.id) || 0) + 1);
+      count(node.children, new Set([...seen, node]));
+    }
+  }
+  count(tree);
+  const displayId = (prefix, path) => 'tracking-hierarchy:' + prefix + ':' + encodeURIComponent(JSON.stringify(path));
+  const unlinked = (children, id, name = 'WBS Task 미연결') => ({id, kind:'wbs', name, virtual:true, wbsUnassigned:true, children});
+  function lift(nodes, path = [], seen = new Set()) {
+    const result = [], occurrences = new Map();
+    for (const node of nodes || []) {
+      if (!node || seen.has(node)) continue;
+      const identity = String(node.id || issueKeyOf(node) || kindOf(node) + ':' + (node.name || node.summary || ''));
+      const occurrence = occurrences.get(identity) || 0;
+      occurrences.set(identity, occurrence + 1);
+      const nextPath = [...path, [identity, occurrence]];
+      const id = counts.get(node.id) > 1 ? displayId('node', nextPath) : node.id;
+      const children = lift(node.children, nextPath, new Set([...seen, node]));
+      if (kindOf(node) === 'module') {
+        result.push(...children.filter(child => kindOf(child) === 'wbs'));
+        const loose = children.filter(child => kindOf(child) !== 'wbs');
+        if (loose.length) result.push(node.id === 'unmapped'
+          ? {...node, id, kind:'wbs', type:'wbs', name:'WBS Task 미연결', summary:'WBS Task 미연결', virtual:true, wbsUnassigned:true, children:loose}
+          : unlinked(loose, displayId('wbs-unassigned', nextPath),
+            'WBS Task 미연결' + (node.name || node.summary ? ' · ' + (node.name || node.summary) : '')));
+        continue;
+      }
+      result.push(id === node.id && sameNodes(children, node.children || []) ? node : {...node, id, children});
+    }
+    return result;
+  }
+  const lifted = lift(tree), loose = lifted.filter(node => kindOf(node) !== 'wbs');
+  return loose.length ? [...lifted.filter(node => kindOf(node) === 'wbs'),
+    unlinked(loose, displayId('wbs-unassigned', []))] : lifted;
+}
+
 export function projectTrackingHierarchy(run) {
   if (!run) return run;
   const issues = new Map((Array.isArray(run.issues) ? run.issues : Object.values(run.issues || {}))
@@ -71,6 +113,8 @@ export function projectTrackingHierarchy(run) {
     }
     return result;
   }
-  const tree = project(run.tree, []);
+  // Group with the saved ancestry first: removing module paths must not merge
+  // independent unassigned-Epic scopes or change their existing identities.
+  const tree = wbsRoots(project(run.tree, []));
   return sameNodes(tree, run.tree || []) ? run : {...run, tree};
 }

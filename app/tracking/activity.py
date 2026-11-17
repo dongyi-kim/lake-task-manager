@@ -1,6 +1,7 @@
 """Read-only activity projection; Jira history remains available for interpretation."""
 from collections import defaultdict
 from copy import deepcopy
+import re
 
 from app.tracking.analysis import event_counts
 
@@ -9,10 +10,35 @@ _IGNORED_FIELDS = {
     "timespent", "timeestimate", "timeoriginalestimate", "originalestimate", "remainingestimate",
     "worklogid", "aggregatetimespent", "aggregatetimeestimate", "aggregatetimeoriginalestimate",
 }
+_LINK_FIELDS = {"link", "issuelink", "issuelinks", "remoteissuelink"}
+_INCOMING_MENTION = re.compile(r"^(?:this issue\s+)?(?:is\s+)?mentioned (?:in|on|by)(?:\s|$)", re.I)
 
 
 def _field_name(value):
     return "".join(char for char in str(value or "").casefold() if char.isalnum())
+
+
+def _new_incoming_mention(event):
+    """Only explicit relationship evidence can distinguish a mention from an added link.
+
+    Jira's ordinary from/to IDs and URLs do not prove direction. Older saved
+    events can still prove it when their relationship text says mentioned in/on/by.
+    """
+    change = event.get("linkChange") or {}
+    if not isinstance(change, dict):
+        change = {}
+    if any(change.get(name) for name in ("from", "fromString")) or event.get("from"):
+        return False
+    if not (change.get("to") or change.get("toString") or event.get("to")):
+        return False
+    direction = str(change.get("direction") or event.get("direction") or "").strip().casefold()
+    if direction and direction not in {"inward", "incoming"}:
+        return False
+    relations = [change.get("relationship"), event.get("relationship"), change.get("toString"), event.get("to")]
+    link_type = change.get("type") or change.get("linkType")
+    if isinstance(link_type, dict) and direction in {"inward", "incoming"}:
+        relations.append(link_type.get("inward"))
+    return any(isinstance(value, str) and _INCOMING_MENTION.match(" ".join(value.split())) for value in relations)
 
 
 def _ignored(event):
@@ -20,6 +46,8 @@ def _ignored(event):
     if kind not in ("fieldChanged", "completed", "reopened"):
         return False
     field = _field_name(event.get("field"))
+    if kind == "fieldChanged" and field in _LINK_FIELDS:
+        return not _new_incoming_mention(event)
     # The exact transition is bookkeeping even with custom status categories.
     return (kind == "fieldChanged" and field in _IGNORED_FIELDS) or (
         field == "status" and str(event.get("from") or "").strip().casefold() == "resolved"

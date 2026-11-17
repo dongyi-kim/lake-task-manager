@@ -54,6 +54,27 @@ def test_voc_without_confirmed_current_assignee_stays_unknown(assignee_present, 
     assert not missing and uncertain == {'P-1'}
 
 
+@pytest.mark.parametrize('assignee', [
+    {'key': 'JIRAUSER123'}, {'accountId': 'account-123'},
+    {'key': 'JIRAUSER123', 'displayName': 'member'},
+])
+def test_voc_unresolved_assignee_namespace_is_retained_as_uncertain(assignee):
+    raw = row('P-1', ['Configured VOC'])
+    raw['fields']['assignee'] = assignee
+    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic',
+        voc_component='Configured VOC', module_people={'A': ['member']})
+    assert [r['key'] for r in kept] == ['P-1']
+    assert not missing and uncertain == {'P-1'}
+
+
+def test_voc_explicit_outside_username_is_excluded_despite_matching_display_name():
+    raw = row('P-1', ['Configured VOC'])
+    raw['fields']['assignee'] = {'name': 'outsider', 'key': 'JIRAUSER123', 'displayName': 'member'}
+    kept, missing, uncertain = module_candidates([raw], ['A'], [], 'epic',
+        voc_component='Configured VOC', module_people={'A': ['member']})
+    assert not kept and not missing and not uncertain
+
+
 def test_subtask_inherits_voc_parent_configured_module_membership():
     parent = row('P-10', ['Configured VOC'])
     parent['fields']['assignee'] = {'name': 'member'}

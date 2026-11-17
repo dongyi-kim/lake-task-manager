@@ -33,7 +33,7 @@ export default {
     },
     kind(row) {
       if (row.epicUnassigned) return '미소속';
-      return ({module:'모듈',wbs:'WBS'})[row.kind] || typeLabel(this.issueType(row));
+      return ({module:'모듈',wbs:'WBS Task'})[row.kind] || typeLabel(this.issueType(row));
     },
     typeColor(row) { return row.epicUnassigned || ['module','wbs'].includes(row.kind) ? undefined : TYPE_BG[this.issueType(row)]; },
   },

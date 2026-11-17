@@ -16,6 +16,7 @@ from app.domain.progress import VOC_COMPONENT
 from app.tracking.analysis import KST, analyze_issue, build_result, identity_aliases, instant, period_bounds, person
 from app.tracking.source import IncompleteSource, TrackingSource
 from app.tracking.presentation import present_comments
+from app.tracking.names import remember_tracking_names, tracking_name_observations
 from app.tracking.activity import project_activity
 from app.tracking.scope import module_candidates
 from app.tracking.storage import TrackingStore, encode
@@ -43,7 +44,7 @@ class TrackingManager:
                        "projects": getattr(self.client.s, "search_jira_projects", [self.client.s.project_key])})
 
     def options(self):
-        self.authorize()
+        owner, scope = self.authorize()
         people = self.people_loader()
         today = datetime.now(KST).date()
         names = {}
@@ -51,6 +52,20 @@ class TrackingManager:
             # Display-only cache lookup: option rendering never performs N people REST calls.
             name = (self.client.display_name_cached(uid) if hasattr(self.client, "display_name_cached") else None) or uid
             names[uid] = name
+        attempted = getattr(self, "_name_bootstrap_attempted", {})
+        missing = {uid for uid, name in names.items() if name == uid}
+        pending = missing - attempted.get((owner, scope), set())
+        if pending and callable(getattr(self.client, "remember_display_name", None)):
+            observations = {}
+            for snapshot in self.store.recent(owner, scope):
+                for uid, observation in tracking_name_observations(snapshot, people=pending).items():
+                    if uid not in observations or observations[uid][1] < observation[1]:
+                        observations[uid] = observation
+            remember_tracking_names(self.client, observations)
+            for uid in pending:
+                names[uid] = self.client.display_name_cached(uid) or uid
+            attempted[(owner, scope)] = attempted.get((owner, scope), set()) | pending
+            self._name_bootstrap_attempted = attempted
         try:
             from app.agent.config import llm_ready
             ai_enabled, ai_reason = llm_ready()

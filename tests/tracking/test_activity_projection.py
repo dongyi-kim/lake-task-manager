@@ -38,6 +38,7 @@ def store_run(m, events, *, status="complete"):
     "timespent", "Time Spent", "TIME_SPENT", "time-spent", "timeestimate", "Time Estimate",
     "timeoriginalestimate", "Original Estimate", "Remaining Estimate", "worklogid", "Worklog ID",
     "aggregatetimespent", "Aggregate Time Estimate", "aggregate_time_original_estimate",
+    "remoteissuelink", "Remote Issue Link", "REMOTE_ISSUE_LINK", "remote-issue-link",
 ])
 def test_saved_bookkeeping_fields_are_hidden_without_changing_jira_sources(tmp_path, field):
     provider = Provider()
@@ -85,6 +86,7 @@ def test_legacy_mixed_activity_recounts_every_tree_level_and_all_read_paths(tmp_
     provider = Provider()
     m = manager(tmp_path, provider)
     events = [event("spent", field="timespent", key="P-2"),
+              event("remote-link", field="Remote Issue Link", key="P-2"),
               event("closed", field="status", before="Resolved", after="Closed"),
               event("complete", kind="completed", field="status", before="Open", after="Resolved"),
               event("reopen", kind="reopened", field="status", before="Resolved", after="Open"),
@@ -102,9 +104,9 @@ def test_legacy_mixed_activity_recounts_every_tree_level_and_all_read_paths(tmp_
         assert run["summary"]["fieldChanges"] == 1
         assert run["summary"]["completed"] == run["summary"]["completedEvents"] == 1
         assert run["summary"]["reopened"] == run["summary"]["reopenedEvents"] == 1
-        module = run["tree"][0]
-        task, epic = module["children"][0], module["children"][0]["children"][0]
-        for node in (module, task, epic):
+        task = run["tree"][0]
+        epic = task["children"][0]
+        for node in (task, epic):
             assert node["counts"]["totalEvents"] == 4
             assert node["counts"]["uniqueIssues"] == 1
         assert epic["children"][1]["counts"]["totalEvents"] == 0
@@ -145,6 +147,9 @@ def test_new_runs_filter_after_interpreting_status_history_and_keep_raw_checkpoi
                         {"field": "status", "from": "1", "to": "2", "fromString": "Open", "toString": "Resolved"},
                         {"field": "status", "from": "2", "to": "3", "fromString": "Resolved", "toString": "Closed"},
                         {"field": "timespent", "from": "0", "to": "3600"},
+                        {"field": "RemoteIssueLink", "from": "", "to": "12345"},
+                        {"field": "RemoteIssueLink", "from": None, "to": "doc-42", "toString": "Review notes",
+                         "relationship": "mentioned in", "direction": "inward"},
                         {"field": "summary", "fromString": "old", "toString": "new"}]}]}
             return result
 
@@ -154,22 +159,27 @@ def test_new_runs_filter_after_interpreting_status_history_and_keep_raw_checkpoi
 
     assert run["status"] == "complete"
     assert run["summary"]["completed"] == 1
-    assert run["summary"]["fieldChanges"] == 1
+    assert run["summary"]["fieldChanges"] == 2
     assert all(e.get("field") != "timespent" for e in run["events"])
     assert not any(e.get("from") == "Resolved" and e.get("to") == "Closed" for e in run["events"])
+    incoming = next(e for e in run["events"] if e.get("field") == "RemoteIssueLink")
+    assert incoming["linkChange"]["relationship"] == "mentioned in"
+    assert incoming["linkChange"]["direction"] == "inward"
+    assert incoming["to"] == "Review notes"
     assert m.list()[0]["summary"] == run["summary"]
     checkpoint = m.store.read(run["id"])[3]
-    assert len(checkpoint["sources"]["P-1"]["history"]["histories"][0]["items"]) == 4
+    assert len(checkpoint["sources"]["P-1"]["history"]["histories"][0]["items"]) == 6
     assert run["metrics"]["restRequests"] == len(provider.calls)
 
 
 @pytest.mark.parametrize("root_events", ["present", "missing", "null"])
-def test_regenerated_ai_summary_survives_reads_with_only_visible_evidence(tmp_path, monkeypatch, root_events):
+@pytest.mark.parametrize("ignored_field", ["timespent", "remoteissuelink"])
+def test_regenerated_ai_summary_survives_reads_with_only_visible_evidence(tmp_path, monkeypatch, root_events, ignored_field):
     from app.tracking import summary
 
     provider = Provider()
     m = manager(tmp_path, provider)
-    store_run(m, [event("ignored", field="timespent"), event("kept", kind="comment")])
+    store_run(m, [event("ignored", field=ignored_field), event("kept", kind="comment")])
     _, _, stored, checkpoint = m.store.read("saved")
     if root_events == "missing":
         stored.pop("events")
@@ -251,3 +261,61 @@ def test_an_explicitly_empty_root_event_array_stays_empty(tmp_path):
     m.store.save("saved", snapshot, checkpoint)
 
     assert m.get("saved")["events"] == []
+
+
+@pytest.mark.parametrize(("before", "after", "metadata", "kept"), [
+    ("", "This issue is mentioned in DOC-42", {}, True),
+    ("", "is mentioned by P-2", {}, True),
+    ("", "DOC-42", {"relationship": "mentioned in"}, True),
+    ("", "P-2", {"relationship": "is mentioned by", "direction": "inward"}, True),
+    ("", "P-2", {"relationship": "is mentioned by", "direction": "outward"}, False),
+    ("", "P-2", {"relationship": "mentions", "direction": "outward"}, False),
+    ("", "P-2", {"relationship": "relates to", "direction": "inward"}, False),
+    ("", "P-2", {"direction": "inward"}, False),
+    ("", "is mentioned by P-2", {"from": "old-link"}, False),
+    ("is mentioned in DOC-42", "", {}, False),
+    ("is mentioned in DOC-42", "is mentioned in DOC-43", {}, False),
+    ("", "Document title containing mentioned in text", {}, False),
+    ("", "https://wiki.example/mentioned/in/DOC-42", {}, False),
+])
+@pytest.mark.parametrize("field", ["RemoteIssueLink", "Link", "Issue Link"])
+def test_link_activity_only_keeps_explicit_new_incoming_mentions(tmp_path, before, after, metadata, kept, field):
+    provider = Provider()
+    m = manager(tmp_path, provider)
+    change = event("link", field=field, before=before, after=after)
+    if metadata:
+        change["linkChange"] = {"from": before, "to": after, **metadata}
+    store_run(m, [change, event("comment", kind="comment")])
+    stored_before = m.store.read("saved")
+
+    for run in (m.get("saved"), m.list()[0]):
+        assert {e["id"] for e in run["events"]} == ({"link", "comment"} if kept else {"comment"})
+        assert run["summary"]["fieldChanges"] == int(kept)
+        assert run["tree"][0]["counts"]["fieldChanges"] == int(kept)
+    assert m.store.read("saved") == stored_before
+    assert provider.calls == []
+
+
+def test_summary_uses_incoming_mentions_without_outgoing_or_generic_link_noise(tmp_path, monkeypatch):
+    from app.tracking import summary
+
+    provider = Provider()
+    m = manager(tmp_path, provider)
+    store_run(m, [event("incoming", field="RemoteIssueLink", before="", after="This issue is mentioned in Review notes"),
+                  event("outgoing", field="Link", before="", after="This issue mentions P-2"),
+                  event("generic", field="remoteissuelink", before="", after="https://wiki.example/doc"),
+                  event("comment", kind="comment", after="remoteissuelink was discussed")])
+    payloads = []
+
+    def invoke(payload):
+        payloads.append(payload)
+        return {"items": [{"text": "New incoming reference", "evidenceIds": ["incoming"]}]}, {"totalTokens": 0}
+
+    monkeypatch.setattr(summary, "_ready", lambda: (True, ""))
+    monkeypatch.setattr(summary, "_invoke", invoke)
+    summary.summarize_snapshot(m.get("saved"))
+
+    assert {e["id"] for e in payloads[0]["events"]} == {"incoming", "comment"}
+    assert payloads[0]["summary"]["fieldChanges"] == 1
+    assert payloads[0]["summary"]["comments"] == 1
+    assert provider.calls == []

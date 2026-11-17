@@ -2,9 +2,11 @@
 
 import threading
 import time
+import hashlib
 
 from app.auth.base import SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable
 from app.domain.names import real_name
+from app.jira.person_names import FRESH_SECONDS, PersonNames, source_scope, useful_name
 
 
 class JiraIdentityMixin:
@@ -17,22 +19,44 @@ class JiraIdentityMixin:
     AUTH_PROBE_WAIT_SECONDS = 30
     SESSION_STATE_PERSIST_EVERY = 4 * 60
 
+    def _person_names(self):
+        scope = source_scope(self.env, getattr(self.s, "jira_base", ""))
+        directory = getattr(self, "_person_name_directory", None)
+        if directory is None or directory.scope != scope:
+            directory = self._person_name_directory = PersonNames(self.cache, scope)
+        return directory
+
+    def remember_display_name(self, user_id, display_name, observed_at=None):
+        """Record a name already observed in Jira data; never request a person here."""
+        self._person_names().observe(user_id, display_name, observed_at)
+
+    def remember_display_names(self, observations):
+        self._person_names().observe_many(observations)
+
     def _display_name(self, user_id):
         """Keep useful names visible until display expiry; refresh once when stale."""
-        cache_key = f"user:{self.env}:{user_id}"
+        directory = self._person_names()
+        fresh = directory.read(user_id, FRESH_SECONDS)
+        if fresh:
+            return fresh[0]
+        cached = self.display_name_cached(user_id)
+        scope_key = hashlib.sha256(directory.scope.encode()).hexdigest()[:24]
+        cache_key = f"personname:{scope_key}:{str(user_id).strip().casefold()}"
         def fetch():
             raw = self.provider.get_json("/rest/api/2/user", params={"username": user_id})
             name = raw.get("displayName")
-            if not name:
+            if not useful_name(user_id, name):
                 raise ValueError("Incomplete Jira user response")
+            self.remember_display_name(user_id, name)
             return name
         try:
             return self.cache.get_or_set(cache_key, self.USER_TTL, fetch)[0]
         except Exception:
-            return user_id
+            return cached or user_id
 
     def display_name_cached(self, user_id):
-        got = self.cache.get_alive(f"user:{self.env}:{user_id}")
+        directory = self._person_names()
+        got = directory.read(user_id)
         return got[0] if got else None
 
     def _mention_name(self, user_id):
@@ -50,6 +74,7 @@ class JiraIdentityMixin:
             if not actual or str(actual).lower() != user_id.lower():
                 raise ValueError("Incomplete Jira user response")
             display_name = raw.get("displayName") or actual
+            self.remember_display_name(actual, display_name)
             return {"id": actual, "username": actual, "name": real_name(display_name) or actual,
                     "displayName": display_name, "avatar": "/api/avatar/" + actual}
         try:

@@ -83,3 +83,102 @@ def test_plain_comment_projection_uses_the_collected_sanitized_rendering(tmp_pat
 
     assert m.get("saved")["events"][0]["bodyText"] == "Already rendered"
     assert provider.calls == []
+
+
+@pytest.mark.parametrize("encoding", ["raw", "escaped", "double-escaped"])
+@pytest.mark.parametrize("body_format", ["wiki", "html"])
+def test_legacy_html_document_is_rendered_from_its_stored_format(tmp_path, encoding, body_format):
+    from html import escape
+
+    html = ('<p onclick="bad()">First <strong>ready</strong></p><p>Second</p><p>Third</p>'
+            '<table><tr><th>State</th></tr><tr><td>Done</td></tr></table>'
+            '<pre><code>&lt;div&gt; &amp; x &lt; 3</code></pre><script>unsafe()</script>')
+    body = html
+    for _ in range({"raw": 0, "escaped": 1, "double-escaped": 2}[encoding]):
+        body = escape(body, quote=False)
+    m, provider = saved_run(tmp_path, body=body, body_format=body_format)
+    stored = m.store.read("saved")
+
+    event = m.get("saved")["events"][0]
+
+    assert '<p>First <strong>ready</strong></p>' in event["bodyHtml"]
+    assert '<table' in event["bodyHtml"]
+    assert '<pre><code>&lt;div&gt; &amp; x &lt; 3</code></pre>' in event["bodyHtml"]
+    assert event["bodyText"] == 'First ready\nSecond\nThird\nState\nDone\n<div> & x < 3'
+    assert all(value not in event["bodyHtml"] for value in ("onclick", "unsafe()", "<script"))
+    assert m.store.read("saved") == stored
+    assert provider.calls == []
+
+
+def test_matching_jira_rendering_that_quotes_html_source_does_not_show_tags(tmp_path):
+    from html import escape
+
+    body = '<p>First</p><p>Second</p><p>Third</p>'
+    m, provider = saved_run(tmp_path, body=body, body_format="html",
+                            rendered_body='<p>' + escape(body, quote=False) + '</p>')
+
+    event = m.get("saved")["events"][0]
+
+    assert event["bodyHtml"] == body
+    assert event["bodyText"] == 'First\nSecond\nThird'
+    assert provider.calls == []
+
+
+def test_mismatching_checkpoint_cannot_replace_the_observed_comment(tmp_path):
+    body = '<p>Observed</p><p>Second</p><p>Third</p>'
+    m, provider = saved_run(tmp_path, body=body, body_format="wiki", rendered_body='<p>Newer text</p>')
+    _, _, snapshot, checkpoint = m.store.read("saved")
+    checkpoint["sources"]["P-1"]["comments"][0]["body"] = '<p>Newer text</p>'
+    m.store.save("saved", snapshot, checkpoint)
+
+    assert m.get("saved")["events"][0]["bodyHtml"] == body
+    assert provider.calls == []
+
+
+@pytest.mark.parametrize("body,expected", [
+    ('{code:html}\n<p>Literal sample</p>\n{code}', '<p>Literal sample</p>'),
+    ('{noformat}\n&lt;p&gt;Literal sample&lt;/p&gt;\n{noformat}', '&lt;p&gt;Literal sample&lt;/p&gt;'),
+    ('Compare a < b and c > d', 'Compare a < b and c > d'),
+    ('Use &lt;p&gt;sample&lt;/p&gt; in your template', 'Use &lt;p&gt;sample&lt;/p&gt; in your template'),
+])
+def test_legacy_detection_preserves_literal_samples_and_comparisons(tmp_path, body, expected):
+    m, provider = saved_run(tmp_path, body=body)
+
+    assert m.get("saved")["events"][0]["bodyText"] == expected
+    assert provider.calls == []
+
+
+def test_plain_multiline_comment_in_html_configuration_keeps_visible_breaks(tmp_path):
+    body = 'First a < b and c > d\nSecond\nThird'
+    m, provider = saved_run(tmp_path, body=body, body_format="html")
+
+    event = m.get("saved")["events"][0]
+
+    assert event["bodyHtml"] == 'First a &lt; b and c &gt; d<br>Second<br>Third'
+    assert event["bodyText"] == body
+    assert provider.calls == []
+
+
+def test_matching_rendered_code_sample_is_never_reparsed_as_comment_markup(tmp_path):
+    body = '{code:html}\n<p>Literal sample</p>\n{code}'
+    rich = '<pre><code>&lt;p&gt;Literal sample&lt;/p&gt;</code></pre>'
+    m, provider = saved_run(tmp_path, body=body, rendered_body=rich)
+
+    event = m.get("saved")["events"][0]
+
+    assert event["bodyHtml"] == rich
+    assert event["bodyText"] == '<p>Literal sample</p>'
+    assert provider.calls == []
+
+
+def test_encoded_collected_rendering_is_sanitized_after_decoding(tmp_path):
+    from html import escape
+
+    m, provider = saved_run(tmp_path, body="unsupported wiki macro",
+                            rendered_body=escape('<p onclick="bad()">Ready</p><script>unsafe()</script>'))
+
+    event = m.get("saved")["events"][0]
+
+    assert event["bodyHtml"] == '<p>Ready</p>'
+    assert event["bodyText"] == 'Ready'
+    assert provider.calls == []

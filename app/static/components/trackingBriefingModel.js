@@ -169,7 +169,7 @@ export function buildTrackingBriefing(run, options={}) {
     (childStatus==='all' || briefingState(selectedIssue)===childStatus) && (!active || searchKeys.has(selectedKey));
   const visibleKeys=unique([...items.flatMap(item=>active ? item.matchedKeys : item.keys),...(includeSelected?[selectedKey]:[])]);
   const visibleEvents=events.filter(event=>visibleKeys.includes(event.issueKey));
-  const level=scope.node ? kindOf(scope.node)==='wbs' ? 'Epic·그룹' : ['epic','group'].includes(kindOf(scope.node)) ? 'Task' : kindOf(scope.node)==='module' ? 'WBS' : 'Subtask' : roots.some(n=>kindOf(n)==='module') ? '모듈' : roots.some(n=>kindOf(n)==='wbs') ? 'WBS' : '업무';
+  const level=scope.node ? kindOf(scope.node)==='wbs' ? 'Epic·그룹' : ['epic','group'].includes(kindOf(scope.node)) ? 'Task' : kindOf(scope.node)==='module' ? 'WBS Task' : 'Subtask' : roots.some(n=>kindOf(n)==='module') ? '모듈' : roots.some(n=>kindOf(n)==='wbs') ? 'WBS Task' : '업무';
   const heading=state=>state==='progress' ? '진행 중인 '+level : state==='todo' ? '대기 중인 '+level : BRIEFING_STATES[state].label+' '+level;
   const open=items.filter(item=>item.state!=='done'), sections=[];
   const groups=new Map();
