@@ -5,6 +5,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from app.infra.json_payload import encoded_size
+from app.infra.resource_pressure import resource_pressure
+from app.jira.body_search import BODY_BATCH_LIMIT_MESSAGE, BODY_PAGE_LIMIT_MESSAGE, MAX_BODY_RESULT_BYTES
 from app.jira.jql import _split_order, tokenize
 from app.jira.jql_budget import budgeted_query, current_budget
 from app.services.ticket_commands import CommandError
@@ -35,10 +38,16 @@ def register_reads(register, runtime):
         The description switch is independent of detail: true includes the body even with summary.
         Raw description retains Jira markup;
         use get_ticket(read/edit) when a rendered/editable representation is actually needed.
-        Preserve include_description and cache_mode with the snapshot on following pages; changing
-        either starts a new first-page search. A snapshot lasts 30 minutes from creation, separately
-        from its source age. snapshotFrozen=true continues that fixed result and does not establish
-        another live validation; use a new first-page search when new current evidence is required.
+        Description searches use direct Jira pages of at most 10 tickets and 16 MiB, independently
+        cached without a full-query snapshot. max_results is advisory; follow actual nextStartAt
+        with the same JQL, include_description and cache_mode. snapshotId is null, snapshotFrozen
+        is false, execution.effectiveStrategy is off and fallbackReason is body_projection.
+        Default ordering is key ASC; explicit ordering is preserved. These are current pages,
+        so upstream edits between pages may change membership/order; they are not a frozen report.
+        Do not supply a previous snapshot_id for a description search. If a page exceeds the byte
+        limit, reduce max_results (down to 1); one oversized body needs get_ticket(read).
+        Metadata-only searches retain their 30-minute frozen snapshots. Preserve include_description,
+        cache_mode, strategy and max_parts with that cursor; a continuation is not a new live validation.
         descriptionMissingKeys identifies requested bodies not returned;
         a returned null/empty description is a known empty body. Do not re-read fields already obtained.
         strategy=off uses one whole JQL (possibly many pages), people groups proven people filters,
@@ -76,6 +85,8 @@ def register_reads(register, runtime):
         if include_description:
             result.update(descriptionRequested=True, descriptionMissingKeys=[
                 issue["key"] for issue in page.get("issues") or [] if "description" not in issue["fields"]])
+            if encoded_size(result) > MAX_BODY_RESULT_BYTES:
+                raise ValueError(BODY_PAGE_LIMIT_MESSAGE)
         return result
 
     @budgeted_query
@@ -94,6 +105,9 @@ def register_reads(register, runtime):
         bodies appear separately in descriptionMissingKeys; returned null/empty is known empty.
         A batch uses Jira search pages if the server applies a smaller page cap; it never
         fetches individual issues. Split larger key sets into batches of at most 100.
+        The combined result is limited to 16 MiB. Larger bodies require fewer keys or
+        search_issues(max_results=1, include_description=true) pagination; one oversized
+        body needs get_ticket(read). A size refusal is an error, never a truncated result.
         strategy and max_parts have the same meaning as search_issues and apply to the whole batch.
         """
         requested = list(dict.fromkeys(key.upper() for key in keys))
@@ -101,12 +115,19 @@ def register_reads(register, runtime):
             runtime.check_key(key)
         query = "key in (" + ",".join(json.dumps(key) for key in sorted(requested)) + ") ORDER BY key ASC"
         rows, missing_bodies, start, snapshot, seen = {}, set(), 0, None, set()
+        row_sizes, aggregate_bytes = {}, 2
         while True:
+            resource_pressure.check()
             page = search_issues(query, start_at=start, max_results=100, snapshot_id=snapshot,
                                  include_description=include_description, strategy=strategy, max_parts=max_parts)
             for issue in page["issues"]:
                 if issue["key"] not in requested:
                     raise ValueError("요청하지 않은 티켓이 다건 조회에 포함되었습니다.")
+                row_bytes = encoded_size(issue) + 1
+                aggregate_bytes += row_bytes - row_sizes.get(issue["key"], 0)
+                if aggregate_bytes > MAX_BODY_RESULT_BYTES:
+                    raise ValueError(BODY_BATCH_LIMIT_MESSAGE)
+                row_sizes[issue["key"]] = row_bytes
                 rows[issue["key"]] = issue
             missing_bodies.update(page.get("descriptionMissingKeys") or [])
             if not page["hasMore"]:
@@ -123,6 +144,8 @@ def register_reads(register, runtime):
         if include_description:
             result.update(descriptionRequested=True,
                           descriptionMissingKeys=[key for key in requested if key in missing_bodies])
+        if encoded_size(result) > MAX_BODY_RESULT_BYTES:
+            raise ValueError(BODY_BATCH_LIMIT_MESSAGE)
         return result
 
     def get_ticket(key: str, fresh: bool = False, detail: Literal["full", "summary", "read", "edit"] = "full") -> dict:

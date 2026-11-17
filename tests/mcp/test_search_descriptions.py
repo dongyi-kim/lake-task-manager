@@ -130,7 +130,7 @@ def test_body_off_strips_cached_raw_and_rendered_bodies_without_mutating_snapsho
     anyio.run(scenario)
 
 
-def test_description_pagination_reuses_projection_and_respects_configured_scope(build_env):
+def test_description_pagination_uses_direct_pages_and_respects_configured_scope(build_env):
     env = build_env()
     keys = seed_bodies(env)
     async def scenario():
@@ -141,14 +141,22 @@ def test_description_pagination_reuses_projection_and_respects_configured_scope(
             assert not first.is_error
             data = first.structured_content["data"]
             assert data["hasMore"] and len(data["issues"]) == 1
+            assert data["snapshotId"] is None and data["snapshotFrozen"] is False
+            assert data["execution"]["effectiveStrategy"] == "off"
+            assert data["execution"]["fallbackReason"] == "body_projection"
             before = len(env.calls)
-            wrong = await client.call_tool("search_issues", {**args, "snapshot_id": data["snapshotId"],
-                                                            "start_at": 1, "include_description": False})
+            metadata = await client.call_tool("search_issues", {**args, "include_description": False})
+            snapshot = metadata.structured_content["data"]["snapshotId"]
+            wrong = await client.call_tool("search_issues", {**args, "snapshot_id": snapshot, "start_at": 1})
             assert wrong.is_error
-            second = await client.call_tool("search_issues", {**args, "snapshot_id": data["snapshotId"], "start_at": 1})
+            after_metadata = len(env.calls)
+            assert after_metadata >= before
+            second = await client.call_tool("search_issues", {**args, "start_at": data["nextStartAt"]})
             assert not second.is_error
             assert "description" in second.structured_content["data"]["issues"][0]["fields"]
-            assert len(env.calls) == before
+            assert len(env.calls) == after_metadata + 1
+            warm = await client.call_tool("search_issues", {**args, "start_at": data["nextStartAt"]})
+            assert not warm.is_error and len(env.calls) == after_metadata + 1
             env.runtime.settings.search_jira_projects = ["XX"]
             denied_scope = await client.call_tool("search_issues", args)
             assert not denied_scope.is_error

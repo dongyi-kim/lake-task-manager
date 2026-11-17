@@ -23,6 +23,8 @@ from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflig
 from app.infra.cache_policy import (CacheMode, RequestReadPolicy, current_read_policy,
                                    note_read, read_scope, reduce_read_metadata, revalidating,
                                    observed_reads)
+from app.infra.resource_pressure import resource_pressure
+from app.infra.json_payload import encoded_size
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
                        serialize_jira_html, shorten_mention_names, text_to_html, tidy_html, unproxy_media)
@@ -35,6 +37,7 @@ from app.jira.jql_execution import (group_query, partition_fields, partition_row
                                     projection_scope, row_projection_complete, selector_fields)
 from app.jira.cache_policy import (JqlCachePolicy, MutationEvent,
                                    changed_predicate_fields)
+from app.jira.body_search import BODY_PAGE_SIZE, is_body_projection, search_body_page
 from app.jira.identity_service import JiraIdentityMixin
 from app.jira.media_service import JiraMediaMixin, _is_default_avatar_url
 from app.jira.mutation_recovery import (MutationReceiptStore,
@@ -580,8 +583,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     EPIC_META_TTL = 12 * 3600
     JQL_LEAF_RESULT_LIMIT = 10_000
     JQL_BOOTSTRAP_RESULT_LIMIT = 50_000
+    JQL_BODY_AGGREGATE_LIMIT = 32 * 1024 * 1024
     PROVIDER_WAIT_SECONDS = 1
     PROVIDER_RETRY_SECONDS = 20
+    SWR_MAX_PENDING = 8
 
     def __init__(self, settings, cache):
         self.s = settings
@@ -613,6 +618,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._renew_locks = {}
         self._renew_guard = threading.Lock()
         self._renew_results = {}
+        self._bg_lock = threading.Lock()
+        self._bg_pool = None
+        self._bg_inflight = set()
         # 포커스 복귀가 여러 번 겹치거나 브라우저 탭이 둘 이상이어도 /myself 확인과
         # silent SSO 갱신은 하나만 수행한다. 겹친 요청에는 pending 또는 직전 결과를 반환한다.
         self._auth_probe_lock = threading.Lock()
@@ -1117,31 +1125,47 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def _refresh_bg(self, key, ttl, producer):
         fence = self.cache.fence()
+
+        def refresh():
+            with background_upstream():
+                if self.cache.fence() == fence and self.cache.get(key) is None:
+                    self.cache.refresh(key, ttl, producer)
+
+        self._submit_bg(key, refresh)
+
+    def _submit_bg(self, key, producer):
+        """One bounded, deduplicated queue shared by SWR and post-write refresh."""
         self._ensure_bg()
         with self._bg_lock:
-            if key in self._bg_inflight:
+            if key in self._bg_inflight or len(self._bg_inflight) >= self.SWR_MAX_PENDING:
+                # Retain stale data and let a later read retry instead of growing
+                # the executor's unbounded queue with distinct cache keys.
                 return
             self._bg_inflight.add(key)
 
         def job():
             try:
-                with background_upstream():
-                    if self.cache.fence() == fence and self.cache.get(key) is None:
-                        self.cache.refresh(key, ttl, producer)
+                resource_pressure.check()
+                producer()
             except Exception:
                 pass                     # 갱신 실패는 조용히 — stale 값이 계속 쓰인다
             finally:
                 with self._bg_lock:
                     self._bg_inflight.discard(key)
 
-        self._bg_pool.submit(job)
+        try:
+            self._bg_pool.submit(job)
+        except Exception:
+            # Refresh is best effort. Failed submission must neither fail the
+            # stale read nor permanently consume this key's refresh admission.
+            with self._bg_lock:
+                self._bg_inflight.discard(key)
 
     def _ensure_bg(self):
         """백그라운드 갱신 자원 — 워커 1개(직렬 상류를 더 붐비게 하지 않는다)."""
-        if getattr(self, "_bg_pool", None) is None:
-            self._bg_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="swr")
-            self._bg_lock = threading.Lock()
-            self._bg_inflight = set()
+        with self._bg_lock:
+            if self._bg_pool is None:
+                self._bg_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="swr")
 
     # ── '내 Task' 용 얇은 조회 헬퍼 (app/mytasks.py 가 쓴다) ──
     def search_issues(self, jql, max_results=200, cache_key=None):
@@ -1397,9 +1421,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         normalized = ",".join(sorted(
             {part.strip().lower() for part in str(fields or "").split(",") if part.strip()}))
         context = self._jql_user_context()
-        return hashlib.sha256(
-            f"{context}\n{int(bool(light))}\n{normalized}".encode("utf-8")
-        ).hexdigest()[:20]
+        identity = f"{context}\n{int(bool(light))}\n{normalized}"
+        if is_body_projection(normalized):
+            identity += "\nbody-bounded-v1"
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 
     def _projection_covers_issue_cache(self, fields, light):
         """Whether a search row is complete enough for the shared issue/issueL cache.
@@ -1431,6 +1456,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def _fetch_exhaustive_jql(self, query, fields, light, result_limit):
         issues, start, expected_total = [], 0, None
+        body_projection, aggregate_bytes = is_body_projection(fields), 2
         fence = self.cache.fence()
         collected = time.time()
         while True:
@@ -1447,6 +1473,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     raise JqlUnsupported(
                         f"JQL 결과가 안전 한도 {result_limit}건을 초과했습니다.")
             batch = page.get("issues") or []
+            if body_projection:
+                for row in batch:
+                    aggregate_bytes += encoded_size(row) + 1
+                    if aggregate_bytes > self.JQL_BODY_AGGREGATE_LIMIT:
+                        raise ValueError("Description query exceeds 32 MiB. Use paged description search or fewer keys.")
             issues.extend(batch)
             if len(issues) > result_limit:
                 raise JqlUnsupported(
@@ -1727,11 +1758,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         groups = plan.groups
         fence = self.cache.fence()
         rows_by_group = []
+        body_projection, aggregate_bytes = is_body_projection(fields), 2
         with read_scope() as sources:
             for _group, result, error in self._iter_jql_groups(groups, fields, light, generation, projection):
                 if error:
                     raise error
-                rows_by_group.extend(rows for _members, rows in result)
+                for _members, group_rows in result:
+                    if body_projection:
+                        for row in group_rows:
+                            aggregate_bytes += encoded_size(row) + 1
+                            if aggregate_bytes > self.JQL_BODY_AGGREGATE_LIMIT:
+                                raise ValueError("Description query exceeds 32 MiB. Use paged description search or fewer keys.")
+                    rows_by_group.append(group_rows)
         for source in sources:
             note_read(source)
         rows = self._combine_jql_rows(rows_by_group, compiled.order)
@@ -1859,6 +1897,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         if isinstance(requested_fields, (list, tuple, set)):
             requested_fields = ",".join(str(x) for x in requested_fields if str(x).strip())
         requested_fields = (requested_fields or self._issue_fields(light=light)).strip()
+        if is_body_projection(requested_fields):
+            return search_body_page(self, jql, start_at=start, max_results=size,
+                fields=requested_fields, light=light, snapshot_id=snapshot_id,
+                strategy=strategy, max_parts=max_parts)
         try:
             with read_scope() as sources:
                 compiled = self._compile_jql(jql, strategy=strategy)
@@ -1903,11 +1945,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def _query_page(self, jql, fields, *, start_at=0, max_results=100, **extra_params):
         provider = self.provider
+        if is_body_projection(fields):
+            max_results = min(max_results, BODY_PAGE_SIZE)
         params = {"jql": jql, "fields": fields, "maxResults": max_results, **extra_params}
         if start_at is not None:
             params["startAt"] = start_at
         with self._query_scheduler.page_scope(
                 parallel_capable=getattr(provider, "supports_parallel", False)):
+            resource_pressure.check()
             claim_physical_query(jql)
             return provider.get_json("/rest/api/2/search", params=params)
 
@@ -2028,28 +2073,44 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
         cached = self._cached_issues(requested, light=light)
         unresolved = [key for key in requested if cached.get(key) is None]
+        capacity_error = None
         if unresolved:
             # Prefetch remains optional. Recheck all hits afterwards: a miss fetch can outlive
             # their TTL or overlap invalidation/replacement of an earlier captured row.
             try:
+                resource_pressure.check()
                 self.prefetch_issues(unresolved, light=light)
             except Exception as exc:
                 if raise_retryable and self.issue_read_error_kind(exc) in ("auth", "transport"):
                     raise
+                if isinstance(exc, UpstreamBusy):
+                    capacity_error = exc
             cached = self._cached_issues(requested, light=light)
 
         for key in requested:
+            if key not in cached and capacity_error is not None:
+                # A refused batch is not permission to fan out into N scalar
+                # requests. Reuse completed rows and leave the rest retryable.
+                result["missing"].append({"key": key, "kind": "transport",
+                    "error": str(capacity_error)[:300], "retryable": True})
+                continue
             try:
                 # Only unresolved rows use the getter's refresh/stale fallback. Never copy its
                 # result back: deliberate stale-offline data must retain its original age.
-                raw = cached[key] if key in cached else (
-                    self.get_issue_light(key) if light else self.get_issue(key))
+                if key in cached:
+                    raw = cached[key]
+                else:
+                    resource_pressure.check()
+                    raw = self.get_issue_light(key) if light else self.get_issue(key)
             except Exception as exc:
                 kind = self.issue_read_error_kind(exc)
                 if raise_retryable and kind in ("auth", "transport"):
                     raise
+                if isinstance(exc, UpstreamBusy):
+                    capacity_error = exc
                 result["missing"].append({
                     "key": key, "kind": kind, "error": str(exc)[:300],
+                    **({"retryable": True} if isinstance(exc, UpstreamBusy) else {}),
                 })
                 continue
             if isinstance(raw, dict) and str(raw.get("key") or "").upper() == key:
@@ -2096,7 +2157,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return date.today()
 
     def prefetch_issues(self, keys, light=False):
-        """여러 티켓 원본을 **검색 한 번**으로 받아 티켓 단위 캐시에 채운다.
+        """Warm full or light ticket caches through bounded Jira search pages.
 
         prod(SSO)는 모든 호출이 단일 큐로 직렬화되므로 낱개 GET N 번 = N × 왕복이다.
         미리 채워두면 이후 get_issue() 들이 전부 캐시 히트라 왕복이 0 이 된다.
@@ -2114,25 +2175,49 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         pfx = "issueL" if light else "issue"
         for i in range(0, len(miss), self.ISSUE_BATCH):
             chunk = miss[i:i + self.ISSUE_BATCH]
-            fence, collected = self.cache.fence(), time.time()
-            try:
-                with read_scope() as sources:
-                    data = self.search_issues_page(
-                        "key in (%s)" % ",".join(chunk), start_at=0,
-                        max_results=len(chunk), fields=fields, light=light)
-            except (SessionExpired, UpstreamUnavailable, TimeoutError, ConnectionError):
-                raise
-            except Exception:
-                return
-            for source in sources:
-                note_read(source)
-            validated = not data.get("snapshotId") or bool(sources) and all(
-                source.get("upstreamValidated", False) for source in sources)
-            self.cache.set_many_if_fence(
-                ((f"{pfx}:{env}:{it['key']}", it) for it in data.get("issues") or []
-                 if it.get("key") and row_projection_complete(it, fields)),
-                self.s.cache_ttl_seconds, fence,
-                fetched_at=data.get("snapshotSourceFetchedAt", collected), upstream_validated=validated)
+            fence = self.cache.fence()
+            start, snapshot_id, seen = 0, None, set()
+            query = "key in (%s) ORDER BY key ASC" % ",".join(chunk)
+            while True:
+                collected = time.time()
+                try:
+                    resource_pressure.check()
+                    with read_scope() as sources:
+                        data = self.search_issues_page(query, start_at=start,
+                            max_results=len(chunk), fields=fields, light=light, snapshot_id=snapshot_id)
+                except (SessionExpired, UpstreamUnavailable, TimeoutError, ConnectionError):
+                    raise
+                except Exception:
+                    return
+                for source in sources:
+                    note_read(source)
+                rows = data.get("issues") or []
+                keys = [row.get("key") for row in rows]
+                if (any(key not in chunk or key in seen for key in keys)
+                        or len(set(keys)) != len(keys)):
+                    return
+                seen.update(keys)
+                validated = bool(sources) and all(source.get("upstreamValidated", False) for source in sources)
+                fetched = [source["fetchedAt"] for source in sources]
+                if data.get("snapshotSourceFetchedAt") is not None:
+                    fetched.append(data["snapshotSourceFetchedAt"])
+                canonical = [(f"{pfx}:{env}:{row['key']}", row) for row in rows
+                             if row_projection_complete(row, fields)]
+                # Cached physical pages retain their original source age and
+                # validation status. Publish only this page, without retaining
+                # every description in an aggregate prefetch graph.
+                if not self.cache.set_many_if_fence(canonical, self.s.cache_ttl_seconds, fence,
+                    fetched_at=min(fetched, default=collected), upstream_validated=validated,
+                    preserve_newer_keys={key for key, _ in canonical},
+                    revalidate_equal_preserved=validated):
+                    return
+                if not data.get("hasMore"):
+                    break
+                next_start = data.get("nextStartAt")
+                if type(next_start) is not int or not start < next_start < len(chunk):
+                    return
+                start, snapshot_id = next_start, data.get("snapshotId")
+                del rows, data, canonical
 
     @budgeted_query
     def _search(self, jql, cache_key=None, max_results=200, light=True, ttl=None, *, strategy="auto", max_parts=64):
@@ -2191,7 +2276,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         data = self._query_page(jql, self._issue_fields(light=light), start_at=start)
                         if isinstance(data, dict) and "issues" in data:
                             batch = data.get("issues", [])
-                            issues.extend(batch); start += 100
+                            issues.extend(batch); start += len(batch)
                             if (start >= data.get("total", 0) or not batch
                                     or (max_results is not None and start >= max_results)):
                                 break
@@ -2207,7 +2292,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     raise ValueError(msgs or "Jira 검색 응답 형식이 올바르지 않습니다.")
                 batch = data.get("issues", [])
                 issues.extend(batch)
-                start += 100
+                start += len(batch)
                 if (start >= data.get("total", 0) or not batch
                         or (max_results is not None and start >= max_results)):
                     break
@@ -2938,8 +3023,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         self._issue_comments(key)
             except Exception:
                 pass
-        self._ensure_bg()
-        self._bg_pool.submit(job)
+        self._submit_bg(("reprime", key, bool(comments)), job)
 
     def invalidate_ticket_all(self, key):
         """이 티켓과 관련된 **모든 파생 캐시**를 비운다 — 좌하단 강제 새로고침용.

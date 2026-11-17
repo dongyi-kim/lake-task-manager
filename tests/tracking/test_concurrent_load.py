@@ -151,7 +151,7 @@ def test_month_tracking_survives_concurrent_mcp_overload_and_busy_resume(tmp_pat
             assert all(sum(map(len, pages)) == 400 for pages in results)
             assert lane.quiescent
             assert await lane.run(lambda: client._query_page(provider.mcp_jql, "summary"))
-            await until(lambda: not manager.workers[run_id].is_alive())
+            await until(lambda: run_id not in manager.workers)
             paused = manager.get(run_id)
             assert paused["status"] == "paused" and not paused["coverage"]["complete"]
             assert paused["coverage"]["missing"]
@@ -174,8 +174,13 @@ def test_month_tracking_survives_concurrent_mcp_overload_and_busy_resume(tmp_pat
             provider.release.set()
             await asyncio.gather(*jobs, return_exceptions=True)
             if run_id:
-                manager.controls[run_id].set()
-                await anyio.to_thread.run_sync(lambda: manager.workers[run_id].join(5))
+                with manager.lock:
+                    signal = manager.controls.get(run_id)
+                    worker = manager.workers.get(run_id)
+                    if signal is not None:
+                        signal.set()
+                if worker is not None:
+                    await anyio.to_thread.run_sync(lambda: worker.join(5))
 
     try:
         anyio.run(scenario)
