@@ -19,6 +19,7 @@ from app.tracking.presentation import present_comments
 from app.tracking.names import remember_tracking_names, tracking_name_observations
 from app.tracking.activity import project_activity
 from app.tracking.scope import module_candidates
+from app.tracking.diagnostics import collection_funnel, issue_counts
 from app.tracking.storage import TrackingStore, encode
 
 
@@ -212,6 +213,8 @@ class TrackingManager:
         plan = self.plan_loader()
         selected_modules = set(request["modules"])
         module_scope_options = {"module_people": self.people_loader()}
+        voc_component = cp.setdefault("collectionVocComponent", getattr(self.client.s, "voc_component", None) or VOC_COMPONENT)
+        collection_stages = cp.setdefault("collectionStages", {})
         if selected_modules and cp.get("moduleScopeVersion") != 2:
             # Old paused runs may have completed discovery with a narrower scope.
             # Re-discover candidates once; preserve expensive raw/history/comment work.
@@ -219,6 +222,7 @@ class TrackingManager:
                 if label.startswith(("candidates", "peopleCandidates:", "scopeParents:")):
                     del cp["queries"][label]
             cp["scopeParents"] = {}
+            collection_stages.clear()
             cp["moduleScopeVersion"] = 2
         allowed_epics = {e.get("key") or e.get("ticket") for task in plan.get("wbs", [])
                          if not selected_modules or task["module"] in selected_modules for e in task.get("epics", [])}
@@ -292,6 +296,7 @@ class TrackingManager:
                 "hierarchy": "currentConfiguration", "cachePolicy": {"hotSeconds": source.HOT_TTL, "coolDays": 7},
                 "sourceFetchedAt": [datetime.fromtimestamp(t, KST).isoformat() for t in sorted(set(source.source_times))]}
             snapshot["coverage"]["candidateStrategy"] = cp.get("candidateStrategy", "pending")
+            snapshot["coverage"]["funnel"] = collection_funnel(cp, analyzed, active, voc_component, queries_complete)
             if snapshot["events"] and snapshot["metrics"]["firstResultMs"] is None:
                 snapshot["metrics"]["firstResultMs"] = initial_elapsed + round((time.monotonic() - started) * 1000)
             cp["analyzed"] = analyzed
@@ -359,6 +364,7 @@ class TrackingManager:
                     query_cp["complete"] = bool(broad_cp.get("complete"))
                 discovered = list({raw["key"]: raw for raw in discovered}.values())
                 cp["discoveredTotal"] = len(discovered)
+                collection_stages["discovery"] = {**issue_counts(discovered, voc_component), "complete": True}
                 if selected_modules:
                     parents = cp.setdefault("scopeParents", {})
                     attempted = set()
@@ -383,7 +389,9 @@ class TrackingManager:
                     cp["moduleScopeUnknown"] = sorted(uncertain)
                     cp["issues"].update(parents)
                     discovered = scoped
+                collection_stages["module"] = {**issue_counts(discovered, voc_component), "complete": True}
                 rows = source.hydrate(discovered, fields, cp["queries"], persist)
+                collection_stages["hydrated"] = {**issue_counts(rows, voc_component), "complete": True}
                 previous_candidates = set(cp.get("candidateKeys", []))
                 cp["candidateKeys"] = [raw["key"] for raw in rows]
                 current_candidates = set(cp["candidateKeys"])

@@ -5,6 +5,7 @@ import { projectTrackingVoc } from './trackingVocModel.js';
 import { projectTrackingHierarchy } from './trackingHierarchyModel.js';
 import { buildTrackingOverview, trackingRowSummary } from './trackingOverviewModel.js';
 import { buildTrackingScope } from './trackingScopeModel.js';
+import { buildTrackingCollectionAudit } from './trackingCollectionModel.js';
 import TrackingSplitter from './tracking-splitter.js';
 
 import TrackingBriefing from './tracking-briefing.js';
@@ -125,6 +126,15 @@ export default {
         comments:events.filter(event => event.kind === 'comment').length,fieldChanges:events.filter(event => event.kind === 'fieldChanged').length};
     },
     coverage() { return this.run?.coverage || {}; },
+    collectionAudit() {
+      return buildTrackingCollectionAudit(this.run,{displayRun:this.displayRun,scopedRun:this.scopedRun,
+        vocComponent:this.options.vocComponent,query:this.query,highlight:this.highlight,matchedOnly:this.matchedOnly});
+    },
+    collectionFilterLabel() {
+      const highlight = this.highlight && this.highlightOptions.find(option => option.id === this.highlight.value);
+      return ['보고 범위: '+this.scopeLabel,'검색: '+(this.query || '없음'),
+        '강조: '+(highlight?.name || this.highlight?.value || '없음'),this.matchedOnly ? '일치 항목만' : '전체 항목'].join(' · ');
+    },
     rootWorkCount() { return this.targetIssues.filter(issue => !issue.isSubtask && !String(issue.type || '').toLowerCase().replace(/[-_ ]/g,'').startsWith('sub')).length; },
     targetIssues() { return (this.run?.issues || []).filter(issue => issue.contextOnly !== true); },
     historyConfirmed() { return this.targetIssues.filter(issue => issue.coverage?.historyComplete === true).length; },
