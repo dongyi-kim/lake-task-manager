@@ -121,6 +121,8 @@ class World:
         self._build_mytask_fixtures() # '내 Task' 화면 픽스처(담당 조합·Epic 없음·마감 초과)
         self._build_dataset_fixtures()  # 데이터셋 지식 픽스처(테이블 하나의 이력을 여러 티켓에 분산)
         self._build_meeting_fixtures()  # 회의록 배터리 전용 Epic·Task·댓글(rng 미사용)
+        from app.mock.rich_tracking_world import add_rich_tracking_workload
+        add_rich_tracking_workload(self)  # 실제 mock/local 화면용 최근 ETL 업무·VoC
         self._priorities()            # 우선순위 — 픽스처가 지정한 것은 그대로 두고 나머지만 채운다
         self._sprints()               # 스프린트 — '스프린트 내 티켓만' 필터 검증용
         self._index()
