@@ -9,6 +9,41 @@ from support.paths import STATIC_ROOT
 
 
 SCENARIOS = {
+    "unexecuted_admission_reads_retry_boundedly_and_memoize_only_success": r"""
+      let calls=0;
+      globalThis.fetch=async()=>++calls<=2 ? busy() : json([{key:'DL-1',summary:'ready'}]);
+      assert.deepEqual(await api.ticketChildren('DL-1'),[{key:'DL-1',summary:'ready'}]);
+      assert.deepEqual(await api.ticketChildren('DL-1'),[{key:'DL-1',summary:'ready'}]);
+      assert.equal(calls,3); assert.deepEqual(events,[]);
+      globalThis.fetch=async()=>{calls++;return busy({},503);}; calls=0;
+      await assert.rejects(api.raw('/still-busy'),e=>e.status===503 && e.retryable);
+      assert.equal(calls,3);
+    """,
+    "admission_contract_requires_unexecuted_retryable_read_without_auth_or_uncertainty": r"""
+      for(const extra of [{executed:true},{executed:undefined},{executed:'false'},
+          {retryable:false},{retryable:'true'},{needLogin:true},{uncertain:true}]) {
+        let calls=0;
+        globalThis.fetch=async()=>{calls++;return busy(extra);};
+        await assert.rejects(api.raw('/wrong-busy'),e=>e.status===429);
+        assert.equal(calls,1);
+      }
+      for(const opts of [{method:'POST'},{method:'PUT'},{method:'DELETE'},{mutation:true}]) {
+        let calls=0;
+        globalThis.fetch=async()=>{calls++;return busy();};
+        await assert.rejects(api.raw('/write-busy',opts),e=>e.status===429);
+        assert.equal(calls,1);
+      }
+    """,
+    "admission_retry_after_keeps_caller_abort_and_original_deadline": r"""
+      let calls=0; const controller=new AbortController();
+      globalThis.fetch=async()=>{calls++;return busy({},429,'1');};
+      const pending=api.raw('/cancel-busy',{signal:controller.signal});
+      setTimeout(()=>controller.abort(),15);
+      await assert.rejects(pending,e=>e.name==='AbortError'); assert.equal(calls,1);
+      calls=0;
+      await assert.rejects(api.raw('/busy-timeout',{timeoutMs:25}),e=>e.reason==='request_timeout');
+      assert.equal(calls,1);
+    """,
     "typed_read_recovers_latest_and_memoizes_only_success": r"""
       let calls=0;
       globalThis.fetch=async()=>++calls===1 ? changed() : json([{key:'DL-1',summary:'latest'}]);
@@ -138,7 +173,9 @@ SCENARIOS = {
       state._req=2; state.keyId='DL-2'; release(json([{summary:'obsolete'}]));
       await pending; assert.deepEqual(state.siblings,[{summary:'keep'}]);
       assert.deepEqual(states,[['siblings','loading']]);
-      api.evict('DL-1'); state.keyId='DL-1'; calls=0;
+      // Eviction retains an existing display value for SWR. Use a cold ticket
+      // to exercise a blocking failed panel read while preserving its old rows.
+      api.evict('DL-1'); state.keyId='DL-3'; calls=0;
       globalThis.fetch=async()=>{calls++;return changed();};
       await load.call(state,'siblings');
       assert.equal(calls,2); assert.deepEqual(state.siblings,[{summary:'keep'}]);
@@ -167,6 +204,8 @@ def test_typed_query_state_retry(scenario):
       const json=(value,status=200,headers={})=>new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json',...headers}});
       const changed=(extra={},status=503,delay='0')=>json({error:'query changed',code:'query_state_changed',
         retryable:true,needLogin:false,...extra},status,{'Retry-After':delay});
+      const busy=(extra={},status=429,delay='0')=>json({error:'capacity busy',code:'request_capacity',
+        retryable:true,executed:false,...extra},status,{'Retry-After':delay});
       const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
       const {api}=await import(API);
     """

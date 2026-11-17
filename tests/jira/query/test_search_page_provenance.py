@@ -45,6 +45,7 @@ def test_live_unsupported_page_reports_request_start_even_without_cache_rows(cli
 @pytest.mark.parametrize("incomplete", [False, True])
 def test_page_writes_only_complete_canonical_rows_at_original_age(client, monkeypatch, incomplete):
     row = deepcopy(client.get_issue_light("DL-9012"))
+    prior = client.cache.metadata(f"issueL:{client.env}:DL-9012")
     client.cache.invalidate()
     if incomplete:
         row["fields"].pop("status")
@@ -61,13 +62,16 @@ def test_page_writes_only_complete_canonical_rows_at_original_age(client, monkey
         client._legacy_search_issues_page("project = DL")
     source = client.cache.metadata(f"issueL:{client.env}:DL-9012")
     if incomplete:
-        assert source is None
+        assert client.cache.get(f"issueL:{client.env}:DL-9012") is None
+        assert source["invalidated"] is True
+        assert source["fetchedAt"] == prior["fetchedAt"]
     else:
         assert source["fetchedAt"] == started
 
 
 def test_mutation_during_direct_page_cannot_publish_or_certify_stale_rows(client, monkeypatch):
     row = deepcopy(client.get_issue_light("DL-9012"))
+    prior = client.cache.metadata(f"issueL:{client.env}:DL-9012")
     client.cache.invalidate()
 
     def fetch(*args, **kwargs):
@@ -79,7 +83,10 @@ def test_mutation_during_direct_page_cannot_publish_or_certify_stale_rows(client
         with pytest.raises(QueryStateChanged):
             client._legacy_search_issues_page("project = DL")
     assert not sources
-    assert client.cache.metadata(f"issueL:{client.env}:DL-9012") is None
+    assert client.cache.get(f"issueL:{client.env}:DL-9012") is None
+    retained = client.cache.metadata(f"issueL:{client.env}:DL-9012")
+    assert retained["invalidated"] is True
+    assert retained["fetchedAt"] == prior["fetchedAt"]
 
 
 @pytest.mark.parametrize("data", [None, {"issues": None}, {"issues": {}},

@@ -44,7 +44,8 @@ def test_liveness_and_window_controls_survive_saturated_workers_and_cache(monkey
                 with anyio.fail_after(1):
                     response = await client.get("/api/health/live")
                     assert response.json() == {"status": "ok", "pid": os.getpid(),
-                                               "instance": "test-worker-generation"}
+                                               "instance": "test-worker-generation",
+                                               "resources": main.resource_pressure.snapshot()}
                     assert (await client.post("/api/app/open")).json() == {"action": "open"}
                     assert (await client.post("/api/app/quit")).json() == {"action": "quit"}
         finally:

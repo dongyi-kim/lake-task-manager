@@ -1551,14 +1551,18 @@ def _supervise_runtime(s, *, hide_console):
         return
     from app.infra.settings import CACHE_DIR
     from app.infra.runtime_diagnostics import RuntimeLog
+    from app.launcher.recovery_control import RecoveryControl
     runtime_log = RuntimeLog(CACHE_DIR / "logs" / "runtime", "supervisor")
+    recovery_control = RecoveryControl()
     try:
         raise SystemExit(run_supervisor(
             [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
             cwd=os.getcwd(), env=dict(os.environ),
             base_url=f"http://127.0.0.1:{s.app_port}", record=runtime_log.record,
+            persistent_recovery=True, recovery_control=recovery_control,
             on_ready=_hide_console_win if hide_console else None, on_failure=_show_console_win))
     finally:
+        recovery_control.close()
         runtime_log.close()
 
 

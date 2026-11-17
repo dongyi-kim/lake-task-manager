@@ -21,6 +21,7 @@ import queue
 import re
 import sys
 import time as _time
+from contextlib import ExitStack, contextmanager
 from urllib.parse import urlsplit
 
 # 같은 [auth] 메시지를 초당 여러 번 찍지 않게 — prod 는 상류가 단일 큐라 같은 401 이 연달아 온다.
@@ -49,6 +50,21 @@ def _launch(p, headless):
         raise RuntimeError(
             "Chromium 을 실행하지 못했습니다. 'playwright install chromium' 이 필요합니다. "
             "(런처 exe 는 이를 자동 수행합니다)\n원인: " + str(e))
+
+
+@contextmanager
+def _response_body(response):
+    """Release Playwright's retained body on its owner thread after extraction.
+
+    Cleanup must never hide a completed mutation or replace its original error.
+    """
+    try:
+        yield response
+    finally:
+        try:
+            response.dispose()
+        except Exception:
+            pass
 
 
 class SsoSessionProvider(AuthProvider):
@@ -348,18 +364,19 @@ class SsoSessionProvider(AuthProvider):
                 self.base + "/rest/api/2/myself", timeout=self.REQUEST_TIMEOUT_MS)
         except Exception:
             return None
-        if probe.status in (401, 403):
-            return False
-        if probe.status != 200:
-            return None
-        try:
-            raw = probe.json()
-        except Exception:
-            return None
-        if not isinstance(raw, dict):
-            return None
-        identity = raw.get("name") or raw.get("key") or raw.get("accountId") or ""
-        return bool(identity and "anonymous" not in str(identity).lower())
+        with _response_body(probe):
+            if probe.status in (401, 403):
+                return False
+            if probe.status != 200:
+                return None
+            try:
+                raw = probe.json()
+            except Exception:
+                return None
+            if not isinstance(raw, dict):
+                return None
+            identity = raw.get("name") or raw.get("key") or raw.get("accountId") or ""
+            return bool(identity and "anonymous" not in str(identity).lower())
 
     def _raise_read_access_error(self, resp, path, url, *, quiet=False, label="GET"):
         """Classify a Jira read denial without turning every per-ticket 403 into logout.
@@ -396,12 +413,13 @@ class SsoSessionProvider(AuthProvider):
         # Playwright 스레드에서 실행 — body 추출(json()/text())도 반드시 이 스레드에서.
         # path 가 절대 URL(http…)이면 그대로(Confluence 등 별도 호스트), 아니면 jira base + path.
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        resp = self._context.request.get(url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)
-        if resp.status in (401, 403):
-            self._raise_read_access_error(resp, path, url, quiet=quiet)
-        if resp.status >= 500:
-            raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
-        return resp.text() if as_text else resp.json()
+        with _response_body(self._context.request.get(
+                url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)) as resp:
+            if resp.status in (401, 403):
+                self._raise_read_access_error(resp, path, url, quiet=quiet)
+            if resp.status >= 500:
+                raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
+            return resp.text() if as_text else resp.json()
 
     def get_json(self, path, params=None, priority=None, quiet=False):
         if priority is None:
@@ -457,41 +475,41 @@ class SsoSessionProvider(AuthProvider):
         kw = {"params": params or {}, "headers": self._xsrf_headers(url)}
         if json_body is not None:
             kw["data"] = _json.dumps(json_body)          # data=dict 인코딩 어긋남 방지 → 명시 직렬화
-        resp = fn(url, **kw)
-        if resp.status >= 400:
-            # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
-            #   첨부 업로드의 401 은 XSRF 거절일 때도 있어(Jira 는 이유를 본문에 적는다)
-            #   화면에는 '401 저장 실패' 만 뜨고 진짜 이유는 아무 데도 안 남았다.
+        with _response_body(fn(url, **kw)) as resp:
+            if resp.status >= 400:
+                # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
+                #   첨부 업로드의 401 은 XSRF 거절일 때도 있어(Jira 는 이유를 본문에 적는다)
+                #   화면에는 '401 저장 실패' 만 뜨고 진짜 이유는 아무 데도 안 남았다.
+                try:
+                    body = resp.text()
+                except Exception:
+                    body = ""
+                hdrs = ""
+                try:
+                    # Jira 는 XSRF 거절을 이 헤더로도 알린다(본문이 HTML 이라 안 읽힐 때가 있다).
+                    xa = resp.headers.get("x-authentication-denied-reason") or ""
+                    if xa:
+                        hdrs = f" [{xa}]"
+                except Exception:
+                    pass
+                if is_issue_create(method, path):
+                    log_create_response(method, path, json_body, resp.status, body)
+                else:
+                    print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
+                          file=sys.stderr, flush=True)
+                if resp.status == 401:
+                    raise SessionExpired(
+                        f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
+                if resp.status >= 500:
+                    raise UpstreamUnavailable(
+                        f"HTTP {resp.status} on {path} — {(body or 'Jira 서버 응답 오류')[:200]}")
+                raise UpstreamError(resp.status, path, body)
+            if not want_json:
+                return resp.status
             try:
-                body = resp.text()
+                return resp.json()
             except Exception:
-                body = ""
-            hdrs = ""
-            try:
-                # Jira 는 XSRF 거절을 이 헤더로도 알린다(본문이 HTML 이라 안 읽힐 때가 있다).
-                xa = resp.headers.get("x-authentication-denied-reason") or ""
-                if xa:
-                    hdrs = f" [{xa}]"
-            except Exception:
-                pass
-            if is_issue_create(method, path):
-                log_create_response(method, path, json_body, resp.status, body)
-            else:
-                print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
-                      file=sys.stderr, flush=True)
-            if resp.status == 401:
-                raise SessionExpired(
-                    f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
-            if resp.status >= 500:
-                raise UpstreamUnavailable(
-                    f"HTTP {resp.status} on {path} — {(body or 'Jira 서버 응답 오류')[:200]}")
-            raise UpstreamError(resp.status, path, body)
-        if not want_json:
-            return resp.status
-        try:
-            return resp.json()
-        except Exception:
-            return {}                                    # 204 No Content 등
+                return {}                                    # 204 No Content 등
 
     # 쓰기는 **무조건 큐 맨 앞**이다. 읽기가 앞에 쌓여 있으면 그만큼 늦어지고, 늦어지다
     # 타임아웃에 걸리면 사용자가 쓴 글이 그대로 사라진다(스레드 로컬 우선순위와 무관하게 고정).
@@ -527,48 +545,51 @@ class SsoSessionProvider(AuthProvider):
         #   업로드 시간은 파일 크기에 비례하므로 크기로 정한다 — 최소 2분, 1MB 당 +20초,
         #   상한 15분. 큐 대기(JOB_TIMEOUT)와는 다른 층이라 그쪽도 함께 늘려야 의미가 있다.
         up_timeout = self._upload_timeout_ms(len(data or b""))
-        resp = self._context.request.post(url, multipart=body, params=params, timeout=up_timeout,
-                                          headers=self._xsrf_headers(url, multipart=True))
-        if resp.status in (401, 403, 404):
-            # 한 번은 **순수 no-check 로만** 다시 던져 본다.
-            # 우리 기본 헤더는 브라우저처럼 보이게 꾸민다(Origin/Referer/XHR + 쿠키의 xsrf 토큰 echo).
-            # Bitbucket 검색이 그래야 통과해서 그렇게 맞춰 뒀는데, Jira 의 첨부 업로드는 반대로
-            # **비브라우저 클라이언트**로 보일 때(no-check 만 있을 때) 통과하는 구성이 있다.
-            # 둘 중 무엇이 맞는지는 인스턴스 설정이 정하므로, 실패했을 때만 다른 쪽으로 한 번 더 본다.
-            from .base import MULTIPART_HEADERS
-            print(f"[upload] {resp.status} — no-check 단독 헤더로 1회 재시도: {path}",
-                  file=sys.stderr, flush=True)
-            resp = self._context.request.post(url, multipart=body, timeout=up_timeout,
-                                              headers=dict(MULTIPART_HEADERS))
-        if resp.status >= 400:
-            # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
-            #   첨부 업로드의 401 은 XSRF 거절일 때도 있어(Jira 는 이유를 본문에 적는다)
-            #   화면에는 '401 저장 실패' 만 뜨고 진짜 이유는 아무 데도 안 남았다.
+        with ExitStack() as responses:
+            resp = responses.enter_context(_response_body(self._context.request.post(
+                url, multipart=body, params=params, timeout=up_timeout,
+                headers=self._xsrf_headers(url, multipart=True))))
+            if resp.status in (401, 403, 404):
+                # 한 번은 **순수 no-check 로만** 다시 던져 본다.
+                # 우리 기본 헤더는 브라우저처럼 보이게 꾸민다(Origin/Referer/XHR + 쿠키의 xsrf 토큰 echo).
+                # Bitbucket 검색이 그래야 통과해서 그렇게 맞춰 뒀는데, Jira 의 첨부 업로드는 반대로
+                # **비브라우저 클라이언트**로 보일 때(no-check 만 있을 때) 통과하는 구성이 있다.
+                # 둘 중 무엇이 맞는지는 인스턴스 설정이 정하므로, 실패했을 때만 다른 쪽으로 한 번 더 본다.
+                from .base import MULTIPART_HEADERS
+                print(f"[upload] {resp.status} — no-check 단독 헤더로 1회 재시도: {path}",
+                      file=sys.stderr, flush=True)
+                responses.close()  # Release the rejected body before dispatching the retry.
+                resp = responses.enter_context(_response_body(self._context.request.post(
+                    url, multipart=body, timeout=up_timeout, headers=dict(MULTIPART_HEADERS))))
+            if resp.status >= 400:
+                # ★ 401 도 **본문을 읽고 나서** 판단한다. 예전엔 본문 없이 '세션 만료' 로 단정했는데,
+                #   첨부 업로드의 401 은 XSRF 거절일 때도 있어(Jira 는 이유를 본문에 적는다)
+                #   화면에는 '401 저장 실패' 만 뜨고 진짜 이유는 아무 데도 안 남았다.
+                try:
+                    body = resp.text()
+                except Exception:
+                    body = ""
+                hdrs = ""
+                try:
+                    # Jira 는 XSRF 거절을 이 헤더로도 알린다(본문이 HTML 이라 안 읽힐 때가 있다).
+                    xa = resp.headers.get("x-authentication-denied-reason") or ""
+                    if xa:
+                        hdrs = f" [{xa}]"
+                except Exception:
+                    pass
+                print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
+                      file=sys.stderr, flush=True)
+                if resp.status == 401:
+                    raise SessionExpired(
+                        f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
+                if resp.status >= 500:
+                    raise UpstreamUnavailable(
+                        f"HTTP {resp.status} on {path} — {(body or 'Jira 서버 응답 오류')[:200]}")
+                raise UpstreamError(resp.status, path, body)
             try:
-                body = resp.text()
+                return resp.json()
             except Exception:
-                body = ""
-            hdrs = ""
-            try:
-                # Jira 는 XSRF 거절을 이 헤더로도 알린다(본문이 HTML 이라 안 읽힐 때가 있다).
-                xa = resp.headers.get("x-authentication-denied-reason") or ""
-                if xa:
-                    hdrs = f" [{xa}]"
-            except Exception:
-                pass
-            print(f"[upload] HTTP {resp.status} {path}{hdrs} :: {(body or '')[:300]}",
-                  file=sys.stderr, flush=True)
-            if resp.status == 401:
-                raise SessionExpired(
-                    f"HTTP 401 on {path}{hdrs} — {(body or '세션 만료 가능. login 재실행.')[:200]}")
-            if resp.status >= 500:
-                raise UpstreamUnavailable(
-                    f"HTTP {resp.status} on {path} — {(body or 'Jira 서버 응답 오류')[:200]}")
-            raise UpstreamError(resp.status, path, body)
-        try:
-            return resp.json()
-        except Exception:
-            return {}
+                return {}
 
     @staticmethod
     def _upload_timeout_ms(size_bytes):
@@ -595,40 +616,29 @@ class SsoSessionProvider(AuthProvider):
 
         def do():
             def identity_probe():
-                response = None
                 try:
-                    response = self._context.request.get(
-                        self.base + "/rest/api/2/myself", timeout=self.REQUEST_TIMEOUT_MS,
-                        max_redirects=0, max_retries=0)
-                    return identity_response(response.status,
-                                             response.json() if response.status == 200 else None)
+                    with _response_body(self._context.request.get(
+                            self.base + "/rest/api/2/myself", timeout=self.REQUEST_TIMEOUT_MS,
+                            max_redirects=0, max_retries=0)) as response:
+                        return identity_response(response.status,
+                                                 response.json() if response.status == 200 else None)
                 except Exception:
                     return None
-                finally:
-                    if response is not None:
-                        response.dispose()
 
-            response = None
             try:
-                response = self._context.request.fetch(
-                    url, method="GET" if body is None else "POST", data=body, headers=headers,
-                    timeout=self.REQUEST_TIMEOUT_MS, max_redirects=0, max_retries=0)
-                length = response.headers.get("content-length", "")
-                if length.isdigit():
-                    check_html_size(int(length))
-                return form_response(self.base, response.status, response.headers,
-                                     response.body(), identity_probe)
+                with _response_body(self._context.request.fetch(
+                        url, method="GET" if body is None else "POST", data=body, headers=headers,
+                        timeout=self.REQUEST_TIMEOUT_MS, max_redirects=0, max_retries=0)) as response:
+                    length = response.headers.get("content-length", "")
+                    if length.isdigit():
+                        check_html_size(int(length))
+                    return form_response(self.base, response.status, response.headers,
+                                         response.body(), identity_probe)
             except (SessionExpired, PermissionDenied, UpstreamUnavailable):
                 raise
             except Exception as exc:
                 # _submit logs/retire decisions must never contain a form URL/token/body.
                 raise FormTransportUnavailable(timeout=self._is_transport_error(exc)) from None
-            finally:
-                if response is not None:
-                    try:
-                        response.dispose()
-                    except Exception:
-                        pass
 
         return self._submit(do, PRIO_WRITE if body is not None else upstream_priority(),
                             may_commit=may_commit)
@@ -636,12 +646,13 @@ class SsoSessionProvider(AuthProvider):
     def _fetch_bytes(self, path, params):
         # 이미지/첨부 프록시 — 인증된 브라우저 컨텍스트로 받아 바이트 반환. 절대 URL 도 허용.
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        resp = self._context.request.get(url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)
-        if resp.status in (401, 403):
-            self._raise_read_access_error(resp, path, url, label="GET(bytes)")
-        if resp.status >= 500:
-            raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
-        return resp.body(), resp.headers.get("content-type")
+        with _response_body(self._context.request.get(
+                url, params=params or {}, timeout=self.REQUEST_TIMEOUT_MS)) as resp:
+            if resp.status in (401, 403):
+                self._raise_read_access_error(resp, path, url, label="GET(bytes)")
+            if resp.status >= 500:
+                raise UpstreamUnavailable(f"HTTP {resp.status} on {path} — Jira 서버 응답 오류")
+            return resp.body(), resp.headers.get("content-type")
 
     def _diag_write(self, url):
         """[dev 진단] 이 URL 에 대해 실제로 보낼 XSRF 헤더 + 그 도메인 쿠키 이름들.
@@ -761,24 +772,25 @@ def service_probe(context, base, paths):
         except Exception as e:
             last = f"{path}: 요청 실패({e})"
             continue
-        st = resp.status
-        if st == 200:
-            try:
-                body = resp.json()
-            except Exception:
-                last = f"{path}: 200(로그인 페이지 HTML=미인증)"
-                continue
-            # 응답 형태가 서비스마다 다르다 — 사용자 식별자가 잡히면 인증으로 본다
-            name = _extract_user(body)
-            if name:
-                return True, f"인증됨({name})"
-            last = f"{path}: 200 이나 사용자 없음"
-        elif st in (401, 403):
-            last = f"{path}: {st}(인증 필요)"
-        elif st in (301, 302, 303, 307, 308):
-            last = f"{path}: {st}(SSO 리다이렉트 미완료)"
-        else:
-            last = f"{path}: HTTP {st}"
+        with _response_body(resp):
+            st = resp.status
+            if st == 200:
+                try:
+                    body = resp.json()
+                except Exception:
+                    last = f"{path}: 200(로그인 페이지 HTML=미인증)"
+                    continue
+                # 응답 형태가 서비스마다 다르다 — 사용자 식별자가 잡히면 인증으로 본다
+                name = _extract_user(body)
+                if name:
+                    return True, f"인증됨({name})"
+                last = f"{path}: 200 이나 사용자 없음"
+            elif st in (401, 403):
+                last = f"{path}: {st}(인증 필요)"
+            elif st in (301, 302, 303, 307, 308):
+                last = f"{path}: {st}(SSO 리다이렉트 미완료)"
+            else:
+                last = f"{path}: HTTP {st}"
     return False, last
 
 
@@ -803,11 +815,11 @@ def conf_authed(context, base):
 def _authed(context, base):
     """현재 컨텍스트가 인증됐는지 — /myself 200 + name(비익명) 이면 True."""
     try:
-        resp = context.request.get(base + "/rest/api/2/myself")
-        if resp.status == 200:
-            body = resp.json()
-            name = body.get("name") or body.get("key")
-            return bool(name) and name != "anonymous"
+        with _response_body(context.request.get(base + "/rest/api/2/myself")) as resp:
+            if resp.status == 200:
+                body = resp.json()
+                name = body.get("name") or body.get("key")
+                return bool(name) and name != "anonymous"
     except Exception:
         pass
     return False

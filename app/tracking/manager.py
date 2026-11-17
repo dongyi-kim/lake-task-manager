@@ -10,8 +10,9 @@ import threading
 import time
 from uuid import uuid4
 
-from app.auth.base import PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable, background_upstream
+from app.auth.base import PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable, background_upstream
 from app.infra.settings import is_manager, load_people, load_plan
+from app.infra.resource_pressure import resource_pressure
 from app.domain.progress import VOC_COMPONENT
 from app.tracking.analysis import KST, analyze_issue, build_result, identity_aliases, instant, period_bounds, person
 from app.tracking.source import IncompleteSource, TrackingSource
@@ -31,6 +32,7 @@ class TrackingManager:
         self.lock = threading.RLock()
         self.page_slots = threading.BoundedSemaphore(2)
         self.workers, self.controls, self.summary_locks = {}, {}, {}
+        self._active_run = None
 
     def authorize(self):
         me = self.client.current_user_for_authorization()
@@ -108,82 +110,156 @@ class TrackingManager:
                         "cacheHits": 0, "elapsedMs": 0, "firstResultMs": None, "mcpCalls": 0, "llmTokens": 0,
                         "scope": "collection", "byteMeasurement": "utf8-json-payload", "authorizationRequestsIncluded": False},
                     "issues": [], "events": [], "tree": [], "errors": []}
-        self.store.insert(snapshot, owner, scope)
-        self._start(snapshot["id"], background=background)
+        # Reserve before persistence: overload must not accumulate queued runs or
+        # threads retaining another collector's full checkpoint graph.
+        reservation = self._reserve(snapshot["id"])
+        try:
+            self.store.insert(snapshot, owner, scope)
+            self._start(snapshot["id"], background=background)
+        except BaseException:
+            self._release(snapshot["id"], reservation)
+            raise
         return self.get(snapshot["id"])
 
-    def _owned(self, run_id):
+    def _owned(self, run_id, *, checkpoint_fields=None):
         owner, scope = self.authorize()
-        stored_owner, stored_scope, snapshot, checkpoint = self.store.read(run_id)
+        stored_owner, stored_scope, snapshot, checkpoint = self.store.read(run_id, checkpoint_fields=checkpoint_fields)
         if owner != stored_owner or scope != stored_scope:
             raise PermissionError("다른 Jira 계정 또는 연결의 수집 결과입니다.")
         return snapshot, checkpoint
 
     def get(self, run_id):
-        snapshot, checkpoint = self._owned(run_id)
+        snapshot, checkpoint = self._owned(run_id, checkpoint_fields=("issues", "sources"))
         return present_comments(snapshot, self.client, checkpoint)
 
     def list(self):
         owner, scope = self.authorize()
         return [project_activity(snapshot) for snapshot in self.store.recent(owner, scope)]
 
+    def _reserve(self, run_id):
+        with self.lock:
+            if self._active_run is not None:
+                raise UpstreamBusy("Tracking 수집이 진행 중입니다. 수집을 마친 뒤 다시 시도해 주세요.")
+            resource_pressure.check()
+            self._active_run = run_id
+            signal = self.controls[run_id] = threading.Event()
+            return signal
+
+    def _release(self, run_id, reservation):
+        with self.lock:
+            if self._active_run == run_id and self.controls.get(run_id) is reservation:
+                self.controls.pop(run_id, None)
+                self.workers.pop(run_id, None)
+                self._active_run = None
+
+    def _execute(self, run_id):
+        signal = self.controls[run_id]
+        try:
+            self._work(run_id)
+        except Exception as exc:
+            # Setup (plan/checkpoint loading) precedes _work's collection try.
+            # Preserve the latest durable groups and expose an explicit retry.
+            with self.store.lock:
+                _, _, snapshot, cp = self.store.read(run_id)
+                snapshot["status"] = "cancelled" if signal.is_set() else "paused"
+                snapshot["coverage"]["complete"] = False
+                snapshot["updatedAt"] = datetime.now(KST).isoformat()
+                snapshot["errors"] = [{"source": "runtime", "reason": type(exc).__name__,
+                                       "message": "수집이 중단되었습니다. 이어서 수집할 수 있습니다."}]
+                self.store.save(run_id, snapshot, cp)
+        finally:
+            self._release(run_id, signal)
+
     def _start(self, run_id, *, background):
         with self.lock:
-            old = self.workers.get(run_id)
-            if old and old.is_alive():
-                return
-            self.controls[run_id] = threading.Event()
             if background:
                 context = copy_context()
-                worker = threading.Thread(target=lambda: context.run(self._work, run_id), daemon=True,
+                worker = threading.Thread(target=lambda: context.run(self._execute, run_id), daemon=True,
                                           name="tracking-" + run_id[:8])
                 self.workers[run_id] = worker
                 worker.start()
                 return
-        self._work(run_id)
+        self._execute(run_id)
 
     def resume(self, run_id, *, background=True):
-        snapshot, cp = self._owned(run_id)
+        # Inspect status without decoding any raw/source/analysis checkpoint.
+        # Only the admitted collector may load the full resume graph.
+        snapshot, _ = self._owned(run_id, checkpoint_fields=())
         if snapshot["status"] == "complete":
-            return present_comments(snapshot, self.client, cp)
+            return self.get(run_id)
         if snapshot["status"] == "cancelled":
             raise ValueError("취소된 수집은 새 조회로 시작해 주세요.")
-        if snapshot["status"] not in ("queued", "running"):
-            snapshot["metrics"]["retries"] += 1
-            snapshot["status"] = "queued"
-            snapshot["errors"] = []
-            self.store.save(run_id, snapshot, cp)
-        self._start(run_id, background=background)
+        with self.lock:
+            already_active = self._active_run == run_id
+            if not already_active:
+                reservation = self._reserve(run_id)
+        if already_active:
+            return self.get(run_id)
+        try:
+            snapshot, cp = self._owned(run_id)
+            if snapshot["status"] == "complete":
+                self._release(run_id, reservation)
+                del snapshot, cp
+                return self.get(run_id)
+            if snapshot["status"] == "cancelled":
+                raise ValueError("취소된 수집은 새 조회로 시작해 주세요.")
+            if snapshot["status"] not in ("queued", "running"):
+                snapshot["metrics"]["retries"] += 1
+                snapshot["status"] = "queued"
+                snapshot["errors"] = []
+                self.store.save(run_id, snapshot, cp)
+            # Do not retain a second full graph in this caller while _work loads
+            # the checkpoint on its collector thread.
+            del snapshot, cp
+            self._start(run_id, background=background)
+        except BaseException:
+            self._release(run_id, reservation)
+            raise
         return self.get(run_id)
 
     def cancel(self, run_id):
-        snapshot, cp = self._owned(run_id)
-        if snapshot["status"] != "complete":
-            self.controls.setdefault(run_id, threading.Event()).set()
-            snapshot["status"] = "cancelled"
-            self.store.save(run_id, snapshot, cp)
+        # Authenticate before taking the storage lock: authorization may do I/O.
+        # Serialize the checkpoint read/write with collector persistence so a
+        # cancellation cannot replace newer completed groups with an older copy.
+        owner, scope = self.authorize()
+        with self.store.lock:
+            stored_owner, stored_scope, snapshot, cp = self.store.read(run_id)
+            if owner != stored_owner or scope != stored_scope:
+                raise PermissionError("다른 Jira 계정 또는 연결의 수집 결과입니다.")
+            if snapshot["status"] != "complete":
+                with self.lock:
+                    signal = self.controls.get(run_id)
+                    if signal is not None:
+                        signal.set()
+                snapshot["status"] = "cancelled"
+                self.store.save(run_id, snapshot, cp)
         return present_comments(snapshot, self.client, cp)
 
     def wait(self, run_id, timeout=60):
-        worker = self.workers.get(run_id)
+        with self.lock:
+            worker = self.workers.get(run_id)
         if worker:
             worker.join(timeout)
         return self.get(run_id)
 
     def record_summary(self, run_id, result):
-        snapshot, cp = self._owned(run_id)
-        snapshot["_activitySummaryEventIds"] = sorted(event["id"] for event in project_activity(snapshot).get("events") or [])
-        snapshot["aiSummary"] = result
-        usage = result.get("usage") or {}
-        snapshot["metrics"]["llmTokens"] += int(usage.get("totalTokens") or 0)
-        self.store.save(run_id, snapshot, cp)
+        # Authentication may perform I/O; never hold a storage lock while waiting
+        # for it. The owned snapshot update itself never reads the resume graph.
+        owner, scope = self.authorize()
+
+        def publish(snapshot):
+            snapshot["_activitySummaryEventIds"] = sorted(event["id"] for event in project_activity(snapshot).get("events") or [])
+            snapshot["aiSummary"] = result
+            usage = result.get("usage") or {}
+            snapshot["metrics"]["llmTokens"] += int(usage.get("totalTokens") or 0)
+
+        self.store.update_snapshot(run_id, owner, scope, publish)
         return result
 
     def _work(self, run_id):
-        _, _, snapshot, cp = self.store.read(run_id)
+        owner, scope, snapshot, cp = self.store.read(run_id)
         initial_elapsed = snapshot["metrics"]["elapsedMs"]
         started = time.monotonic()
-        owner, scope, _, _ = self.store.read(run_id)
         signal = self.controls[run_id]
         request = snapshot["request"]
         start, _ = period_bounds(request["startDate"], request["endDate"])
@@ -196,13 +272,15 @@ class TrackingManager:
             snapshot["updatedAt"] = datetime.now(KST).isoformat()
             snapshot["metrics"]["elapsedMs"] = initial_elapsed + round((time.monotonic() - started) * 1000)
             # A concurrent cancel must survive the completion of an in-flight REST request.
-            if signal.is_set():
-                snapshot["status"] = "cancelled"
-            self.store.save(run_id, snapshot, cp)
+            with self.store.lock:
+                if signal.is_set():
+                    snapshot["status"] = "cancelled"
+                self.store.save(run_id, snapshot, cp)
 
         def check():
             if signal.is_set():
                 raise CancelledError()
+            resource_pressure.check()
             actual_owner, actual_scope = self.authorize()
             if actual_owner != owner or actual_scope != scope:
                 raise PermissionError("수집 중 Jira 계정 또는 연결이 변경되었습니다.")

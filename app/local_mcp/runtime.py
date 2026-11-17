@@ -22,6 +22,7 @@ from app.jira.hierarchy_forms import HierarchyFormError
 from app.auth.web_forms import FormTransportUnavailable
 from app.infra.cache import CacheReadPolicyError
 from app.infra.cache_policy import resolve_read_policy
+from app.infra.resource_pressure import ResourceBusy, resource_pressure
 from app.local_mcp.read_metadata import read_result, has_partial
 from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
@@ -416,8 +417,21 @@ class LocalMcpRuntime:
         policy_read = read_only and fn.__name__ not in (
             AUTH_TOOLS | HEALTH_TOOLS | LLM_TOOLS | {"get_content_guide", "get_workspace_config"})
 
+        def resource_refusal(exc):
+            return {"ok": False, "error": {
+                "code": "resource_pressure", "status": 503, "message": str(exc),
+                "retryable": True, "needLogin": False, "retryAfterSeconds": 1, "executed": False,
+                "retryWithSameMutationId": not read_only and fn.__name__ not in AUTH_TOOLS | CONFIG_WRITES | LLM_TOOLS | HEALTH_TOOLS,
+            }}
+
         def call(kwargs):
             try:
+                if lane is self._work_lane:
+                    # Recheck after dispatch, before authorization or tool work.
+                    try:
+                        resource_pressure.check()
+                    except ResourceBusy as exc:
+                        return resource_refusal(exc)
                 if policy_read:
                     # Reject contradictory options before authentication can make a request.
                     resolve_read_policy(kwargs.get("cache_mode"), force_refresh=bool(kwargs.get("fresh")))
@@ -433,7 +447,11 @@ class LocalMcpRuntime:
 
         async def invoke(**kwargs):
             try:
+                if lane is self._work_lane:
+                    resource_pressure.check()
                 payload = await lane.run(lambda: call(kwargs))
+            except ResourceBusy as exc:
+                payload = resource_refusal(exc)
             except ToolRequestCancelled:
                 payload = {"ok": False, "error": {"code": "request_cancelled", "status": 499,
                     "message": "요청 연결이 종료되어 실행하지 않았습니다.", "retryable": False, "executed": False}}

@@ -106,9 +106,13 @@ async function req(path, opts) {
       let body = {};
       try { body = await withinRequest(r.clone().json(), ctl.signal); }
       catch (error) { if (ctl.signal.aborted) throw error; } // non-JSON rejection
-      if (attempt === 0 && read && r.status === 503 && body?.code === 'query_state_changed'
-          && body.retryable === true && body.needLogin === false && !body.uncertain) {
-        // This is an invalidated read, never a write replay or a general 503 retry.
+      const changedRead = attempt === 0 && r.status === 503 && body?.code === 'query_state_changed'
+        && body.retryable === true && body.needLogin === false && !body.uncertain;
+      const refusedRead = attempt < 2 && (r.status === 429 || r.status === 503)
+        && body.retryable === true && body.executed === false && body.needLogin !== true && !body.uncertain;
+      if (read && (changedRead || refusedRead)) {
+        // A cold dialog can fan out beyond server admission. Retry only safe reads
+        // with explicit refusal proof, within this request's original abort/deadline.
         const after = r.headers?.get?.('Retry-After');
         const seconds = after != null && /^\d+$/.test(after.trim()) ? Number(after) : NaN;
         const date = after != null ? Date.parse(after) : NaN;

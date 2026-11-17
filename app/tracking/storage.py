@@ -8,9 +8,13 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from app.infra.json_payload import encoded_size
+
 
 def encode(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
 
 
 class TrackingStore:
@@ -50,16 +54,49 @@ class TrackingStore:
             db.execute("INSERT INTO runs VALUES (?,?,?,?,?,?)", (snapshot["id"], owner, scope,
                        time.time(), encode(snapshot), encode({"queries": {}, "issues": {}, "sources": {}})))
 
-    def read(self, run_id):
+    def read(self, run_id, *, checkpoint_fields=None):
+        # Select checkpoint sections in SQLite before constructing Python objects.
+        # Readers do not need the collector's duplicate query/analysis graphs.
+        checkpoint_sql, parameters = "checkpoint", []
+        if checkpoint_fields is not None:
+            checkpoint_fields = tuple(dict.fromkeys(checkpoint_fields))
+            paths = ["$." + json.dumps(field) for field in checkpoint_fields]
+            checkpoint_sql = "json_object(%s)" % ",".join(
+                "?,json_extract(checkpoint,?)" for _ in checkpoint_fields)
+            for field, path in zip(checkpoint_fields, paths):
+                parameters.extend((field, path))
+            for path in paths:
+                checkpoint_sql += ",json_type(checkpoint,?)"
+                parameters.append(path)
         with self.lock, self.connect() as db:
-            row = db.execute("SELECT owner,scope,snapshot,checkpoint FROM runs WHERE id=?", (run_id,)).fetchone()
+            row = db.execute("SELECT owner,scope,snapshot,%s FROM runs WHERE id=?" % checkpoint_sql,
+                             [*parameters, run_id]).fetchone()
         if row is None:
             raise KeyError(run_id)
-        return row[0], row[1], json.loads(row[2]), json.loads(row[3])
+        checkpoint = json.loads(row[3])
+        if checkpoint_fields is not None:
+            for field, kind in zip(checkpoint_fields, row[4:]):
+                if kind is None:
+                    checkpoint.pop(field)
+                elif kind in ("true", "false"):
+                    checkpoint[field] = kind == "true"
+        return row[0], row[1], json.loads(row[2]), checkpoint
 
     def save(self, run_id, snapshot, checkpoint):
         with self.lock, self.connect() as db:
             db.execute("UPDATE runs SET snapshot=?,checkpoint=? WHERE id=?", (encode(snapshot), encode(checkpoint), run_id))
+
+    def update_snapshot(self, run_id, owner, scope, updater):
+        """Atomically update presentation state without loading or replacing checkpoints."""
+        with self.lock, self.connect() as db:
+            row = db.execute("SELECT owner,scope,snapshot FROM runs WHERE id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if owner != row[0] or scope != row[1]:
+                raise PermissionError("다른 Jira 계정 또는 연결의 수집 결과입니다.")
+            snapshot = json.loads(row[2])
+            updater(snapshot)
+            db.execute("UPDATE runs SET snapshot=? WHERE id=?", (encode(snapshot), run_id))
 
     def recent(self, owner, scope, limit=20):
         with self.lock, self.connect() as db:

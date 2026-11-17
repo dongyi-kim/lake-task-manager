@@ -89,6 +89,50 @@ def test_transport_releases_admission_after_handler_error_and_lifespan_reentry()
     assert seen == ["ltm-mcp-transport"] * 4
 
 
+def test_default_transport_bounds_body_parsers_and_recovers_after_flood():
+    host = TransportHost([FastAPI()])
+    release = threading.Event()
+    started = []
+    received = []
+
+    async def handler(scope, receive, send):
+        started.append(1)
+        await receive()
+        while not release.is_set():
+            await asyncio.sleep(.005)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def scenario():
+        async with host.lifespan():
+            async def request():
+                messages = []
+                async def receive():
+                    received.append(1)
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                async def send(message):
+                    messages.append(message)
+                await host.wrap(handler)({"type": "http"}, receive, send)
+                return messages
+            running = [asyncio.create_task(request()) for _ in range(16)]
+            try:
+                async def await_admitted():
+                    while len(received) < 16:
+                        await asyncio.sleep(.005)
+                await asyncio.wait_for(await_admitted(), 2)
+                for _ in range(100):
+                    response = await asyncio.wait_for(request(), .5)
+                    assert response[0]["status"] == 429
+                    assert json.loads(response[1]["body"])["executed"] is False
+                assert len(started) == len(received) == 16
+            finally:
+                release.set()
+                await asyncio.gather(*running)
+            assert (await request())[0]["status"] == 200
+            assert len(started) == len(received) == 17
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("read_only", [True, False])
 def test_cancelled_http_requests_finish_work_once_and_release_sdk_sessions(build_env, read_only):
     env = build_env()

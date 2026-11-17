@@ -26,6 +26,8 @@ from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, QueryStateC
                            UpstreamUnavailable)
 from app.infra.cache import Cache, CacheReadPolicyError
 from app.infra.cache_policy import CachePolicy, CacheHeadersMiddleware
+from app.infra.request_admission import RequestAdmissionMiddleware
+from app.infra.resource_pressure import resource_pressure
 from app.jira.jira_client import JiraClient
 from app.infra.settings import STATIC_DIR, get_settings, load_people
 from app.routes.dashboards import build_dashboard_router
@@ -49,6 +51,9 @@ _settings = get_settings()
 _cache = Cache(_settings.cache_db_path, dead_ttl=_settings.cache_dead_ttl_seconds)
 _cache.configure(_settings.cache_policy, _settings.policy_revision)
 app.add_middleware(CacheHeadersMiddleware, cache=_cache)
+# Starlette installs the most recently added middleware outside earlier ones:
+# refuse overload before query/body parsing, cache policy or sync worker queues.
+app.add_middleware(RequestAdmissionMiddleware, pressure_check=resource_pressure.check)
 _cache.purge()      # 시작 시 1회 — 지난 실행에서 쌓인 죽은 캐시 행·오래된 스냅샷 정리(디스크 안정화)
 _client = JiraClient(_settings, _cache)
 _client._wire_cache()      # 캐시에 재검증 규칙·회로차단기 연결(호출부는 그대로)
@@ -64,7 +69,7 @@ _login_requested = _login_requests.requested
 # 창 스레드는 focus 요청을 자기 스레드에서 폴링해 bring_to_front 한다(Playwright 는 스레드 고정이라
 # 다른 스레드에서 창을 못 만진다 — 그래서 이벤트만 넘기고 실제 조작은 창 루프가 한다).
 _app_ctrl = {"open_hook": None, "restart_hook": None, "quit_hook": None, "hotkey_hook": None, "live": 0,
-             "focus": threading.Event(), "lock": threading.Lock()}
+             "focus": threading.Event(), "lock": threading.Lock(), "quit_pending": False}
 _runtime_health_hook = None
 
 
@@ -113,6 +118,10 @@ def request_quit():
     hook = _app_ctrl["quit_hook"]
     if not hook:
         return {"action": "none"}         # 트레이 모드가 아니면(창만) 스스로 못 끈다
+    with _app_ctrl["lock"]:
+        if _app_ctrl["quit_pending"]:
+            return {"action": "quit"}
+        _app_ctrl["quit_pending"] = True
     try:
         # 응답 먼저 돌려주고 잠깐 뒤 종료 — 호출자(새 run.py)가 200 을 받고 포트 해제를 기다린다.
         def _later():
@@ -122,9 +131,14 @@ def request_quit():
                 hook()
             except Exception:
                 pass
+            finally:
+                with _app_ctrl["lock"]:
+                    _app_ctrl["quit_pending"] = False
         threading.Thread(target=_later, name="app-quit", daemon=True).start()
         return {"action": "quit"}
     except Exception:
+        with _app_ctrl["lock"]:
+            _app_ctrl["quit_pending"] = False
         return {"action": "error"}
 
 
@@ -864,6 +878,7 @@ async def live_health():
     return JSONResponse(status_code=200 if healthy else 503,
                         content={"status": "ok" if healthy else "unresponsive", "pid": os.getpid(),
                                  "instance": os.environ.get("LAKE_SUPERVISED_WORKER", ""),
+                                 "resources": resource_pressure.snapshot(),
                                  **({"components": components} if isinstance(components, dict) else {})})
 
 
