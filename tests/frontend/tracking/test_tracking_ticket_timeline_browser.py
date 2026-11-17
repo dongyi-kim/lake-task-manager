@@ -67,7 +67,8 @@ def test_own_timeline_keeps_date_spacing_dense_events_and_evidence_navigation(tr
     expect(timeline.get_by_role('heading', name='이 Task의 상태 변화', exact=True)).to_be_visible()
     expect(timeline.locator('.tt-day')).to_have_count(7)
     expect(timeline.locator('.tt-transition')).to_have_count(4)
-    expect(timeline.locator('[data-event-id="child-done"]')).to_have_count(0)
+    expect(timeline.locator('.tt-transition[data-event-id="child-done"]')).to_have_count(0)
+    expect(timeline.locator('.tt-child-event[data-event-id="child-done"]')).to_have_count(1)
     expect(page.locator('.tp-event[data-event-id="child-done"]')).to_have_count(1)
     expect(timeline.locator('.tt-transition')).to_have_text([
         '10:00상태Open → In Progress', '10:00완료In Progress → Done',
@@ -79,7 +80,7 @@ def test_own_timeline_keeps_date_spacing_dense_events_and_evidence_navigation(tr
     assert markers[0]['active'] and not markers[1]['active'] and markers[2]['active']
     assert markers[0]['fill'] == markers[2]['fill'] != markers[1]['fill'], 'Empty dates use hollow markers, not filled status markers'
     assert timeline.locator('.tt-scroll').evaluate('el=>el.scrollWidth>el.clientWidth')
-    assert timeline.evaluate('el=>el.getBoundingClientRect().height') < 360
+    assert timeline.evaluate('el=>el.getBoundingClientRect().height') < 550
     assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
     comment_group = timeline.get_by_role('button', name='11.12 댓글·수정 8건 펼치기', exact=True)
     comment_group.click()
@@ -129,5 +130,36 @@ def test_leaf_comments_subtask_single_transition_empty_and_partial_states(tracki
     page.locator('.tb-row[data-key="PARTIAL-1"] .tb-title-button').click()
     expect(timeline.locator('.tt-partial')).to_contain_text('수집이 완료되지 않았습니다.')
     assert reads == before
+    assert not unexpected
+    assert not errors
+
+
+def test_switching_detail_starts_at_timeline_without_resetting_same_ticket_updates(tracking_browser):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    page.set_viewport_size({'width': 1440, 'height': 650})
+    timeline = open_task_detail(page)
+    scroll = page.locator('.tp-evidence-scroll')
+    scroll.evaluate('el=>el.scrollTop=el.scrollHeight')
+    assert scroll.evaluate('el=>el.scrollTop') > 500
+
+    page.locator('.tp-tree-label[aria-label*="LEAF-1"]').click()
+    expect(timeline).to_have_attribute('data-issue-key', 'LEAF-1')
+    expect(timeline).to_be_in_viewport()
+    assert scroll.evaluate('el=>el.scrollTop') == 0
+
+    timeline.locator('.tt-comment').click()
+    evidence = page.locator('.tp-event[data-event-id="leaf-comment"]')
+    expect(evidence).to_be_in_viewport()
+    expect(evidence).to_have_class(re.compile(r'\bis-selected\b'))
+    before_update = scroll.evaluate('el=>el.scrollTop')
+    assert before_update > 0
+    page.evaluate('run=>window.dispatchEvent(new CustomEvent("api-cache-updated", {detail:{'
+                  'path:"/api/tracking/runs/saved-comments",value:run}}))',
+                  {**RUN, 'id': 'saved-comments', 'status': 'complete'})
+    page.wait_for_function('before=>Math.abs(document.querySelector(".tp-evidence-scroll").scrollTop-before)<1',
+                           arg=before_update)
+    expect(evidence).to_be_in_viewport()
     assert not unexpected
     assert not errors

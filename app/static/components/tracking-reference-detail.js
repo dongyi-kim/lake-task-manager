@@ -22,8 +22,14 @@ export default {
   data(){let grouping='none';try{grouping=groupingOf(localStorage.getItem(GROUPING_KEY));}catch(_){}return {grouping,onlyMatches:false};},
   computed:{
     issue(){return this.row?.issue||null;},
-    timelineIssue(){const key=this.row?.key;return {...(this.issue||(this.run?.issues||[]).find(issue=>issue.key===key)||{}),key};},
-    showTimeline(){return !!this.row?.key&&!this.row.virtual&&!['module','wbs','epic','group'].includes(String(this.row.kind||this.timelineIssue.type||'').toLowerCase().replace(/[-_\s]/g,''));},
+    timelineIssue(){const key=this.row?.key;return {type:this.row?.type||this.row?.kind,summary:this.row?.title||this.row?.summary||this.row?.name||key,
+      ...(this.issue||(this.run?.issues||[]).find(issue=>issue.key===key)),key};},
+    timelineIssues(){
+      const keys=this.row?.keys||new Set([this.row?.key]);
+      return (this.run?.issues||[]).filter(issue=>keys.has(issue.key));
+    },
+    evidenceIdentity(){return this.row?.key?'ticket:'+this.row.key:'scope:'+(this.row?.id||'');},
+    showTimeline(){return !!this.row?.key&&!this.row.virtual&&!['module','wbs','group'].includes(String(this.row.kind||this.timelineIssue.type||'').toLowerCase().replace(/[-_\s]/g,''));},
     rows(){return trackingRows(this.run);},
     breadcrumbs(){return (this.row?.path||[]).map(node=>({id:node.id,title:node.title||node.name||node.summary||node.key}));},
     matchedEvents(){const keys=new Set(this.matchKeys);return this.hasMatch?this.events.filter(event=>keys.has(event.issueKey)):this.events;},
@@ -34,7 +40,10 @@ export default {
     period(){const request=this.run?.request||{};return [request.startDate,request.endDate].filter(Boolean).join(' — ');},
     uncertain(){const keys=this.row?.keys||new Set(this.events.map(event=>event.issueKey));return (this.run?.issues||[]).some(issue=>keys.has(issue.key)&&!issue.contextOnly&&(issue.coverage?.historyComplete!==true||issue.coverage?.commentsComplete!==true));},
   },
-  watch:{'row.id'(){this.onlyMatches=false;},selectedEventId(id){
+  watch:{'row.id'(){this.onlyMatches=false;},evidenceIdentity(){
+    // Reset before rendering so an explicit evidence focus can scroll after the update.
+    if(this.$refs.evidenceScroll)this.$refs.evidenceScroll.scrollTop=0;
+  },selectedEventId(id){
     if(this.events.some(event=>event.id===id&&!this.matchKeys.includes(event.issueKey)))this.onlyMatches=false;
   }},
   methods:{
@@ -59,8 +68,8 @@ export default {
         <h2>{{ row.title }}</h2><div class="tp-evidence-path">{{ leaf?'하위 작업이 없는 종단 업무 · 상세 근거를 바로 보고 있습니다.':row.key?'위 선택 경로에 속한 업무의 자체 활동과 하위 활동입니다.':'선택 범위에 포함된 업무의 활동입니다.' }}</div>
         <div class="tp-evidence-meta"><span v-if="issue" class="tp-status-badge" :class="statusTone()">{{ issue.status||'상태 미확인' }}</span><span v-if="issue">{{ issue.assigneeName||issue.assignee?.name||'담당자 미확인' }}</span><span v-if="issue">조회 당시 상태 · {{ issue.fetchedAt?timestamp(issue.fetchedAt):'수집 시각 미확인' }}</span><button v-if="row.key" type="button" class="tp-source-button" @click="$emit('ticket',row.key)">원본 티켓 ↗</button></div>
       </header>
-      <div class="tp-evidence-scroll">
-        <TrackingTicketTimeline v-if="showTimeline" :key="row.key" :issue="timelineIssue" :events="events" :request="run?.request||{}" :selected-event-id="selectedEventId" @focus="$emit('focus',$event)"/>
+      <div ref="evidenceScroll" class="tp-evidence-scroll">
+        <TrackingTicketTimeline v-if="showTimeline" :key="row.key" :issue="timelineIssue" :events="events" :issues="timelineIssues" :tree="[row]" :coverage="run?.coverage||{}" :request="run?.request||{}" :selected-event-id="selectedEventId" @focus="$emit('focus',$event)"/>
         <section class="tp-fact-block"><h3>Δ 선택 기간 {{ period }}</h3><div v-if="summary.counts.length" class="tp-evidence-deltas"><span v-for="fact in summary.counts" :key="fact.kind" :class="'tp-delta-'+fact.kind">{{ fact.label }} <b>{{ fact.count }}</b>건</span></div><p v-if="summary.latestChange" class="tp-delta-change"><span v-if="latestChangeTitle" class="tp-delta-child-title">{{ latestChangeTitle }} · </span>{{ eventText(summary.latestChange) }}</p><div v-if="summary.latest" class="tp-delta-comment"><span>최근 댓글 보고</span><p>{{ summary.text }}</p><button type="button" class="tp-source-button" @click="$emit('focus',summary.latest.id)">댓글 근거 보기 →</button></div><p v-else-if="!events.length">{{ summary.text }}</p><div class="tp-source-note">업무 전체 근거 {{ events.length }}건<span v-if="hasMatch"> · 현재 표시와 일치 {{ matchedEvents.length }}건</span><span v-if="summary.commentCount"> · 댓글·수정 {{ summary.commentCount }}건</span></div><p v-if="uncertain" class="tp-evidence-uncertain">이력·댓글 확인이 끝나지 않은 항목이 있습니다. 근거 수는 확보한 범위입니다.</p></section>
         <div class="tp-evidence-tabs"><h3>{{ onlyMatches&&hasMatch?'현재 표시와 일치':'업무 전체 근거' }} <small>{{ shownEvents.length }}건</small></h3><label><span class="tp-visually-hidden">활동 그룹핑</span><select aria-label="활동 그룹핑" :value="grouping" @change="setGrouping($event.target.value)"><option value="none">그룹 없이 시간순</option><option value="ticket">기간 전체 · 티켓별</option><option value="date-ticket">날짜 → 티켓별</option></select></label></div>
         <div v-if="hasMatch" class="tp-evidence-filter" role="group" aria-label="근거 표시 범위"><button type="button" :aria-pressed="!onlyMatches" @click="onlyMatches=false">업무 전체 {{ events.length }}</button><button type="button" :aria-pressed="onlyMatches" @click="onlyMatches=true">일치 근거 {{ matchedEvents.length }}</button></div>

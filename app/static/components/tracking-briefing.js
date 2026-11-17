@@ -1,20 +1,29 @@
 import { buildTrackingBriefing, briefingReportText, BRIEFING_STATES } from './trackingBriefingModel.js';
-import { trackingRows, countLabel, eventText, kstToday } from './trackingModel.js';
+import { trackingRows, countLabel, eventText, kstToday, issueKeyOf } from './trackingModel.js';
 import TrackingFeed from './tracking-feed.js';
 import TrackingComment from './tracking-comment.js';
+import TrackingTicketTimeline from './tracking-ticket-timeline.js';
 import { TrackingReferenceIcon, trackingReferenceIconName } from './tracking-reference-nav.js';
 
 const GROUPING_KEY='ltm.tracking.report.grouping';
 function readGrouping(){try{return localStorage.getItem(GROUPING_KEY)==='status'?'status':'hierarchy';}catch(_){return 'hierarchy';}}
 export default {
-  name:'TrackingBriefing',components:{TrackingFeed,TrackingComment,TrackingReferenceIcon},
+  name:'TrackingBriefing',components:{TrackingFeed,TrackingComment,TrackingReferenceIcon,TrackingTicketTimeline},
   props:{run:Object,scopeId:{type:String,default:''},query:{type:String,default:''},highlight:{type:Object,default:null},
-    matchedOnly:Boolean,pins:{type:Array,default:()=>[]}},
+    matchedOnly:Boolean,pins:{type:Array,default:()=>[]},evidenceOpen:Boolean},
   emits:['scope','inspect','evidence','ticket','query','highlight','matched-only','pin'],
   data(){return {category:'all',childStatus:'all',grouping:readGrouping(),mode:'report',collapsed:{},expanded:{},pages:{},beforeExpanded:false,activityEvents:null};},
   mounted(){this._searchShortcut=event=>this.searchShortcut(event);document.addEventListener('keydown',this._searchShortcut);},
   beforeUnmount(){document.removeEventListener('keydown',this._searchShortcut);},
   computed:{
+    timelineIssue(){
+      const node=this.view.scope.node;
+      if(!node || node.virtual || ['module','wbs','group'].includes(String(node.kind||node.type||'').toLowerCase().replace(/[-_\s]/g,'')))return null;
+      const key=issueKeyOf(node);
+      if(!key)return null;
+      return {type:node.type||node.kind,summary:node.summary||node.name||node.title||key,
+        ...(this.run?.issues||[]).find(issue=>issue.key===key),key};
+    },
     view(){return buildTrackingBriefing(this.run,{scopeId:this.scopeId,query:this.query,highlight:this.highlight,matchedOnly:this.matchedOnly,
       category:this.category,childStatus:this.childStatus,pins:this.pins,grouping:this.grouping});},
     sections(){return this.view.sections.map(section=>{
@@ -41,7 +50,7 @@ export default {
       {key:'review',label:'재확인',value:this.view.metrics.review,note:this.view.partial?'미확인 근거도 포함':'재오픈·근거 확인',icon:'alert'},
     ];},
   },
-  watch:{scopeId(){this.resetLocal();},query(){this.pages={};},highlight(){this.pages={};},matchedOnly(){this.pages={};}},
+  watch:{scopeId(){this.resetLocal();const main=this.$el?.closest('.rf-main');if(main)main.scrollTop=0;},query(){this.pages={};},highlight(){this.pages={};},matchedOnly(){this.pages={};}},
   methods:{
     eventText,countLabel,icon:trackingReferenceIconName,
     searchShortcut(event){
@@ -77,6 +86,8 @@ export default {
         <div class="tb-scope-title-row"><span class="tb-scope-icon"><TrackingReferenceIcon :name="view.scope.node ? icon(view.scope.node) : 'layers'" :size="23"/></span><div class="tb-scope-title"><div class="tb-kicker"><span>현재 선택</span><span>{{ view.scope.node?.kind || '선택 모듈 전체' }}</span><span v-if="view.scope.node?.issueKey">{{ view.scope.node.issueKey }}</span></div><h1 :title="view.title">{{ view.title }}</h1></div><div class="tb-scope-actions"><button v-if="scopeId" class="tb-button" @click="$emit('scope',parentId)">↑ 상위로</button><button v-if="scopeId" class="tb-text" @click="$emit('scope','')">전체 범위</button><button v-if="scopeId" class="tb-button" @click="$emit('inspect',scopeId)">범위 활동 <TrackingReferenceIcon name="outbound" :size="12"/></button></div></div>
         <div class="tb-scope-context"><span>선택 범위의 표시 대상 <b>업무 {{ view.metrics.tasks }}</b> · <b>하위 작업 {{ view.metrics.subtasks }}</b><template v-if="view.partial"> · 확보분</template></span><span>현재 상태 관측 · {{ view.observedAt ? dateFull(view.observedAt)+' KST' : '기준 시각 미확인' }}</span></div>
       </header>
+
+      <TrackingTicketTimeline v-if="timelineIssue&&!evidenceOpen" :key="timelineIssue.key" :issue="timelineIssue" :events="view.run?.events||[]" :issues="view.run?.issues||[]" :tree="view.run?.tree||[]" :coverage="run?.coverage||{}" :request="run?.request||{}" @focus="$emit('evidence',$event)"/>
 
       <section class="tb-inventory" aria-label="조회된 직속 하위 구성">
         <div class="tb-inventory-top"><strong><TrackingReferenceIcon name="layers" :size="16"/>조회된 직속 하위 {{ view.level }} <b>{{ view.inventory.total }}</b>개</strong><span>표시 조건 일치 {{ view.matchCount }}개<template v-if="view.partial"> · 전체 구성 미확인</template></span></div>

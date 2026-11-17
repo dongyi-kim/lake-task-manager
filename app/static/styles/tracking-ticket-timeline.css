@@ -8,18 +8,39 @@
 .tracking-reference .tt-summary i{display:inline-block;width:6px;height:6px;margin-right:2px;border:1px solid var(--tr-line);border-radius:50%;background:var(--tr-panel)}
 .tracking-reference .tt-summary .tt-legend-status{background:var(--tr-blue);border-color:var(--tr-blue)}
 .tracking-reference .tt-summary .tt-legend-comment{transform:rotate(45deg);border-radius:0;border-color:var(--tr-blue)}
+.tracking-reference .tt-summary .tt-legend-child{border-radius:1px;background:var(--tr-muted);border-color:var(--tr-muted)}
 .tracking-reference .tt-summary b{font-variant-numeric:tabular-nums;color:var(--tr-ink);font-weight:600}
 .tracking-reference .tt-timeline p{font-size:10px;line-height:1.7;margin:5px 0;color:var(--tr-muted)}
 .tracking-reference .tt-timeline .tt-partial{color:var(--tr-amber)}
+.tracking-reference .tt-child-progress{margin:9px 0 5px;padding:8px 0;border-top:1px solid var(--tr-line);border-bottom:1px solid var(--tr-line)}
+.tracking-reference .tt-progress-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;font-size:10px;color:var(--tr-muted)}
+.tracking-reference .tt-progress-heading b{font-weight:600;font-variant-numeric:tabular-nums;color:var(--tr-ink)}
+.tracking-reference .tt-progress-uncertain{color:var(--tr-amber)}
+.tracking-reference .tt-progress-track{height:4px;margin-top:6px;border-radius:6px;background:var(--tr-line);overflow:hidden}
+.tracking-reference .tt-progress-track>span{display:block;height:100%;background:var(--tr-green)}
+.tracking-reference .tt-child-progress p{margin:4px 0 0;font-size:9px}
 .tracking-reference .tt-scroll{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;padding:7px 0 8px;scrollbar-width:thin;scrollbar-color:var(--tr-line) transparent}
 .tracking-reference .tt-scroll:focus-visible,.tracking-reference .tt-transitions:focus-visible{outline:2px solid var(--tr-blue);outline-offset:-2px}
 .tracking-reference .tt-track{display:grid;width:100%;align-items:start}
+.tracking-reference .tt-track.has-children{grid-template-rows:38px auto auto;align-items:stretch}
 .tracking-reference .tt-day{position:relative;min-width:0;padding:0 6px}
+.tracking-reference .has-children .tt-day{display:grid;grid-row:1 / span 3;grid-template-rows:subgrid;align-items:start}
 .tracking-reference .tt-day:before{content:"";position:absolute;top:25px;left:0;right:0;height:1px;background:var(--tr-line)}
 .tracking-reference .tt-date{position:relative;display:block;height:38px;text-align:center;font-size:10px;line-height:17px;font-weight:600;color:var(--tr-muted);font-variant-numeric:tabular-nums}
 .tracking-reference .tt-date:after{content:"";position:absolute;top:22px;left:calc(50% - 3px);width:7px;height:7px;border-radius:50%;border:1px solid var(--tr-line);background:var(--tr-panel)}
 .tracking-reference .tt-day.has-status .tt-date:after{background:var(--tr-blue);border-color:var(--tr-blue)}
 .tracking-reference .tt-day.has-comments:not(.has-status) .tt-date:after{transform:rotate(45deg);border-radius:0;border-color:var(--tr-blue)}
+.tracking-reference .tt-day.has-child-changes:not(.has-status):not(.has-comments) .tt-date:after{border-radius:1px;background:var(--tr-muted);border-color:var(--tr-muted)}
+.tracking-reference .tt-lane-label{margin:0 0 5px;font-size:9px;color:var(--tr-muted);word-break:keep-all;overflow-wrap:anywhere}
+.tracking-reference .tt-own-events{min-width:0}
+.tracking-reference .tt-child-events{min-width:0;margin-top:10px;padding-top:8px;border-top:1px solid var(--tr-line)}
+.tracking-reference .tt-child-list{display:grid;gap:4px;max-height:238px;overflow-y:auto;overscroll-behavior-y:contain;scrollbar-width:thin}
+.tracking-reference .tt-child-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--tr-ink);word-break:keep-all;overflow-wrap:anywhere}
+.tracking-reference .tt-child-key{display:block;font-size:9px;color:var(--tr-muted);font-variant-numeric:tabular-nums}
+.tracking-reference .tt-event .tt-child-change{margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tracking-reference .tt-child-group{display:flex;align-items:center;justify-content:space-between;gap:5px;width:100%;min-height:32px;padding:4px 6px;margin-top:4px;border:1px solid var(--tr-line);border-radius:6px;background:var(--tr-bg);color:var(--tr-blue);font-size:10px}
+.tracking-reference .tt-child-group>span{font-size:9px;font-variant-numeric:tabular-nums;color:var(--tr-muted)}
+.tracking-reference .tt-timeline button:focus-visible{outline:2px solid var(--tr-blue);outline-offset:-2px}
 .tracking-reference .tt-transitions{display:grid;gap:4px;max-height:160px;overflow-y:auto;overscroll-behavior-y:contain;scrollbar-width:thin}
 .tracking-reference .tt-event{display:block;width:100%;min-height:44px;padding:5px 7px;text-align:left;border:1px solid var(--tr-line);border-radius:6px;background:var(--tr-panel);font-size:10px;line-height:1.45;overflow-wrap:anywhere}
 .tracking-reference .tt-event:hover{background:var(--tr-bg);border-color:var(--tr-blue)}
