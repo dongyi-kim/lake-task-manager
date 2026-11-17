@@ -36,9 +36,7 @@ export default {
   emits:['scope','fold','collapse','pin','inspect'],
   computed:{
     entries(){
-      const roots=this.allRows.filter(row=>row.depth===0),moduleRoot=roots.length===1&&roots[0].kind==='module'?roots[0]:null;
-      const visible=moduleRoot?this.rows.filter(row=>row.id!==moduleRoot.id).map(row=>({...row,depth:Math.max(0,row.depth-1)})):this.rows;
-      const entries=visible.map(row=>({row,last:true,guides:[]})),next=[];
+      const entries=this.rows.map(row=>({row,last:true,guides:[]})),next=[];
       for(let i=entries.length-1;i>=0;i--){
         while(next.length&&entries[next.at(-1)].row.depth>entries[i].row.depth)next.pop();
         entries[i].last=!next.length||entries[next.at(-1)].row.depth<entries[i].row.depth;next.push(i);
@@ -53,14 +51,12 @@ export default {
     },
     ancestorIds(){return new Set((this.allRows.find(row=>row.id===this.activeId)?.path||[]).map(node=>node.id));},
     pinnedRows(){const seen=new Set();return this.allRows.filter(row=>{const identity=row.key||row.id;return this.pins.includes(identity)&&!seen.has(identity)&&seen.add(identity);});},
-    moduleCaption(){const modules=this.allRows.filter(row=>row.kind==='module');return modules.length===1?modules[0].title:'';},
   },
   methods:{
     icon:trackingReferenceIconName,
     expanded(row){return !this.closed[row.id]||(this.revealMatches&&row.containsMatch);},
     collapseAll(){
-      const roots=this.allRows.filter(row=>row.depth===0),hiddenModule=roots.length===1&&roots[0].kind==='module'?roots[0].id:'';
-      for(const row of this.allRows)if(row.id!==hiddenModule&&row.children?.length&&!this.closed[row.id])this.$emit('fold',row);
+      for(const row of this.allRows)if(row.children?.length&&!this.closed[row.id])this.$emit('fold',row);
     },
     tooltip(row){return row.title+(row.key?' ('+row.key+')':'');},
     select(row){this.$emit('scope',row.id);},
@@ -77,7 +73,6 @@ export default {
     <div v-else class="tp-navigation-panel" :style="width ? {width:width+'px',flexBasis:width+'px'} : null">
       <button ref="panelToggle" type="button" class="tp-panel-toggle" @click="togglePanel(true)" aria-label="업무 탐색 패널 접기" title="업무 탐색 패널 접기" aria-expanded="true" aria-controls="tracking-hierarchy-content"><span aria-hidden="true">−</span></button>
       <nav id="tracking-hierarchy-content" class="tp-navigation" aria-label="업무 계층 탐색" tabindex="0">
-      <div v-if="moduleCaption" class="tp-module-caption">{{ moduleCaption }}<span>현재 모듈</span></div>
       <header class="tp-side-head"><span>업무 탐색</span><div class="tp-tree-panel-actions"><button type="button" class="tp-tree-collapse-all" @click="collapseAll" :disabled="revealMatches" aria-label="트리의 모든 항목 접기" :title="revealMatches?'일치 경로를 표시하고 있습니다.':'모든 항목 접기'"><span class="tp-disclosure" aria-hidden="true">−</span>모두 접기</button></div></header>
       <button type="button" class="tp-all-node" :class="{'is-active':!activeId}" :aria-current="!activeId?'page':null" @click="$emit('scope','')"><span><TrackingReferenceIcon name="layers" :size="15"/>전체 업무</span><span>{{ total ?? 0 }}</span></button>
       <div class="tp-side-kicker">WBS · Epic · Task · Subtask</div>
@@ -94,7 +89,7 @@ export default {
       </ul>
       <div class="tp-side-kicker">고정한 주요 업무 · {{ pinnedRows.length }}</div>
       <div v-for="row in pinnedRows" :key="row.key||row.id" class="tp-pinned-row"><button class="tp-side-pin" type="button" :title="tooltip(row)" @click="select(row)"><span aria-hidden="true">☆</span>{{ row.title }}</button><button type="button" class="tp-unpin" :aria-label="row.title+' 고정 해제'" title="고정 해제" @click="$emit('pin',row.key||row.id)">×</button></div>
-      <footer class="tp-side-foot">전체 업무 = 선택 모듈 전체<br>파란색: 현재 선택 범위<br>연결선: 부모와 직속 하위 항목</footer>
+      <footer class="tp-side-foot">WBS → Epic → Task → Subtask<br>파란색: 현재 선택 범위<br>연결선: 부모와 직속 하위 항목</footer>
       </nav>
     </div>`,
 };

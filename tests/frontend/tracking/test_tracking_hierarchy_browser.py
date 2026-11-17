@@ -1,5 +1,6 @@
 """Saved-run hierarchy groups remain independent scopes on the actual Vue UI."""
 import re
+from collections import Counter
 
 import pytest
 
@@ -26,6 +27,8 @@ HIERARCHY_RUN = {
             ('SUB-1', SUB_A, 'Sub-Task', {"parentKey": 'TASK-1', "isSubtask": True}),
             ('TASK-2', '두 번째 WBS의 독립 업무', 'Task', {}),
             ('MODULE-1', '모듈 바로 아래 업무', 'Task', {}),
+            ('EPIC-2', '미연결 WBS의 Epic', 'Epic', {"contextOnly": True}),
+            ('UNMAPPED-1', '미연결 WBS의 업무', 'Task', {"epicKey": 'EPIC-2'}),
             ('ORPHAN-1', '최상위 독립 업무', 'Task', {}),
             ('VOC-1', '[화면 - 사용성] VOC의 독립 업무', 'Task', {"voc": True}),
         ]
@@ -38,6 +41,9 @@ HIERARCHY_RUN = {
             ]},
             {"id": 'wbs:b', "kind": 'wbs', "name": 'WBS B', "children": [ticket('TASK-2')]},
             ticket('MODULE-1'),
+        ]},
+        {"id": 'unmapped', "kind": 'module', "name": 'WBS 미연결', "children": [
+            ticket('EPIC-2', ticket('UNMAPPED-1'), kind='Epic'),
         ]},
         ticket('ORPHAN-1'), ticket('VOC-1'),
     ],
@@ -52,6 +58,7 @@ HIERARCHY_RUN = {
             ('b-comment', 'TASK-2', 'comment', '2026-11-13T08:00:00Z', '두 번째 업무의 보고'),
             ('real-comment', 'REAL-1', 'comment', '2026-11-13T07:00:00Z', '실제 Epic 업무의 보고'),
             ('module-comment', 'MODULE-1', 'comment', '2026-11-13T06:00:00Z', '모듈 업무의 보고'),
+            ('unmapped-comment', 'UNMAPPED-1', 'comment', '2026-11-13T05:30:00Z', '미연결 WBS 업무의 보고'),
             ('orphan-comment', 'ORPHAN-1', 'comment', '2026-11-13T05:00:00Z', '최상위 업무의 보고'),
             ('voc-comment', 'VOC-1', 'comment', '2026-11-13T04:00:00Z', 'VOC 업무의 보고'),
         ]
@@ -97,10 +104,10 @@ def test_unassigned_scopes_keep_wbs_module_and_root_members_separate(tracking_br
     before = list(reads)
     expect(unassigned_buttons(page)).to_have_count(4)
     for index, context, titles in [
-        (0, ['제품 모듈', 'WBS A', UNASSIGNED], [TASK_A]),
-        (1, ['제품 모듈', 'WBS B', UNASSIGNED], ['두 번째 WBS의 독립 업무']),
-        (2, ['제품 모듈', UNASSIGNED], ['모듈 바로 아래 업무']),
-        (3, [UNASSIGNED], ['최상위 독립 업무']),
+        (0, ['WBS A', UNASSIGNED], [TASK_A]),
+        (1, ['WBS B', UNASSIGNED], ['두 번째 WBS의 독립 업무']),
+        (2, ['WBS 미연결 · 제품 모듈', UNASSIGNED], ['모듈 바로 아래 업무']),
+        (3, ['WBS 미연결', UNASSIGNED], ['최상위 독립 업무']),
     ]:
         select_group(page, index)
         expect(page.locator('.tb-briefing')).to_be_visible()
@@ -254,10 +261,44 @@ def test_virtual_epic_highlights_keep_distinct_parent_context(tracking_browser):
     options = highlight.locator('option').filter(has_text=UNASSIGNED)
     expect(options).to_have_count(4)
     labels = options.all_text_contents()
-    assert len(set(labels)) == 4, 'Same-named virtual Epic choices need their actual WBS/module path'
+    assert len(set(labels)) == 4, 'Same-named virtual Epic choices need their WBS scope path'
     for context, expected in [('WBS A', A_EVENTS), ('WBS B', {'b-comment'})]:
         option = options.filter(has_text=context)
         expect(option).to_have_count(1)
         highlight.select_option(option.get_attribute('value'))
         assert set(area.locator('.tr-feed-event').evaluate_all('els => els.map(el => el.dataset.eventId)')) == expected
+    assert_clean(reads, before, unexpected, errors)
+
+
+def test_mixed_legacy_roots_show_wbs_scopes_and_collapse_without_module_or_fetches(tracking_browser):
+    from playwright.sync_api import expect
+
+    page, reads, unexpected, errors = tracking_browser
+    before = list(reads)
+    nav = navigation(page)
+    expected_roots = Counter(['WBS A', 'WBS B', 'WBS 미연결 · 제품 모듈', 'WBS 미연결', 'WBS 미연결', '사용자 VOC'])
+    roots = nav.locator('.tp-tree-entry:not(.has-parent)')
+    assert Counter(roots.locator('.tp-tree-label').all_text_contents()) == expected_roots
+    assert roots.evaluate_all("els => els.every(el => el.style.getPropertyValue('--tp-depth') === '0')")
+    expect(roots.locator('.tp-kind-layers')).to_have_count(sum(expected_roots.values()))
+    expect(nav.locator('.tp-module-caption')).to_have_count(0)
+    expect(nav.get_by_role('button', name='제품 모듈 범위 선택', exact=True)).to_have_count(0)
+    expect(nav.get_by_text('현재 모듈', exact=True)).to_have_count(0)
+
+    nav.get_by_role('button', name='WBS A 범위 선택', exact=True).click()
+    expect(page.get_by_role('navigation', name='선택 범위 경로').locator('button')).to_have_text(['전체 업무', 'WBS A'])
+    expect(page.locator('.tb-briefing')).not_to_contain_text('제품 모듈')
+    page.get_by_role('button', name='범위 활동', exact=True).click()
+    expect(page.get_by_role('navigation', name='근거 상위 경로')).not_to_contain_text('제품 모듈')
+    page.get_by_role('button', name='상세 근거 닫기', exact=True).click()
+
+    nav.get_by_role('button', name='미연결 WBS의 Epic (EPIC-2) 범위 선택', exact=True).click()
+    assert brief_titles(page) == ['미연결 WBS의 업무']
+    expect(page.get_by_role('navigation', name='선택 범위 경로').locator('button')).to_have_text(
+        ['전체 업무', 'WBS 미연결', 'EPIC-2']
+    )
+    page.get_by_role('button', name='트리의 모든 항목 접기', exact=True).click()
+    assert Counter(nav.locator('.tp-tree-label').all_text_contents()) == expected_roots
+    expect(nav.locator('.tp-tree-entry.has-parent')).to_have_count(0)
+    expect(roots.locator('.tp-tree-exp[aria-expanded="false"]')).to_have_count(sum(expected_roots.values()))
     assert_clean(reads, before, unexpected, errors)

@@ -52,15 +52,16 @@ def panels_browser():
       import Splitter from '/components/tracking-splitter.js';
       import Evidence from '/components/tracking-reference-detail.js';
       import {trackingRows} from '/components/trackingModel.js';
+      import {projectTrackingHierarchy} from '/components/trackingHierarchyModel.js';
       const coverage={historyComplete:true,commentsComplete:true};
       const run={request:{startDate:'2026-11-09',endDate:'2026-11-15'},asOf:'2026-11-16T23:59:00+09:00',issues:[
         {key:'T-1',summary:'긴 업무 제목을 줄임 없이 읽고 선택할 수 있는 데이터 적재 검증과 안정화 작업',type:'Task',status:'진행 중',statusCategory:'indeterminate',assigneeName:'김담당',fetchedAt:'2026-11-16T01:10:00Z',coverage},
         {key:'S-1',summary:'하위 검증',type:'Sub-Task',status:'완료',statusCategory:'done',coverage}],
-        tree:[{id:'m',kind:'module',name:'데이터 수집',children:[{id:'w',kind:'wbs',name:'수집 신뢰성',children:[{id:'t',key:'T-1',kind:'task',children:[{id:'s',key:'S-1',kind:'subtask'}]},{id:'v',kind:'epic',virtual:true,name:'VOC 분류'}]}]}],
+        tree:[{id:'m',kind:'module',name:'데이터 수집',children:[{id:'w',kind:'wbs',name:'수집 신뢰성',children:[{id:'e',key:'E-1',kind:'epic',name:'적재 안정화',children:[{id:'t',key:'T-1',kind:'task',children:[{id:'s',key:'S-1',kind:'subtask'}]}]},{id:'v',kind:'epic',virtual:true,name:'VOC 분류'}]}]}],
         events:[{id:'rich',issueKey:'T-1',kind:'comment',date:'2026-11-13T01:00:00Z',actorName:'김담당',bodyText:'첫 번째 보고. 두 번째 보고. 세 번째 보고.',bodyHtml:'<p>첫 번째 보고 문장입니다.</p><p>두 번째 보고 문장입니다.</p><p>세 번째 보고 문장입니다.</p><table><tr><th>항목</th><th>결과</th></tr><tr><td>적재</td><td>완료</td></tr></table><pre>status = verified</pre><p><a href="#reference">참고 링크</a></p>'},
           {id:'done',issueKey:'S-1',kind:'completed',date:'2026-11-12T01:00:00Z',actorName:'이담당',field:'status',from:'진행 중',to:'완료'}]};
       window.vm=createApp({components:{Navigator,Splitter,Evidence},data:()=>({run,closed:{},activeId:'t',collapsed:false,width:252,pins:['T-1'],ticket:'',focused:'',leaf:false,detailOpen:true}),
-        computed:{allRows(){return trackingRows(this.run)},rows(){return trackingRows(this.run,{closed:this.closed})},row(){return this.allRows.find(r=>r.id==='t')}},
+        computed:{displayRun(){return projectTrackingHierarchy(this.run)},allRows(){return trackingRows(this.displayRun)},rows(){return trackingRows(this.displayRun,{closed:this.closed})},row(){return this.allRows.find(r=>r.id==='t')}},
         template:`<Navigator id="tracking-hierarchy" :width="width" :rows="rows" :all-rows="allRows" :active-id="activeId" detail-id="t" :closed="closed" :pins="pins" :total="1" :collapsed="collapsed" @scope="activeId=$event" @fold="closed[$event.id]=!closed[$event.id]" @collapse="collapsed=$event" @pin="pins=pins.filter(k=>k!==$event)"/><Splitter v-if="!collapsed" :width="width" :default-width="252" :minimum-width="220" :maximum-width="440" @resize="width=$event"/><div id="spacer"></div><Evidence v-if="detailOpen" :row="row" :run="run" :events="run.events" :match-keys="['T-1']" :has-match="true" :selected-event-id="focused" :leaf="leaf" @ticket="ticket=$event" @focus="focused=$event" @close="detailOpen=false" @scope="activeId=$event"/>`}).mount('#app');
       </script></body></html>'''
     errors = []
@@ -97,7 +98,9 @@ def test_navigation_wraps_full_titles_and_keeps_disclosure_selection_and_panel_s
     assert selected.evaluate('el=>el.scrollHeight<=el.clientHeight+1')
     assert selected.bounding_box()['height'] > 30
     expect(selected).to_have_attribute('title', '긴 업무 제목을 줄임 없이 읽고 선택할 수 있는 데이터 적재 검증과 안정화 작업 (T-1)')
-    expect(page.locator('.tp-tree-node.is-ancestor')).to_have_count(1)
+    expect(page.locator('.tp-tree-node.is-ancestor')).to_have_count(2)
+    expect(page.locator('.tp-module-caption')).to_have_count(0)
+    expect(page.get_by_role('button', name='데이터 수집 범위 선택', exact=True)).to_have_count(0)
     fold = page.get_by_role('button', name='수집 신뢰성 접기', exact=True)
     fold.focus()
     page.keyboard.press('Space')
@@ -126,7 +129,7 @@ def test_hidden_scrollbar_retains_wheel_keyboard_and_edge_controls(panels_browse
     page.evaluate("""vm.run.tree[0].children.push(...Array.from({length:35},(_,i)=>
       ({id:'overflow-'+i,kind:'wbs',name:'추가 검증 범위 '+i,children:[]})))""")
     nav = page.get_by_role('navigation', name='업무 계층 탐색', exact=True)
-    expect(page.locator('.tp-tree-node')).to_have_count(39)
+    expect(page.locator('.tp-tree-node')).to_have_count(40)
     assert nav.evaluate('el=>el.scrollHeight>el.clientHeight')
     assert nav.evaluate('el=>getComputedStyle(el).scrollbarWidth') == 'none'
     # Chromium's hidden scrollbar must not reserve a gutter or truncate content.
