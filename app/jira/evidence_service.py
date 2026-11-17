@@ -36,7 +36,41 @@ def _wire_record(row):
 
 
 def _json_size(value):
-    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    """Return exact bytes up to the page budget, or budget + 1 when oversized.
+
+    A source page may contain enormous bodies. Count a cheap character lower bound
+    first so deciding that it does not fit never serializes that entire page.
+    Only a small candidate reaches the exact JSON/UTF-8 calculation.
+    """
+    remaining = EVIDENCE_PAGE_MAX_BYTES
+
+    def fits_lower_bound(item):
+        nonlocal remaining
+        if isinstance(item, (dict, list, tuple)):
+            remaining -= 2 + max(0, len(item) - 1) * 2
+            if remaining < 0:
+                return False
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    # JSON object keys have quotes and a colon-space separator.
+                    # Non-string JSON keys use at least their str() length.
+                    remaining -= len(str(key)) + 4
+                    if remaining < 0 or not fits_lower_bound(child):
+                        return False
+            else:
+                for child in item:
+                    if not fits_lower_bound(child):
+                        return False
+        elif isinstance(item, str):
+            remaining -= len(item) + 2
+        else:
+            remaining -= len(json.dumps(item, ensure_ascii=False, default=str))
+        return remaining >= 0
+
+    if not fits_lower_bound(value):
+        return EVIDENCE_PAGE_MAX_BYTES + 1
+    size = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    return min(size, EVIDENCE_PAGE_MAX_BYTES + 1)
 
 
 def _with_next_call(page):
@@ -89,7 +123,11 @@ def _bounded_evidence_page(page, record_offset):
     record = json.dumps(rows[0], ensure_ascii=False, default=str)
     if record_offset >= len(record):
         raise ValueError("record_offset이 원본 기록의 문자 범위를 벗어났습니다.")
-    digest = hashlib.sha256(record.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256()
+    # Keep UTF-8 hashing scratch bounded even when one record is many megabytes.
+    for offset in range(0, len(record), 16384):
+        digest.update(record[offset:offset + 16384].encode("utf-8"))
+    digest = digest.hexdigest()
 
     def chunk(end):
         next_offset = end if end < len(record) else None
