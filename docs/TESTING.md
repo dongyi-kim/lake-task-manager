@@ -42,7 +42,8 @@ python -m pytest -q --basetemp="$TMPDIR/cases" -o "cache_dir=$scratch/cache" --d
   아니며, 해당 회귀를 다룰 때는 준비된 로컬 브라우저 환경에서도 확인한다. 템플릿 없는 자산은
   파일별 기계적 검사에서 적용 가능한 규칙만 검사하며 skip 사례로 만들지 않는다.
 - 전체 suite는 하나의 Python process에 모듈·fixture를 누적하므로, 공통
-  `resource_pressure_sample` fixture가 메모리 계측값과 계측 cache를 test별로 격리한다.
+  session fixture가 module 준비 단계 전에 기본 메모리 계측값을 격리하고,
+  `resource_pressure_sample` fixture가 계측값과 계측 cache를 test별로 격리한다.
   실제 admission 검사·임계값·회복 로직은 유지한다. 과부하 test는 계측값을 변경해 거절과
   회복을 검증하며, `sample_memory()`의 OS 계측 test는 실제 값을 읽는다. 운영 앱의 보호
   장치를 끄거나 CI 전용 우회 경로를 제품 코드에 추가하지 않는다.

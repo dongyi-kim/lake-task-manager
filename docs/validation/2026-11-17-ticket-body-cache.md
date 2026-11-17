@@ -51,6 +51,10 @@ The suite now supplies controlled memory counters to the shared monitor and isol
 
 The rerun ([44090285260](https://github.com/dongyi-kim/lake-task-manager/actions/runs/44090285260)) reached 83% before the job's 30-minute limit canceled pytest. No final JUnit report was produced; a complete failure comparison against the existing main baseline is therefore unavailable. The CI job budget is increased to 45 minutes without filtering or skipping tests. The scoped UI/MCP and pressure results above support an initial release; full-suite verification remains incomplete until that follow-up run finishes.
 
+The completed progress prefix contains 5,480 passes, 20 failures, 85 setup errors and 175 skips. Mapping it to the previous run's ordered cases is supported by every progress percentage and skipped-case position agreeing; the single added case is after this prefix. All 20 failure positions match existing main failures, while three former main failures now pass. The 85 setup errors belong to the two ETL recovery integration files, whose module-scoped setup runs before function-scoped memory isolation. Isolation is therefore installed at session scope as well, while preserving independent mutable samples per test. A subprocess regression covers a pressured host before module setup, real rejection inside the test, healthy module teardown and restoration of the original monitor after the session.
+
+After session isolation, the actual ETL checkpoint, search-order and timing integration files passed **154 tests in 182.47 seconds**, with no setup errors or skips. The pressure/admission/MCP/Tracking cases passed **36 tests in 16.24 seconds**. The final subprocess regression restricts pytest discovery to its owned temporary directory; independent verification of both isolation cases passed **2 tests in 2.37 seconds**. These targeted results resolve the observed setup failure mechanism without claiming that the unfinished whole-suite run passed.
+
 ## Limits retained
 
 - The output page remains advisory at at most ten body-bearing tickets; metadata discovery is at most 100 rows, with actual server caps respected.

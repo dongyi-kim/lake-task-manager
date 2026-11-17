@@ -14,8 +14,21 @@ for root in (TESTS_ROOT, REPO_ROOT):
         sys.path.insert(0, str(root))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def resource_pressure_session():
+    """Cover session/module setup before function-scoped isolation can run."""
+    from app.infra.resource_pressure import MiB, resource_pressure
+
+    sample = {"processBytes": 64 * MiB, "availableBytes": 4096 * MiB, "totalBytes": 8192 * MiB}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(resource_pressure, "sampler", lambda: dict(sample))
+        patch.setattr(resource_pressure, "_state", {"busy": False, "supported": False})
+        patch.setattr(resource_pressure, "_next", 0.0)
+        yield sample
+
+
 @pytest.fixture(autouse=True)
-def resource_pressure_sample(monkeypatch):
+def resource_pressure_sample(monkeypatch, resource_pressure_session):
     """Keep admission deterministic in the shared, long-lived pytest process.
 
     A full suite retains imported modules and allocator arenas unlike one running
@@ -23,9 +36,9 @@ def resource_pressure_sample(monkeypatch):
     check, thresholds and hysteresis. Pressure cases may mutate these counters or
     override the sampler; native sample_memory tests still read the real OS.
     """
-    from app.infra.resource_pressure import MiB, resource_pressure
+    from app.infra.resource_pressure import resource_pressure
 
-    sample = {"processBytes": 64 * MiB, "availableBytes": 4096 * MiB, "totalBytes": 8192 * MiB}
+    sample = dict(resource_pressure_session)
     monkeypatch.setattr(resource_pressure, "sampler", lambda: dict(sample))
     monkeypatch.setattr(resource_pressure, "_state", {"busy": False, "supported": False})
     monkeypatch.setattr(resource_pressure, "_next", 0.0)
