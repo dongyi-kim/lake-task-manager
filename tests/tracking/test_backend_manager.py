@@ -264,6 +264,42 @@ def test_voc_module_supplement_preserves_explicit_historical_person_filter(tmp_p
     assert run['issues'][0]['assigneeId'] == 'a'
 
 
+@pytest.mark.parametrize('resolved_username,expected_status,retained', [
+    (None, 'partial', True), ('a', 'complete', True), ('outsider', 'complete', False),
+])
+def test_voc_key_only_discovery_preserves_unknown_scope_until_rich_identity_resolves(
+        tmp_path, resolved_username, expected_status, retained):
+    class KeyOnlyVocProvider(Provider):
+        def get_json(self, path, params=None):
+            result = super().get_json(path, params)
+            if path.endswith('/search'):
+                assignee = {'key': 'JIRAUSER123', 'displayName': 'a'}
+                if 'project in' not in params['jql'] and resolved_username:
+                    assignee['name'] = resolved_username
+                result['issues'][0]['fields'].update(
+                    components=[{'name': 'Configured VOC'}], epic=None, assignee=assignee)
+            return result
+
+    provider = KeyOnlyVocProvider()
+    m = manager(tmp_path, provider)
+    m.client.s.voc_component = 'Configured VOC'
+    run = m.create({'startDate': '2026-11-10', 'endDate': '2026-11-12', 'modules': ['M']}, background=False)
+    assert run['status'] == expected_status
+    assert {issue['key'] for issue in run['issues']} == ({'P-1'} if retained else set())
+    assert run['coverage']['issuesTotal'] == run['coverage']['issuesComplete'] == 1
+    gaps = [gap for gap in run['coverage']['missing'] if gap['source'] == 'moduleScope']
+    if resolved_username is None:
+        assert gaps == [{'issueKey': 'P-1', 'source': 'moduleScope', 'reason': 'unresolvedCurrentHierarchy'}]
+        assert run['coverage']['scopeComplete'] is False
+        assert run['summary']['provisional'] is True
+        # An uncertain identity must not be replaced by a coincidentally matching display name.
+        assert run['issues'][0]['assigneeId'] == 'JIRAUSER123'
+    else:
+        assert not gaps
+        assert run['coverage']['scopeComplete'] is True
+    assert len(provider.calls) == 4  # Existing metadata, rich source and comment reads only.
+
+
 @pytest.mark.parametrize('components,epic', [(['Configured VOC', 'Other'], None), (['Configured VOC'], 'P-200')])
 def test_voc_other_module_mapping_is_pruned_before_sources_even_when_assignee_matches(tmp_path, components, epic):
     class MappedVocProvider(Provider):

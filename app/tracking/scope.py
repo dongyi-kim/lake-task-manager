@@ -56,8 +56,11 @@ def module_candidates(rows, modules, epic_keys, epic_field, parents=None, *, voc
                           if isinstance(assignee, dict) and assignee.get(field)}
             if identities.intersection(selected_members):
                 return True
-            # Missing metadata and explicit unassigned leave module membership unknown.
-            if not identities:
+            # The roster uses Jira usernames. A key/accountId can confirm a direct
+            # match, but a mismatch without a username does not establish that the
+            # assignee is outside the module. Retain it for richer-source resolution;
+            # displayName is never identity evidence. Unassigned also remains unknown.
+            if not isinstance(assignee, dict) or not str(assignee.get('name') or '').strip():
                 return None
         if not isinstance(components, list):
             return None

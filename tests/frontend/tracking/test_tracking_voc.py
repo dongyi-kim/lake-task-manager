@@ -91,7 +91,8 @@ def test_options_publish_configured_voc_component_with_existing_default():
     from types import SimpleNamespace
     from app.tracking.manager import TrackingManager
     manager = object.__new__(TrackingManager)
-    manager.authorize = lambda: None
+    manager.authorize = lambda: ("owner", "scope")
+    manager.store = SimpleNamespace(recent=lambda *_: [])
     manager.people_loader = lambda: {}
     manager.client = SimpleNamespace(s=SimpleNamespace(voc_component="고객 VOC"))
     assert manager.options()["vocComponent"] == "고객 VOC"
@@ -112,3 +113,77 @@ def test_non_voc_task_below_a_real_voc_epic_is_preserved_in_original_wbs():
       assert.equal(out.tree.at(-1).children[0].children[0].issueKey,'E-1');
       assert.equal(out.issues[1].voc,undefined);
     """)
+
+
+def test_category_parser_preserves_hyphenated_major_and_distinct_virtual_epics():
+    run_js("""
+      const run={issues:[
+        {key:'V-1',summary:'[Data-Platform - Query] First',components:['Custom VOC']},
+        {key:'V-2',summary:'[Data - Platform - Query] Second',components:['Custom VOC']},
+        {key:'V-3',summary:'[Single category] Third',components:['Custom VOC']},
+        {key:'T-1',summary:'[Data-Platform - Query] Ordinary',components:['ETL']},
+      ],tree:[],events:[]};
+      const before=JSON.stringify(run), out=projectTrackingVoc(run,{vocComponent:'Custom VOC'});
+      const epics=out.tree.find(node=>node.vocGrouping).children;
+      assert.equal(epics.length,3);
+      assert.equal(out.issues[0].vocCategory,'Data-Platform - Query');
+      assert.equal(out.issues[1].vocCategory,'Data - Platform - Query');
+      assert.equal(out.issues[0].summary,'First');
+      assert.equal(out.issues[0].originalSummary,run.issues[0].summary);
+      assert.equal(out.issues[2].vocCategory,'분류 미지정');
+      assert.equal(out.issues[2].summary,'[Single category] Third');
+      assert.equal(out.issues[3].voc,undefined);
+      assert.equal(JSON.stringify(run),before);
+    """)
+
+
+def test_120_voc_tasks_and_shared_subtasks_keep_exact_counts_and_custom_component_scope():
+    module_base = (REPO_ROOT / "app/static/components").as_uri() + "/"
+    run_js("""
+      const {buildTrackingScope}=await import(BASE+'trackingScopeModel.js');
+      const {buildTrackingBriefing}=await import(BASE+'trackingBriefingModel.js');
+      const {trackingRows}=await import(BASE+'trackingModel.js');
+      const coverage={complete:true,historyComplete:true,commentsComplete:true};
+      const issues=[], events=[], trees=[[],[]];
+      for(let i=0;i<120;i++) {
+        const key='V-'+(i+1), child='S-'+(i+1), summary='[Major'+(i%4)+' - Minor] Request '+i;
+        issues.push({key,summary,type:'Task',modules:['Customer VOC'],coverage,
+          status:['Open','In Progress','Done'][i%3],statusCategory:['new','indeterminate','done'][i%3],
+          assigneeId:'member',assigneeName:'Member'},
+          {key:child,parentKey:key,summary:'[ordinary] Child '+i,type:'Sub-Task',isSubtask:true,coverage});
+        events.push({id:key+':comment',issueKey:key,kind:'comment',commentId:String(i),body:'Report',date:'2026-11-15T00:00:00Z'},
+                    {id:child+':created',issueKey:child,kind:'created',date:'2026-11-15T00:00:00Z'});
+        for(let path=0;path<2;path++) trees[path].push({id:path+':'+key,issueKey:key,kind:'Task',name:summary,
+          children:[{id:path+':'+child,issueKey:child,kind:'Sub-Task',name:'[ordinary] Child '+i,children:[]}]});
+      }
+      issues.push({key:'T-1',summary:'[Major0 - Minor] Ordinary',type:'Task',modules:['ETL'],coverage});
+      const run={id:'large-voc',status:'complete',coverage,issues,events,
+        request:{startDate:'2026-11-01',endDate:'2026-11-16'},
+        tree:trees.map((children,i)=>({id:'wbs:'+i,kind:'wbs',name:'Original '+i,children}))};
+      const before=JSON.stringify(run), options={vocComponent:'Customer VOC'};
+      const projected=projectTrackingVoc(run,options), wbs=projected.tree.find(node=>node.vocGrouping);
+      assert.equal(wbs.children.length,4);
+      assert.equal(projected.issues.filter(issue=>issue.voc).length,240);
+      assert.equal(projected.issues.find(issue=>issue.key==='T-1').voc,undefined);
+      const walk=node=>[node,...(node.children || []).flatMap(walk)];
+      const leaves=projected.tree.flatMap(walk).filter(node=>node.issueKey);
+      assert.equal(leaves.length,240); assert.equal(new Set(leaves.map(node=>node.issueKey)).size,240);
+      assert.ok(projected.issues.filter(issue=>issue.isSubtask).every(issue=>issue.summary.startsWith('[ordinary]')));
+      const scope=buildTrackingScope(projected,wbs.id), brief=buildTrackingBriefing(projected,{scopeId:wbs.id});
+      assert.equal(scope.run.issues.length,240); assert.equal(scope.run.events.length,240);
+      assert.equal(scope.report.items.length,120); assert.ok(scope.report.items.every(item=>item.children.length===1));
+      assert.equal(scope.groups.length,4); assert.ok(scope.groups.every(group=>group.keys.length===30 && group.voc));
+      assert.deepEqual([brief.metrics.tasks,brief.metrics.subtasks,brief.metrics.events],[120,120,240]);
+      assert.equal(brief.inventory.total,4); // This view lists category Epics, not 120 task rows.
+      const counts=trackingRows(projected).find(row=>row.id===wbs.id).counts;
+      assert.deepEqual([counts.uniqueIssues,counts.created,counts.comments],[240,120,120]);
+      for(const epic of wbs.children) {
+        const categoryScope=buildTrackingScope(projected,epic.id);
+        const categoryBrief=buildTrackingBriefing(projected,{scopeId:epic.id});
+        assert.equal(categoryScope.run.issues.length,60); assert.equal(categoryScope.report.items.length,30);
+        assert.deepEqual([categoryBrief.metrics.tasks,categoryBrief.metrics.subtasks,categoryBrief.metrics.events],[30,30,60]);
+        assert.equal(categoryBrief.inventory.total,30);
+      }
+      assert.equal(projected.events,events); assert.equal(JSON.stringify(run),before);
+      assert.deepEqual(projectTrackingVoc(projected,options),projected);
+    """.replace("BASE", json.dumps(module_base)))

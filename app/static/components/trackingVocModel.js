@@ -1,5 +1,6 @@
 // Display projection only: saved Jira sources, event evidence and totals stay intact.
 import { issueKeyOf } from './trackingModel.js';
+import { parseVoc } from '../lib/voc.js';
 
 const fold = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase().trim();
 const ordered = values => [...values].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
@@ -8,10 +9,9 @@ const isSubtask = issue => issue?.isSubtask === true || /subtask/i.test(String(i
 
 function classification(summary) {
   const original = String(summary ?? '');
-  const prefix = original.match(/^\s*\[\s*([^\]]+?)\s*\]\s*([\s\S]*)$/);
-  const category = prefix?.[1].match(/^\s*(.+?)\s*-\s*(.+?)\s*$/);
-  if (!category) return { category: '분류 미지정', title: original };
-  return { category: `${category[1].trim()} - ${category[2].trim()}`, title: prefix[2].trim() || original };
+  const {major, minor, rest} = parseVoc(original);
+  if (!major || !minor) return { category: '분류 미지정', title: original };
+  return { category: `${major} - ${minor}`, title: rest || original };
 }
 
 export function projectTrackingVoc(run, { vocComponent = '사용자 VoC' } = {}) {
