@@ -29,21 +29,24 @@
 .tracking-reference .tt-timeline .tt-window{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px 10px;margin:10px 0 6px;font-variant-numeric:tabular-nums}
 .tracking-reference .tt-timeline .tt-window strong{font-size:11px;color:var(--tr-ink);font-weight:600}
 .tracking-reference .tt-timeline .tt-window span{font-size:9px}
-.tracking-reference .tt-timeline .tt-scroll{max-width:100%;width:100%;overflow:auto;overscroll-behavior:contain;padding:6px 0 5px;scrollbar-width:thin;scrollbar-color:var(--tr-line) transparent}
-.tracking-reference .tt-timeline .tt-axis-track{width:100%;min-width:280px}
+.tracking-reference .tt-timeline .tt-scroll{max-width:100%;width:100%;overflow:visible;padding:6px 0 5px}
+.tracking-reference .tt-timeline .tt-axis-track{width:100%;min-width:0}
 .tracking-reference .tt-timeline .tt-axis{position:relative;min-width:0}
-.tracking-reference .tt-timeline .tt-axis-plot{position:relative;margin:0 16px;min-width:0;background-color:var(--tr-bg)}
+.tracking-reference .tt-timeline .tt-axis-plot{position:relative;margin:0 22px;min-width:0;background-color:var(--tr-bg)}
 .tracking-reference .tt-timeline .tt-axis-guide{position:absolute;top:0;bottom:0;width:1px;background:var(--tr-line);opacity:.55;pointer-events:none}
-.tracking-reference .tt-timeline .tt-axis-rail{position:absolute;left:0;right:0;border-top:1px dashed var(--tr-line)}
-.tracking-reference .tt-timeline .tt-axis-ticks{position:relative;height:20px;margin:0 16px;border-bottom:1px solid var(--tr-line);color:var(--tr-muted);font-size:9px;font-variant-numeric:tabular-nums}
-.tracking-reference .tt-timeline .tt-axis-ticks time{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}
+.tracking-reference .tt-timeline .tt-axis-rail{position:absolute;left:0;right:0;border-top:2px solid var(--tr-muted);z-index:1}
+.tracking-reference .tt-timeline .tt-axis-notch{position:absolute;width:2px;height:12px;background:var(--tr-muted);transform:translateX(-1px);z-index:1}
+.tracking-reference .tt-timeline .tt-axis-ticks{position:sticky;top:0;z-index:4;height:32px;margin:0 22px;background:var(--tr-panel);border-bottom:1px solid var(--tr-line);color:var(--tr-ink);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.tracking-reference .tt-timeline .tt-axis-ticks time{position:absolute;top:5px;transform:translateX(-50%);white-space:nowrap}
 .tracking-reference .tt-timeline .tt-axis-ticks time:first-child{transform:none}
 .tracking-reference .tt-timeline .tt-axis-ticks time:last-child{transform:translateX(-100%)}
 .tracking-reference .tt-timeline .tt-leaders{position:absolute;inset:0;overflow:visible;pointer-events:none}
-.tracking-reference .tt-timeline .tt-leader{fill:none;stroke:color-mix(in srgb,var(--tr-muted),var(--tr-line) 20%);stroke-width:1;transition:stroke 140ms}
+.tracking-reference .tt-timeline .tt-leader{fill:none;stroke:color-mix(in srgb,var(--tr-muted),var(--tr-line) 40%);stroke-width:1;transition:stroke 140ms}
 .tracking-reference .tt-timeline .tt-marker-stem{stroke:var(--tr-line);stroke-width:1}
+.tracking-reference .tt-timeline .tt-cluster-span{stroke:var(--tr-muted);stroke-width:3;stroke-linecap:round;opacity:.65}
 .tracking-reference .tt-timeline .tt-leader.is-related{stroke:var(--tr-blue);stroke-width:1.5}
 .tracking-reference .tt-timeline .tt-marker{position:absolute;display:flex;align-items:center;justify-content:center;gap:1px;transform:translate(-50%,-50%);min-width:24px;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:var(--tr-panel);color:var(--tr-blue);font:inherit;z-index:2}
+.tracking-reference .tt-timeline .tt-marker.is-cluster{width:44px;gap:3px;border:1px solid currentColor;border-radius:12px;box-shadow:0 1px 2px #0001}
 .tracking-reference .tt-timeline .tt-marker-icon{width:16px;height:16px;flex:none;overflow:visible;stroke:currentColor;stroke-width:1.5;fill:none;stroke-linejoin:round;stroke-linecap:round}
 .tracking-reference .tt-timeline .tt-marker-icon circle{fill:currentColor;stroke:currentColor}
 .tracking-reference .tt-timeline .tt-marker-icon circle+path{stroke:var(--tr-panel)}
@@ -51,12 +54,13 @@
 .tracking-reference .tt-timeline .tt-marker.is-child circle{fill:var(--tr-panel);stroke:currentColor}
 .tracking-reference .tt-timeline .tt-marker.is-child circle+path{stroke:currentColor}
 .tracking-reference .tt-timeline .tt-comment-icon{width:18px;height:18px}
-.tracking-reference .tt-timeline .tt-marker-count{position:absolute;top:-5px;left:14px;min-width:14px;padding:0 3px;border:1px solid var(--tr-panel);border-radius:8px;font-size:9px;line-height:14px;background:var(--tr-blue-light);color:var(--tr-blue);font-variant-numeric:tabular-nums}
+.tracking-reference .tt-timeline .tt-marker-count{font-size:11px;font-weight:600;line-height:1;color:currentColor;font-variant-numeric:tabular-nums}
 .tracking-reference .tt-timeline .tt-marker.tt-done{color:var(--tr-green)}
 .tracking-reference .tt-timeline .tt-marker.tt-reopen{color:var(--tr-amber)}
 .tracking-reference .tt-timeline .tt-marker.tt-new{color:var(--tr-muted)}
+.tracking-reference .tt-timeline .tt-marker.tt-mixed,.tracking-reference .tt-timeline .tt-marker.tt-change{color:var(--tr-ink)}
 .tracking-reference .tt-timeline .tt-marker.is-related,.tracking-reference .tt-timeline .tt-marker.is-selected{background:var(--tr-blue-light);box-shadow:0 0 0 2px var(--tr-blue)}
-.tracking-reference .tt-timeline .tt-callout{position:absolute;display:flex;align-items:center;gap:5px;width:max-content;max-width:min(260px,100%);height:24px;padding:0 7px;border:1px solid var(--tr-line);border-top-color:var(--tr-blue);border-radius:5px;background:var(--tr-panel);color:var(--tr-ink);font:inherit;font-size:10px;line-height:22px;white-space:nowrap;z-index:1;transition:border-color 140ms,background 140ms;overflow:hidden}
+.tracking-reference .tt-timeline .tt-callout{position:absolute;display:flex;align-items:center;gap:5px;width:max-content;max-width:min(240px,100%);height:24px;padding:0 7px;border:1px solid var(--tr-line);border-top-color:var(--tr-blue);border-radius:5px;background:var(--tr-panel);color:var(--tr-ink);font:inherit;font-size:10px;line-height:22px;white-space:nowrap;z-index:2;transition:border-color 140ms,background 140ms;overflow:hidden}
 .tracking-reference .tt-timeline .tt-callout-source{flex:1 1 auto;min-width:0;max-width:140px;overflow:hidden;text-overflow:ellipsis}
 .tracking-reference .tt-timeline .tt-callout-key{flex:none;font-size:9px;color:var(--tr-muted)}
 .tracking-reference .tt-timeline .tt-callout strong{flex:0 0 auto;max-width:100px;overflow:hidden;text-overflow:ellipsis;font-size:10px;font-weight:600;color:var(--tr-blue)}
@@ -66,6 +70,8 @@
 .tracking-reference .tt-timeline .tt-callout.tt-reopen strong{color:var(--tr-amber)}
 .tracking-reference .tt-timeline .tt-callout.is-related,.tracking-reference .tt-timeline .tt-callout.is-selected{background:var(--tr-blue-light);border-color:var(--tr-blue)}
 .tracking-reference .tt-timeline .tt-axis-empty{position:absolute;left:0;color:var(--tr-muted);font-size:10px;white-space:nowrap}
+.tracking-reference .tt-timeline .tt-axis-footer{display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:28px;margin:0 22px;border-bottom:1px solid var(--tr-line);color:var(--tr-muted);font-size:10px}
+.tracking-reference .tt-timeline .tt-axis-footer>button{flex:none;min-height:28px;padding:3px 0;color:var(--tr-blue);font-size:11px;background:transparent;border:0}
 .tracking-reference .tt-timeline .tt-child-lanes{padding-top:5px;border-top:1px solid var(--tr-line)}
 .tracking-reference .tt-timeline .tt-child-lane{padding-top:7px;border-bottom:1px solid var(--tr-line)}
 .tracking-reference .tt-timeline .tt-child-lane-heading{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:3px 10px;padding:0 8px;font-size:10px}
@@ -81,6 +87,8 @@
 .tracking-reference .tt-timeline .tt-comment-list{display:grid;gap:3px;max-height:260px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .tracking-reference .tt-timeline .tt-comment-list>button{display:grid;gap:3px;min-height:44px;padding:6px;text-align:left;border:1px solid var(--tr-line);border-radius:4px;background:var(--tr-panel);color:var(--tr-ink);font:inherit;font-size:10px;overflow-wrap:anywhere}
 .tracking-reference .tt-timeline .tt-comment-list time{color:var(--tr-muted);font-size:9px;font-variant-numeric:tabular-nums}
+.tracking-reference .tt-timeline .tt-comment-list strong{font-size:11px;font-weight:600;line-height:1.5}
+.tracking-reference .tt-timeline .tt-comment-list strong small{font-size:10px;font-weight:400;color:var(--tr-muted)}
 .tracking-reference .tt-timeline .tt-comment-list span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .tracking-reference .tt-timeline .tt-comment-list small{font-size:9px;color:var(--tr-blue)}
 .tracking-reference .tt-timeline .tt-footnote{font-size:9px;margin-top:6px}

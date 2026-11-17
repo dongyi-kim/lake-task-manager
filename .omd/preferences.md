@@ -49,3 +49,18 @@ source_context: "docs/design/tracking/time-axis-proposal.md"
 ```
 
 Use smaller timeline icons and short single-line callouts without visible dates or times. Route leader lines from icons to offset callouts when annotations are dense.
+
+## 2026-11-17T02:26:00.000Z — visible-time-axis-and-bounded-density
+
+```omd-meta
+id: pref_mwk2vkqo_12905abc
+timestamp: 2026-11-17T02:26:00.000Z
+scope: components.timeline
+signal: user-correction
+confidence: explicit
+status: pending
+source_agent: codex
+source_context: "docs/design/tracking/time-axis-proposal.md"
+```
+
+Make the horizontal time axis and dates clearly visible; compress dense activity into explicit count summaries instead of stacking every event and callout vertically.

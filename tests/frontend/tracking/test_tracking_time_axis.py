@@ -58,20 +58,23 @@ def test_comments_group_only_same_source_and_preserve_all_original_evidence_ids(
     """)
 
 
-def test_dense_simultaneous_markers_and_measured_callouts_never_overlap_or_move_time_x():
+def test_dense_simultaneous_markers_preserve_members_with_bounded_height():
     run_js("""
       for(const width of [280,380,900]) {
         const items=Array.from({length:16},(_,i)=>({id:String(i),at:500,comment:false}));
         const result=layoutTimeAxis(items,{start:0,end:1000},width,Object.fromEntries(items.map(item=>[item.id,Math.min(175,width-8)])));
-        assert.equal(new Set(result.items.map(item=>item.y)).size,16);
+        assert.equal(result.totalCount,16);
+        assert.equal(new Set(result.items.flatMap(item=>item.members.map(member=>member.id))).size,16);
+        assert.ok(new Set(result.items.map(item=>item.y)).size<=3);
         assert.ok(result.items.every(item=>item.x===width/2));
         for(let i=0;i<result.items.length;i++)for(let j=i+1;j<result.items.length;j++) {
           const a=result.items[i],b=result.items[j];
-          assert.ok(Math.abs(a.x-b.x)>=28||Math.abs(a.y-b.y)>=28);
-          assert.ok(Math.abs(a.labelY-b.labelY)>=34||a.left+a.width+8<=b.left||b.left+b.width+8<=a.left);
+          assert.ok(Math.abs(a.x-b.x)>=48||Math.abs(a.y-b.y)>=28);
+          if(a.showCallout&&b.showCallout)assert.ok(a.labelY!==b.labelY||a.left+a.width+8<=b.left||b.left+b.width+8<=a.left);
         }
-        assert.ok(result.items.every(item=>item.left>=0&&item.left+item.width<=width));
+        assert.ok(result.items.filter(item=>item.showCallout).every(item=>item.left>=0&&item.left+item.width<=width));
         assert.ok(result.items.every(item=>item.y+14<=result.height));
+        assert.ok(result.height<=240);
       }
     """)
 
@@ -80,9 +83,9 @@ def test_guides_balance_above_and_below_before_adding_more_tracks():
     run_js("""
       const items=Array.from({length:6},(_,i)=>({id:String(i),at:100+i*150,comment:false}));
       const result=layoutTimeAxis(items,{start:0,end:1000},900,Object.fromEntries(items.map(item=>[item.id,100])));
-      assert.equal(result.items.filter(item=>item.upper).length,3);
-      assert.equal(result.items.filter(item=>!item.upper).length,3);
-      assert.ok(result.height<180);
+      assert.equal(result.items.filter(item=>item.showCallout&&item.upper).length,3);
+      assert.equal(result.items.filter(item=>item.showCallout&&!item.upper).length,3);
+      assert.ok(result.height<=240);
       assert.ok(layoutTimeAxis([],{start:0,end:1000},900).height<100);
     """)
 
@@ -116,4 +119,67 @@ def test_duplicate_event_ids_across_sources_keep_distinct_internal_identity_and_
       const layout=layoutTimeAxis(axis.items,axis.range,380,widths);
       assert.deepEqual(layout.items.map(item=>item.width),[100,150]);
       assert.ok(layout.items.every(item=>item.id==='same'));
+    """)
+
+
+def test_epic_changes_and_two_hundred_events_have_bounded_density_without_lost_evidence():
+    run_js("""
+      for(const count of [31,200])for(const width of [380,1000]) {
+        const start=Date.parse('2026-11-12T09:00:00+09:00');
+        const events=Array.from({length:count},(_,i)=>({id:'event-'+i,uid:'source-'+i,
+          issueKey:'DL-'+(10331+i%11),title:'작업 '+i%11,source:'하위 작업',
+          kind:i%7===0?'completed':i%5===0?'reopened':i%3===0?'comment':'fieldChanged',
+          field:i%2?'status':'assignee',at:start+(i%20)*30000,comment:i%3===0,
+          detail:'원본 '+i,event:{id:'event-'+i}}));
+        const result=layoutTimeAxis(events,{start,end:start+9*3600000},width);
+        assert.equal(result.totalCount,count);
+        const members=result.items.flatMap(item=>item.members);
+        assert.deepEqual(members.map(item=>item.id).sort(),events.map(item=>item.id).sort());
+        assert.ok(members.every(member=>member.at===events.find(item=>item.id===member.id).at));
+        assert.ok(result.items.length<count);
+        assert.ok(result.height<=(width<500?260:240));
+        assert.ok(result.shownCalloutCount<=Math.min(6,Math.max(2,2*Math.floor(width/280))));
+        for(const item of result.items) {
+          assert.ok([0,-28,28].includes(item.offset));
+          assert.equal(item.at,(item.startAt+item.endAt)/2);
+          if(item.sourceCount>1){assert.equal(item.issueKey,'');assert.equal(item.title,item.sourceCount+'개 작업');}
+        }
+        for(let i=0;i<result.items.length;i++)for(let j=i+1;j<result.items.length;j++) {
+          const a=result.items[i],b=result.items[j];
+          assert.ok(a.level!==b.level||Math.abs(a.x-b.x)>=48);
+          if(a.showCallout&&b.showCallout&&a.labelY===b.labelY)
+            assert.ok(a.left+a.width+8<=b.left||b.left+b.width+8<=a.left);
+        }
+      }
+    """)
+
+
+def test_sparse_coordinates_source_identity_and_non_status_semantics_survive():
+    run_js("""
+      const items=[{uid:'a',id:'a',issueKey:'T',at:100,kind:'fieldChanged',field:'assignee',tone:'progress',short:'담당자'},
+        {uid:'b',id:'b',issueKey:'S',at:100,kind:'comment',comment:true},
+        {uid:'c',id:'c',issueKey:'T',at:900,kind:'completed'}];
+      const result=layoutTimeAxis(items,{start:0,end:1000},1000);
+      assert.equal(result.items.length,3);
+      assert.deepEqual(result.items.map(item=>item.x),[100,100,900]);
+      assert.equal(result.items[0].tone,'change');
+      assert.equal(result.items[0].short,'담당자');
+      assert.ok(result.items.every(item=>item.members.length===1&&!item.isCluster));
+    """)
+
+
+def test_existing_comment_groups_flatten_deduplicate_and_keep_cross_source_members_explicit():
+    run_js("""
+      const start=Date.parse('2026-11-12T09:00:00+09:00');
+      const members=Array.from({length:60},(_,i)=>({uid:'c'+i,id:'c'+i,issueKey:i%2?'S':'T',
+        source:'댓글 원본',title:'제목',kind:'comment',comment:true,own:i%2===0,at:start+i*1000}));
+      const result=layoutTimeAxis([{...members[0],members:members.slice(0,30)},
+        {...members[30],members:members.slice(30)},members[0]],{start,end:start+9*3600000},380);
+      assert.equal(result.totalCount,60);
+      assert.equal(result.items.flatMap(item=>item.members).length,60);
+      assert.ok(result.items.some(item=>item.sourceCount===2));
+      const mixed=result.items.find(item=>item.sourceCount===2);
+      assert.equal(mixed.issueKey,'');assert.equal(mixed.source,'2개 작업');
+      assert.equal(mixed.own,false);assert.equal(mixed.hasOwn,true);assert.equal(mixed.hasChildren,true);
+      assert.equal(mixed.at,(mixed.startAt+mixed.endAt)/2);
     """)
