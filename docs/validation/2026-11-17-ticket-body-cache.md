@@ -49,6 +49,8 @@ The first PR CI run ([44084066644](https://github.com/dongyi-kim/lake-task-manag
 
 The suite now supplies controlled memory counters to the shared monitor and isolates its cached state per test. Production code, thresholds, admission checks and hysteresis remain unchanged. A real HTTP regression exercises healthy admission, refusal without executing a write, continued refusal within the recovery margin, and successful recovery. Native OS counter tests continue to use `sample_memory()` directly. Independent verification of this regression, pressure policy and CI policy passed **9 tests in 0.12 seconds**.
 
+The rerun ([44090285260](https://github.com/dongyi-kim/lake-task-manager/actions/runs/44090285260)) reached 83% before the job's 30-minute limit canceled pytest. No final JUnit report was produced; a complete failure comparison against the existing main baseline is therefore unavailable. The CI job budget is increased to 45 minutes without filtering or skipping tests. The scoped UI/MCP and pressure results above support an initial release; full-suite verification remains incomplete until that follow-up run finishes.
+
 ## Limits retained
 
 - The output page remains advisory at at most ten body-bearing tickets; metadata discovery is at most 100 rows, with actual server caps respected.

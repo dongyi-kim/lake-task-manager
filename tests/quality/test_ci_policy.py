@@ -19,7 +19,7 @@ def test_code_test_workflow_runs_full_offline_suite_on_pr_and_main():
     assert "actions/checkout@v5" in text
     assert "actions/setup-python@v6" in text
     assert "fetch-depth: 0" in text
-    assert "timeout-minutes: 30" in text
+    assert "timeout-minutes: 45" in text
     assert 'owned_root=$(mktemp -d "$runner_root/ltm-tests.XXXXXXXX")' in text
     assert 'export TMPDIR="$scratch/tmp"' in text
     command = ('python -m pytest -q --basetemp="$TMPDIR/cases" -o "cache_dir=$scratch/cache" '

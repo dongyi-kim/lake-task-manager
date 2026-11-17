@@ -7,6 +7,7 @@ PR 생성·재개 및 PR branch의 새 commit push(`synchronize`), `main` push�
 suite를 실행한다.
 
 - Python 3.11, Ubuntu
+- 전체 job 제한 45분. 모든 사례를 끝내고 결과를 업로드할 시간을 확보하며 test 범위는 줄이지 않는다.
 - `JIRA_ENV=mock`
 - Fake Jira, fake LLM, 로컬 fixture·로컬 서버만 사용
 - 배포 당시 연구 자료를 Git에서 읽을 수 있도록 전체 commit 이력을 checkout
