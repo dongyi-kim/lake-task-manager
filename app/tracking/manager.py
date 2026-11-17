@@ -211,10 +211,15 @@ class TrackingManager:
         fields = ",".join(dict.fromkeys(["summary", "issuetype", "status", "assignee", "creator", "reporter", "created", "updated", "parent", "components", "subtasks", self.client.s.epic_link_field_id, "comment"]))
         plan = self.plan_loader()
         selected_modules = set(request["modules"])
-        module_scope_options = {"voc_component": getattr(self.client.s, "voc_component", None) or VOC_COMPONENT,
-                                "module_people": self.people_loader(),
-                                "configured_epics": {e.get("key") or e.get("ticket") for task in plan.get("wbs", [])
-                                                     for e in task.get("epics", [])}}
+        module_scope_options = {"module_people": self.people_loader()}
+        if selected_modules and cp.get("moduleScopeVersion") != 2:
+            # Old paused runs may have completed discovery with a narrower scope.
+            # Re-discover candidates once; preserve expensive raw/history/comment work.
+            for label in list(cp["queries"]):
+                if label.startswith(("candidates", "peopleCandidates:", "scopeParents:")):
+                    del cp["queries"][label]
+            cp["scopeParents"] = {}
+            cp["moduleScopeVersion"] = 2
         allowed_epics = {e.get("key") or e.get("ticket") for task in plan.get("wbs", [])
                          if not selected_modules or task["module"] in selected_modules for e in task.get("epics", [])}
 
@@ -305,10 +310,21 @@ class TrackingManager:
                 # before KST midnight prevents excluding boundary activity; local comparison
                 # remains exact. There is intentionally no updated upper bound.
                 lower = (start - timedelta(days=1)).date().isoformat()
-                base_jql = "project in (%s) AND updated >= %s" % (",".join(quote(p) for p in projects), quote(lower))
+                candidate_scopes = ["project in (%s)" % ",".join(quote(p) for p in projects)]
+                if selected_modules:
+                    # Task module queries also find roster work outside search projects.
+                    # Keep configured project coverage for components/hierarchy/history.
+                    # Module names need not be Jira component names; adding them to
+                    # global JQL could invalidate otherwise valid roster work.
+                    members = sorted({str(uid).strip() for module in selected_modules
+                                      for uid in module_scope_options["module_people"].get(module, []) if str(uid).strip()})
+                    if members:
+                        for role in ("assignee", "reporter"):
+                            candidate_scopes.append("%s in (%s)" % (role, ",".join(quote(uid) for uid in members)))
+                base_jql = "(" + " OR ".join(candidate_scopes) + ") AND updated >= " + quote(lower)
                 query_cp = cp["queries"].setdefault("candidates", {})
                 discovery_fields = ",".join(["updated", "components", "parent", "issuetype", self.client.s.epic_link_field_id] +
-                                            (["assignee"] if selected_modules else []))
+                                            (["assignee", "reporter"] if selected_modules else []))
                 capability_key = source.key("capability", "historicalPeopleSelector")
                 capability = self.store.source(capability_key)
                 selected_people = request["people"]
