@@ -43,6 +43,12 @@ A later combined run of all ten independent integration cases and six prefetch r
 
 All pytest temporary data, cache files and application runtime files were isolated under an OS temporary directory and removed when the process exited. No real Jira or LLM requests were made.
 
+### Full-suite resource admission isolation
+
+The first PR CI run ([44084066644](https://github.com/dongyi-kim/lake-task-manager/actions/runs/44084066644)) finished with 726 failures and 85 setup errors. Of those 811 failure/error records, 551 explicitly reported resource pressure or admission refusal, including all 85 setup errors. The full pytest process shared the production memory sampler and cached pressure state; its accumulated fixture/module memory and runner headroom could therefore refuse unrelated functional tests. The report did not capture the triggering memory counters, so it does not establish which threshold was reached.
+
+The suite now supplies controlled memory counters to the shared monitor and isolates its cached state per test. Production code, thresholds, admission checks and hysteresis remain unchanged. A real HTTP regression exercises healthy admission, refusal without executing a write, continued refusal within the recovery margin, and successful recovery. Native OS counter tests continue to use `sample_memory()` directly. Independent verification of this regression, pressure policy and CI policy passed **9 tests in 0.12 seconds**.
+
 ## Limits retained
 
 - The output page remains advisory at at most ten body-bearing tickets; metadata discovery is at most 100 rows, with actual server caps respected.
