@@ -6,6 +6,7 @@ checks access, and translates UI-shaped payloads into that client contract.
 
 from __future__ import annotations
 
+import anyio
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from app.services.ticket_models import (
@@ -266,8 +267,9 @@ def build_ticket_command_router(*, get_client, settings, may_edit, require_edit,
     async def api_attachment_upload(key: str, file: UploadFile = File(...),
                                     clientMutationId: str = Form("")):
         data = await file.read()
-        return JSONResponse(commands.attachment(
-            key, file.filename or "paste.png", data, file.content_type, clientMutationId or None))
+        result = await anyio.to_thread.run_sync(commands.attachment,
+            key, file.filename or "paste.png", data, file.content_type, clientMutationId or None)
+        return JSONResponse(result)
 
     @router.delete("/api/ticket/{key}/attachment/{aid}")
     def api_attachment_delete(key: str, aid: str, clientMutationId: str = ""):

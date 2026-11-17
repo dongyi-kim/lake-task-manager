@@ -56,9 +56,11 @@ def test_sdk_overload_keeps_ui_and_auth_available_and_recovers(build_env):
                             # catches deadlocks; the UI/control-lane latency assertion stays below.
                             with anyio.fail_after(10):
                                 await saturated.wait()
-                                async with anyio.create_task_group() as rejected_calls:
-                                    for index in range(8, 24):
-                                        rejected_calls.start_soon(call, index)
+                                # Exercise the tool-lane error envelope below the
+                                # separate transport parser cap. Concurrent HTTP
+                                # overflow is covered by transport_responsiveness.
+                                for index in range(8, 24):
+                                    await call(index)
                             assert len(entered) == 8
                             assert len(results) == 16
                             for result in results:

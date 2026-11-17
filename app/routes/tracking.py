@@ -1,4 +1,5 @@
 """Tracking routes reuse one manager and enforce ownership on every stored read."""
+import anyio
 from fastapi import APIRouter, Body, HTTPException
 
 from app.tracking.manager import TrackingManager
@@ -7,6 +8,7 @@ from app.tracking.manager import TrackingManager
 def build_tracking_router(*, get_client, manager=None):
     router = APIRouter()
     manager = manager or TrackingManager(get_client())
+    cancel_limiter = anyio.CapacityLimiter(2)
 
     def call(fn, *args, **kwargs):
         try:
@@ -39,8 +41,10 @@ def build_tracking_router(*, get_client, manager=None):
         return call(manager.resume, run_id)
 
     @router.post("/api/tracking/runs/{run_id}/cancel")
-    def cancel(run_id: str):
-        return call(manager.cancel, run_id)
+    async def cancel(run_id: str):
+        # Data handlers may occupy the default AnyIO pool. Cancellation retains
+        # two dedicated workers and never performs disk/ownership work on the loop.
+        return await anyio.to_thread.run_sync(call, manager.cancel, run_id, limiter=cancel_limiter)
 
     @router.post("/api/tracking/runs/{run_id}/summary")
     def summary(run_id: str):

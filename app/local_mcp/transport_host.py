@@ -11,7 +11,9 @@ from app.local_mcp.worker_lifecycle import WorkerLifecycle, RequestLease, reques
 
 
 class TransportHost:
-    def __init__(self, applications, capacity=32, *, factory=None, quiescent=lambda: True):
+    def __init__(self, applications, capacity=16, *, factory=None, quiescent=lambda: True):
+        # Eight business workers plus control/SDK headroom. Bound body parsers
+        # without letting ordinary work exhaust authentication/health dispatch.
         self.applications = applications
         self._permits = threading.BoundedSemaphore(capacity)
         self._worker = WorkerLifecycle(applications, factory=factory, quiescent=quiescent)
