@@ -32,6 +32,8 @@ description: LTM MCP로 Task·Epic·SubTask 한 건을 생성하거나 기존 �
 
 ## 기존 본문 수정
 
+여러 대상의 맥락은 `get_tickets`로 묶고 본문·논의가 필요한 경우에만 `include_description`·`include_comments`를 켠다. 두 옵션의 기본값은 false다. 받은 기본정보·완전한 댓글은 재사용하되 raw 본문/댓글을 편집용 HTML로 복사하지 않는다. 대상·상태만 확인하는 단건은 `get_ticket(include_description=false, include_comments=false)`로 본문 취득도 피한다.
+
 1. `get_ticket(key, fresh=true, detail="edit")`로 최신 `descriptionEditHtml`과 상태를 읽는다. 열람용 `descriptionHtml`이나 화면 DOM 전체를 새 본문으로 복사하지 않는다.
 2. 요청한 부분만 바꾸고 기존 링크·멘션 ID·이미지 경로·다른 섹션을 보존한다. 변경에 필요한 권한과 필드는 `list_options(kind="edit_fields", key=...)`로 확인할 수 있다.
 3. `update_description(key, html, client_mutation_id)`은 **본문 전체 교체**다. `html=""`은 삭제 의도가 있을 때만 쓴다. 완료 티켓 본문은 직접 수정할 수 없으며, 요청 범위에 포함된 실제 재열기 전이가 먼저 필요하다.

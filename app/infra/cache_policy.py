@@ -53,7 +53,7 @@ DISPLAY_KINDS = LONG_DISPLAY_KINDS | frozenset({"issue", "issueL", "issueview", 
 LIST_KINDS = frozenset({"jqlleaf", "jqlcurrent", "mt", "mytasks", "workload", "workload_bucket",
     "activity", "wbs_build", "vit_build", "vit_bases", "vit_list", "search", "epic_cand",
     "epic_options", "epic_children", "direct_children", "confsearch", "ticketbody", "ticketbodymeta",
-    "ticketbodyhead"})
+    "ticketbodyhead", "ticketcomment", "ticketcommentmeta", "ticketcommenthead"})
 SWR_AGGREGATE_KINDS = frozenset({"workload", "workload_bucket", "activity", "wbs_build",
     "vit_build", "vit_bases", "vit_list", "mt", "mytasks"})
 

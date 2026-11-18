@@ -11,6 +11,7 @@ from app.jira.body_search import (BODY_BATCH_LIMIT_MESSAGE, BODY_PAGE_LIMIT_MESS
                                   known_key_search)
 from app.jira.jql import _split_order, tokenize
 from app.jira.jql_budget import budgeted_query, current_budget
+from app.jira.comment_snapshot import embedded_comment_coverage, embedded_comment_rows
 from app.services.ticket_commands import CommandError
 from app.local_mcp.projections import issue_projection, ticket_projection
 
@@ -19,6 +20,7 @@ def register_reads(register, runtime):
     def search_issues(jql: str, start_at: int = 0, max_results: int = 50,
                       snapshot_id: str | None = None, detail: Literal["full", "summary"] = "full",
                       include_description: bool = False,
+                      include_comments: bool = False,
                       strategy: Literal["auto", "off", "people", "full"] = "auto",
                       max_parts: Annotated[int, Field(strict=True, ge=1, le=64)] = 64) -> dict:
         """Search current Jira issues with exact JQL inside configured search projects.
@@ -33,28 +35,34 @@ def register_reads(register, runtime):
         is for questions about changes or exact event timing, not routine discovery of every result.
         Issue url is a user-facing Jira link; self is a REST URL. Caches are shared with the UI.
         Prefer detail=summary for discovery: it trims metadata avatars and custom fields in the response.
-        Description is excluded by default. For needed candidates use JQL key in (...) and
-        include_description=true to collect complete raw bodies in bounded Jira searches, without
+        Description and comments are excluded by default. For needed candidates use JQL key in (...)
+        with include_description=true and/or include_comments=true for raw content in bounded searches, without
         per-ticket GET fan-out or fetching attachments/issue links. Other field selection is unchanged.
-        The description switch is independent of detail: true includes the body even with summary.
-        Raw description retains Jira markup;
+        Both switches are independent of detail: true includes that content even with summary.
+        Raw content retains Jira markup;
         use get_ticket(read/edit) when a rendered/editable representation is actually needed.
-        Description searches discover light metadata in pages of up to 100, then batch only missing,
-        expired or changed bodies by key (at most 10 per request). Ticket bodies share a cache across
+        Content searches discover light metadata in pages of up to 100, then batch only missing,
+        expired or changed fields by key (at most 10 per request). Descriptions and comments have separate caches across
         searches within the same authenticated session and mutation generation; updated and the
         requested cache policy must match. Null/empty is cached as known empty; omitted is unknown.
         No whole-query bodies are accumulated. Returned pages are at most 10 tickets and 16 MiB.
         max_results is advisory; follow actual nextStartAt
-        with the same JQL, include_description and cache_mode. snapshotId is null, snapshotFrozen
+        with the same JQL, include_description, include_comments and cache_mode. snapshotId is null, snapshotFrozen
         is false, execution.effectiveStrategy is off and fallbackReason is body_projection.
         Default ordering is key ASC; explicit ordering is preserved. These are current pages,
         so upstream edits between pages may change membership/order; they are not a frozen report.
-        Do not supply a previous snapshot_id for a description search. If a page exceeds the byte
-        limit, reduce max_results (down to 1); one oversized body needs get_ticket(read).
+        Do not supply a previous snapshot_id for a content search. If a page exceeds the byte
+        limit, reduce max_results (down to 1); one oversized body needs get_ticket(read), comments need
+        get_evidence_page(kind=comments), which supports lossless continuation of long records.
         Metadata-only searches retain their 30-minute frozen snapshots. Preserve include_description,
         cache_mode, strategy and max_parts with that cursor; a continuation is not a new live validation.
         descriptionMissingKeys identifies requested bodies not returned;
         a returned null/empty description is a known empty body. Do not re-read fields already obtained.
+        fields.comment is Jira's original comment container, not the 20-comment UI preview. Each issue's
+        commentsCoverage gives total/returned/complete and nextCall. Unknown total, a bare array or a
+        partial source window cannot prove the whole discussion was collected. Follow nextCall for
+        complete evidence; it starts at 0 because embedded ordering is not guaranteed. Deduplicate IDs.
+        commentsMissingKeys means missing/invalid comment fields, not a known empty discussion.
         strategy=off uses one whole JQL (possibly many pages), people groups proven people filters,
         full queries individual logical parts, auto keeps the existing safe grouping. max_parts caps
         distinct physical JQL, not HTTP pages or retries; known over-budget plans fall back to whole
@@ -70,49 +78,64 @@ def register_reads(register, runtime):
             query += " AND (" + " ".join(t.value for t in where) + ")"
         if order:
             query += " ORDER BY " + " ".join(t.value for t in order)
+        content_fields = (["description"] if include_description else []) + (["comment"] if include_comments else [])
         page = runtime.client.search_issues_page(query, start_at=start_at, max_results=max_results,
             **({"strategy": strategy, "max_parts": max_parts} if strategy != "auto" or max_parts != 64 else {}),
-            snapshot_id=snapshot_id, **({"fields": runtime.client._issue_fields(light=True) + ",description",
-                                       "light": False} if include_description else {}))
+            snapshot_id=snapshot_id, **({"fields": runtime.client._issue_fields(light=True) + "," + ",".join(content_fields),
+                                       "light": False} if content_fields else {}))
         base = runtime.settings.jira_base.rstrip("/")
         # Add navigation metadata without changing the shared snapshot/issue cache.
         issues = []
         for issue in page.get("issues") or []:
             projected = issue_projection(issue) if detail == "summary" else {
-                **issue, "fields": {key: value for key, value in issue["fields"].items() if key != "description"}}
-            if include_description and "description" in issue["fields"]:
-                projected["fields"]["description"] = issue["fields"]["description"]
-            if not include_description and isinstance(projected.get("renderedFields"), dict):
+                **issue, "fields": {key: value for key, value in issue["fields"].items()
+                                    if key not in ("description", "comment")}}
+            for field in content_fields:
+                if field in issue["fields"]:
+                    projected["fields"][field] = issue["fields"][field]
+            if isinstance(projected.get("renderedFields"), dict):
                 projected["renderedFields"] = {key: value for key, value in projected["renderedFields"].items()
-                                               if key != "description"}
+                                               if key not in ("description", "comment") or key in content_fields}
+            if include_comments:
+                projected["commentsCoverage"] = embedded_comment_coverage(issue["fields"].get("comment"), issue["key"])
+            else:
+                projected.pop("commentsCoverage", None)
             issues.append({**projected, "url": base + "/browse/" + issue["key"]})
         result = {**page, "issues": issues}
         if include_description:
             result.update(descriptionRequested=True, descriptionMissingKeys=[
                 issue["key"] for issue in page.get("issues") or [] if "description" not in issue["fields"]])
-            if encoded_size(result) > MAX_BODY_RESULT_BYTES:
-                raise ValueError(BODY_PAGE_LIMIT_MESSAGE)
+        if include_comments:
+            result.update(commentsRequested=True, commentsMissingKeys=[
+                issue["key"] for issue in page.get("issues") or []
+                if embedded_comment_rows(issue["fields"].get("comment")) is None])
+        if content_fields and encoded_size(result) > MAX_BODY_RESULT_BYTES:
+            raise ValueError(BODY_PAGE_LIMIT_MESSAGE)
         return result
 
     @budgeted_query
     def get_tickets(keys: Annotated[list[str], Field(min_length=1, max_length=100)],
                     include_description: bool = False,
+                    include_comments: bool = False,
                     strategy: Literal["auto", "off", "people", "full"] = "auto",
                     max_parts: Annotated[int, Field(strict=True, ge=1, le=64)] = 64) -> dict:
         """Read 1..100 known Jira keys together, using batched search rather than per-ticket GETs.
         Use search_issues to discover candidates, get_tickets when keys are already known,
         and get_ticket(read/edit) for one rendered/editable description. Other metadata uses
-        the existing search field selection. Descriptions are excluded by default; enable
-        include_description only for the needed key set to receive complete raw Jira markup.
+        the existing search field selection. Descriptions and comments are excluded by default; enable
+        include_description/include_comments only for the needed key set. Raw Jira markup is preserved;
+        each issue's commentsCoverage reports source completeness and a follow-up evidence call.
         Keys are normalized and deduplicated; issues preserve requested order. Returned
         missingKeys means not returned (possibly unavailable or not visible), never proof of
         nonexistence. complete=false requires reporting the missing scope. Missing requested
-        bodies appear separately in descriptionMissingKeys; returned null/empty is known empty.
+        bodies appear separately in descriptionMissingKeys; returned null/empty description is known empty.
+        commentsMissingKeys means absent/invalid comment fields; partial comments have their own coverage.
         A batch uses Jira search pages if the server applies a smaller page cap; it never
         fetches individual issues. Split larger key sets into batches of at most 100.
         The combined result is limited to 16 MiB. Larger bodies require fewer keys or
         search_issues(max_results=1, include_description=true) pagination; one oversized
-        body needs get_ticket(read). A size refusal is an error, never a truncated result.
+        body needs get_ticket(read); oversized discussion uses get_evidence_page(kind=comments).
+        A size refusal is an error, never a truncated result.
         Cold batches of at most 10 known keys use one combined metadata/body search (subject to
         the server page cap); other body reads discover light metadata then hydrate cache misses.
         strategy and max_parts have the same meaning as search_issues and apply to the whole batch.
@@ -121,13 +144,14 @@ def register_reads(register, runtime):
         for key in requested:
             runtime.check_key(key)
         query = "key in (" + ",".join(json.dumps(key) for key in sorted(requested)) + ") ORDER BY key ASC"
-        rows, missing_bodies, start, snapshot, seen = {}, set(), 0, None, set()
+        rows, missing_bodies, missing_comments, start, snapshot, seen = {}, set(), set(), 0, None, set()
         row_sizes, aggregate_bytes = {}, 2
         with known_key_search(requested):
             while True:
                 resource_pressure.check()
                 page = search_issues(query, start_at=start, max_results=100, snapshot_id=snapshot,
-                                     include_description=include_description, strategy=strategy, max_parts=max_parts)
+                                     include_description=include_description, include_comments=include_comments,
+                                     strategy=strategy, max_parts=max_parts)
                 for issue in page["issues"]:
                     if issue["key"] not in requested:
                         raise ValueError("요청하지 않은 티켓이 다건 조회에 포함되었습니다.")
@@ -138,6 +162,7 @@ def register_reads(register, runtime):
                     row_sizes[issue["key"]] = row_bytes
                     rows[issue["key"]] = issue
                 missing_bodies.update(page.get("descriptionMissingKeys") or [])
+                missing_comments.update(page.get("commentsMissingKeys") or [])
                 if not page["hasMore"]:
                     break
                 next_start = page.get("nextStartAt")
@@ -152,12 +177,16 @@ def register_reads(register, runtime):
         if include_description:
             result.update(descriptionRequested=True,
                           descriptionMissingKeys=[key for key in requested if key in missing_bodies])
+        if include_comments:
+            result.update(commentsRequested=True,
+                          commentsMissingKeys=[key for key in requested if key in missing_comments])
         if encoded_size(result) > MAX_BODY_RESULT_BYTES:
             raise ValueError(BODY_BATCH_LIMIT_MESSAGE)
         return result
 
-    def get_ticket(key: str, fresh: bool = False, detail: Literal["full", "summary", "read", "edit"] = "full") -> dict:
-        """Read one current ticket's metadata and complete description by Jira key.
+    def get_ticket(key: str, fresh: bool = False, detail: Literal["full", "summary", "read", "edit"] = "full",
+                   include_description: bool | None = None, include_comments: bool = False) -> dict:
+        """Read one current ticket's metadata and optional description/discussion by Jira key.
         Returns the ticket view, including descriptionHtml for reading and descriptionEditHtml
         for safe editing. fresh=true waits for an upstream refresh; default reuses UI caches.
         For one ticket combine metadata/description with relevant recent discussion. For several
@@ -168,12 +197,28 @@ def register_reads(register, runtime):
         A Done status alone does not establish when work completed or which claimed deliverables remain valid.
         Choose summary for metadata, read for one complete display body, or edit for one complete
         editable body. These modes avoid duplicate body representations. Default full is unchanged.
+        include_description omitted preserves those detail defaults. Explicit false also avoids fetching
+        or decoding the body; true with summary returns display HTML. include_comments defaults false.
+        Explicit content reads share the batched search caches, fetching only missing fields together.
+        comments is a raw list with commentsCoverage (total, returned, complete, nextCall), not the
+        20-comment UI preview. A partial/unknown discussion is not complete; follow nextCall when needed.
+        Comments plus body use the same 16 MiB bounded acquisition. For oversized discussion use
+        get_evidence_page(kind=comments), preserving its nextCall arguments for lossless continuation.
         """
         runtime.check_key(key)
-        result = runtime.client.ticket_view(key, fresh=fresh, **({"detail": detail} if detail != "full" else {}))
+        options = {"detail": detail} if detail != "full" else {}
+        if include_description is not None:
+            options["include_description"] = include_description
+        if include_comments:
+            options["include_comments"] = True
+        result = runtime.client.ticket_view(key, fresh=fresh, **options)
         if result is None:
             raise ValueError("티켓을 찾을 수 없거나 조회 권한이 없습니다.")
-        return ticket_projection(result, detail)
+        projected = ticket_projection(result, detail, include_description=include_description,
+                                      include_comments=include_comments)
+        if include_comments and encoded_size(projected) > MAX_BODY_RESULT_BYTES:
+            raise ValueError(BODY_PAGE_LIMIT_MESSAGE)
+        return projected
 
     def get_comments(key: str, limit: int = 100) -> dict:
         """Read recent discussion for one ticket, newest first; limit=1..1000.

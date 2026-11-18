@@ -10,11 +10,22 @@ from .common import JsonValue, OpenModel
 Category = Literal["todo", "inprogress", "done"]
 
 
+class CommentCoverage(OpenModel):
+    total: int | None
+    returned: int
+    startAt: int | None
+    complete: bool = Field(description="Only true for a validated entire discussion; an array or missing total cannot prove completeness.")
+    hasMore: bool | None
+    nextStartAt: int | None
+    nextCall: dict[str, JsonValue] | None = None
+
+
 class RawIssue(OpenModel):
     key: str
     fields: dict[str, JsonValue]
     id: str | int | None = None
     url: str | None = None
+    commentsCoverage: CommentCoverage | None = None
 
 
 class QueryExecution(OpenModel):
@@ -43,6 +54,8 @@ class SearchPage(OpenModel):
     execution: QueryExecution | None = None
     descriptionRequested: bool | None = Field(default=None, description="True when raw descriptions were explicitly requested in the batched search.")
     descriptionMissingKeys: list[str] | None = Field(default=None, description="Issues whose requested description was not returned. A returned null/empty description is a known empty body.")
+    commentsRequested: bool | None = None
+    commentsMissingKeys: list[str] | None = Field(default=None, description="Missing or invalid comment fields, not tickets with a valid partial discussion window. Check each issue's commentsCoverage.")
 
 
 class TicketBatch(OpenModel):
@@ -50,9 +63,11 @@ class TicketBatch(OpenModel):
     requestedKeys: list[str]
     returned: int
     missingKeys: list[str] = Field(description="Requested keys not returned; may be unavailable or not visible. Does not establish nonexistence.")
-    complete: bool = Field(description="All requested tickets were returned. Description completeness is separate.")
+    complete: bool = Field(description="All requested tickets were returned. Description and discussion completeness are separate.")
     descriptionRequested: bool | None = None
     descriptionMissingKeys: list[str] | None = None
+    commentsRequested: bool | None = None
+    commentsMissingKeys: list[str] | None = None
     execution: QueryExecution | None = None
 
 
@@ -92,11 +107,17 @@ class TicketView(TicketBadge):
     labels: list[str]
     components: list[str]
     sp: float | None
-    descriptionHtml: str
-    descriptionEditHtml: str
-    descriptionFormat: Literal["html", "text"]
-    descriptionSections: list[DescriptionSection]
+    descriptionHtml: str | None = None
+    descriptionEditHtml: str | None = None
+    descriptionFormat: Literal["html", "text"] | None = None
+    descriptionSections: list[DescriptionSection] | None = None
+    descriptionRequested: bool | None = None
+    descriptionMissingKeys: list[str] | None = None
     url: str
+    comments: list[dict[str, JsonValue]] | None = None
+    commentsCoverage: CommentCoverage | None = None
+    commentsRequested: bool | None = None
+    commentsMissingKeys: list[str] | None = None
 
 
 class CompactTicket(TicketBadge):
@@ -107,6 +128,12 @@ class CompactTicket(TicketBadge):
     url: str
     descriptionHtml: str | None = None
     descriptionEditHtml: str | None = None
+    descriptionRequested: bool | None = None
+    descriptionMissingKeys: list[str] | None = None
+    comments: list[dict[str, JsonValue]] | None = None
+    commentsCoverage: CommentCoverage | None = None
+    commentsRequested: bool | None = None
+    commentsMissingKeys: list[str] | None = None
 
 
 class CommentPreview(OpenModel):

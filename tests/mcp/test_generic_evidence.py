@@ -3,7 +3,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from threading import Event
-from types import SimpleNamespace
 import time
 
 import anyio
@@ -11,17 +10,17 @@ import pytest
 from mcp import Client
 
 from app.auth.base import PermissionDenied, SessionExpired
-from app.infra.cache import Cache
 from app.jira.evidence_service import get_evidence_page
 
 
 @pytest.fixture
-def evidence_client():
-    cache = Cache(":memory:")
-    client = SimpleNamespace(cache=cache, env="mock", s=SimpleNamespace(cache_ttl_seconds=600),
-                             provider=SimpleNamespace(), _looks_anonymous=lambda _: False)
-    yield client
-    cache.close()
+def evidence_client(build_env):
+    # Evidence now reuses permission/session-scoped embedded comments. Exercise
+    # that real boundary even when the individual REST response is controlled.
+    client = build_env().client
+    client.env = "mock"  # These source-age/fence cases use explicit stable cache keys.
+    client.s.cache_ttl_seconds = 600
+    return client
 
 
 def history(identity="1", author=None):

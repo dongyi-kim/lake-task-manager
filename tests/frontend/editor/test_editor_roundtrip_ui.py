@@ -152,19 +152,37 @@ def editor_browser(request, tmp_path):
             page = browser.new_page(viewport={"width": 1720, "height": 1080})
             page.set_default_timeout(20_000)
             errors: list[str] = []
+            capacity_refusals: dict[str, list[str]] = {}
+            recovered_refusals = []
             page.on("pageerror", lambda exc: errors.append(str(exc)[:400]))
             def response_error(response):
+                # Safe reads explicitly retry admission refusals. Keep every
+                # refusal as an error until that exact GET URL really recovers.
+                if 200 <= response.status < 300 and response.request.method == "GET":
+                    for error in capacity_refusals.pop(response.url, []):
+                        errors.remove(error)
+                        recovered_refusals.append(error)
                 if response.status < 400 or "/api/" not in response.url or "/api/favicon" in response.url:
                     return
                 try:
                     detail = response.text()[:300]
                 except Exception:  # The page may already be closing after a failed assertion.
                     detail = ""
-                errors.append(f"HTTP {response.status} {response.url} {detail}")
+                error = f"HTTP {response.status} {response.url} {detail}"
+                errors.append(error)
+                if response.status == 429 and response.request.method == "GET":
+                    try:
+                        payload = response.json()
+                    except Exception:
+                        return
+                    if (payload.get("code") == "request_capacity" and payload.get("executed") is False
+                            and payload.get("retryable") is True):
+                        capacity_refusals.setdefault(response.url, []).append(error)
             page.on("response", response_error)
             try:
                 yield page, f"http://127.0.0.1:{port}", errors, upload_path
             finally:
+                request.node.user_properties.append(("recovered_capacity_refusals", len(recovered_refusals)))
                 if browser is not None:
                     browser.close()
                     browser = None

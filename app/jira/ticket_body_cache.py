@@ -14,8 +14,9 @@ from app.infra.resource_pressure import resource_pressure
 
 _MAX_BYTES = 16 * 1024 * 1024
 _LIMIT_MESSAGE = (
-    "Description search page exceeds 16 MiB. Reduce max_results; "
-    "for one oversized body use get_ticket(detail='read').")
+    "Heavy-field search page exceeds 16 MiB. Reduce max_results; "
+    "for one oversized body use get_ticket(detail='read'); "
+    "for comments use get_evidence_page(kind='comments').")
 
 
 def _content_digest(payload):
@@ -27,18 +28,36 @@ def _content_digest(payload):
 
 
 class TicketBodyCache:
-    def __init__(self, cache, scope, ttl, fence):
+    def __init__(self, cache, scope, ttl, fence, *, field="description"):
+        if field not in {"description", "comment"}:
+            raise ValueError("Unsupported heavy ticket field")
         self.cache, self.ttl, self.fence = cache, ttl, fence
+        self.field = field
+        self.kind = "ticketbody" if field == "description" else "ticketcomment"
         self.scope = hashlib.sha256(str(scope).encode()).hexdigest()
 
     def _head_key(self, key):
-        return f"ticketbodyhead:{self.scope}:" + hashlib.sha256(str(key).encode()).hexdigest()
+        return f"{self.kind}head:{self.scope}:" + hashlib.sha256(str(key).encode()).hexdigest()
 
     def covered(self, keys):
         """Cheap planning hint only; actual reuse still checks discovery's version."""
         heads = {self._head_key(key): key for key in keys}
         with read_scope():  # Planning hints are not evidence used in the result.
             return {heads[key] for key in self.cache.get_many(heads)}
+
+    def read_latest(self, keys, max_bytes):
+        """Reuse the last observed version under the current source-age policy.
+
+        This is a cached snapshot, not proof of the ticket's current Jira version.
+        Unlike covered(), these heads are evidence and retain their original age.
+        """
+        heads = {self._head_key(key): key for key in keys}
+        rows = self.cache.get_many_with_metadata(heads)
+        issues = []
+        for head_key, (head, _source) in rows.items():
+            if isinstance(head, dict):
+                issues.append({"key": heads[head_key], "fields": {"updated": head.get("updated")}})
+        return self.read(issues, max_bytes)
 
     def _identity(self, issue):
         key = issue.get("key")
@@ -47,7 +66,13 @@ class TicketBodyCache:
             return None
         digest = hashlib.sha256((str(key) + "\0" + updated).encode()).hexdigest()
         suffix = f"{self.scope}:{digest}"
-        return str(key), updated, f"ticketbodymeta:{suffix}", f"ticketbody:{suffix}:"
+        return str(key), updated, f"{self.kind}meta:{suffix}", f"{self.kind}:{suffix}:"
+
+    def _valid(self, value):
+        if self.field == "description":
+            return True  # Explicit null/empty descriptions are known values.
+        rows = value.get("comments") if isinstance(value, dict) else value
+        return isinstance(rows, list) and all(isinstance(row, dict) and row.get("id") for row in rows)
 
     def read(self, issues, max_bytes):
         """Return present bodies only; missing/expired/versionless pairs are misses."""
@@ -75,9 +100,10 @@ class TicketBodyCache:
                 continue  # Independent quota eviction is not a known-empty body.
             payload, _source = entry
             if (payload.get("key") != key or payload.get("updated") != updated
-                    or "description" not in payload or encoded_size(payload) != size):
+                    or self.field not in payload or not self._valid(payload[self.field])
+                    or encoded_size(payload) != size):
                 continue
-            result[key] = payload["description"]
+            result[key] = payload[self.field]
         return result
 
     def store(self, issues, fetched_at):
@@ -86,10 +112,10 @@ class TicketBodyCache:
         for issue in issues:
             fields = issue.get("fields") or {}
             identity = self._identity(issue)
-            if identity is None or "description" not in fields:
+            if identity is None or self.field not in fields or not self._valid(fields[self.field]):
                 continue
             key, updated, index_key, payload_prefix = identity
-            payload = {"key": key, "updated": updated, "description": fields["description"]}
+            payload = {"key": key, "updated": updated, self.field: fields[self.field]}
             size = encoded_size(payload)
             total += size
             if total > _MAX_BYTES:
@@ -105,3 +131,10 @@ class TicketBodyCache:
                     fetched_at=fetched_at, preserve_newer_keys=[key for key, _ in entries],
                     revalidate_equal_preserved=True):
                 raise QueryStateChanged("티켓이 변경되어 본문을 다시 확인해야 합니다.")
+
+
+class TicketFieldCache(TicketBodyCache):
+    """Independent raw heavy field cache; comment windows retain all source metadata."""
+
+    def __init__(self, cache, scope, ttl, fence, field):
+        super().__init__(cache, scope, ttl, fence, field=field)
