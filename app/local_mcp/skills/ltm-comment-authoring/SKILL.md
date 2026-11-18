@@ -19,7 +19,7 @@ description: LTM MCP로 특정 티켓에 댓글을 작성하거나 기존 댓글
 
 ## 새 댓글
 
-1. 티켓 key와 요청 맥락을 확인한다. 필요한 경우 `get_ticket`과 최근 `get_comments`를 읽어 이미 완료됐거나 취소된 업무를 잘못 보고하지 않도록 한다.
+1. 티켓 key와 요청 맥락을 확인한다. 이미 받은 기본정보·논의를 재사용한다. 여러 key는 `get_tickets`의 `include_description`·`include_comments` 중 필요한 것만 켜서 묶고, 단건 기본정보만 필요하면 `get_ticket(include_description=false, include_comments=false)`를 쓴다. 댓글은 raw 원문과 commentsCoverage를 확인하며 부분/미상 논의를 전체로 취급하지 않는다.
 2. 알려진 진행 사항, 확인된 결과, 남은 질문을 구분해 HTML을 작성한다. 사용자 의도에 맞게 짧은 문단·목록·표를 선택하며 고정 보고 양식을 강제하지 않는다.
 3. 사람은 검색으로 식별한 ID를 가진 멘션으로 넣는다. 이미지가 필요하면 대상 티켓에 `add_attachment`를 먼저 호출하고 반환된 경로를 `img`에 넣는다.
 4. `add_comment(key, html, client_mutation_id)`로 한 번 게시한다. 본문과 같은 HTML 규약을 사용하며 raw Markdown이나 Jira wiki를 `html` 인자에 넣지 않는다.
@@ -29,7 +29,7 @@ description: LTM MCP로 특정 티켓에 댓글을 작성하거나 기존 댓글
 
 ## 기존 댓글 수정
 
-1. `get_comments`로 대상 댓글의 정확한 `id`를 확인한다. 최근 20개 목록에 없으면 `get_evidence_page(kind="comments")`의 페이지·필요한 record chunk를 따라 ID를 찾는다.
+1. 이미 받은 댓글의 정확한 `id`를 재사용한다. 없으면 필요한 최근 논의는 `get_comments`로 찾고, 20개 미리보기에 없으면 `get_evidence_page(kind="comments")`의 nextCall·필요한 record chunk를 따른다. bulk의 complete 댓글을 ID 확인만을 위해 또 읽지 않는다.
 2. `get_comment_source(key, comment_id)`로 편집용 `data.html`을 읽는다. 오래된 댓글의 편집 원본은 조회되지 않을 수 있다. 미리보기 `comments[].html`과 원본의 `renderedBody`는 열람용이며, `body`는 Jira 저장 형식일 수 있다. 편집 원본을 확보하지 못하면 전체 교체를 보류한다.
 3. 수정하려는 문장 이외의 텍스트·멘션·표·첨부를 보존한다. `edit_comment(key, comment_id, html, client_mutation_id)`는 **댓글 전체 교체**이며 수정 권한은 Jira가 검사한다.
 4. 같은 ID의 수정된 댓글을 재조회한다. 최신 미리보기에 없으면 원본 페이지에서 확인한다. 확인되지 않은 게시·수정을 성공으로 단정하지 않는다.

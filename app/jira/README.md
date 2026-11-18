@@ -10,6 +10,8 @@ REST 를 호출하고, **모든 호출은 캐시(app/infra)를 경유**한다. m
 - **media_service.py** — 사용자 아바타, 링크 제목/favicon, 인증 첨부 미디어 프록시와 SSRF 허용 호스트 정책.
 - **workload_service.py** — 인력별 workload 집계·버킷, SubTask Epic 상속, 활동 피드 조립.
 - **cache_policy.py** — JQL 역인덱스와 mutation 기반 선택적 캐시 무효화 정책.
+- **body_search.py / ticket_body_cache.py** — 경량 후보 조회 후 필요한 본문·댓글 필드만 묶어 수집하고 티켓별 원본 시각·버전·인증 범위로 독립 캐싱. 최대 10티켓/16 MiB 경계 유지.
+- **comment_snapshot.py** — embedded 댓글의 완전성 판정과 검증된 전체 원문의 UI·근거 조회 재사용. 누락·부분·미확인 응답은 전체 없음으로 취급하지 않음.
 - **jql.py** — 앱이 사용하는 JQL subset의 AST 파싱·context 해소·DNF leaf 분해·canonical 정렬과
   OR 합성 결과의 로컬 정렬. 미지원 문법·함수·정렬은 `jira_client`의 기존 Jira 실행 경로로 폴백한다.
 - **jql_execution.py** — 논리적인 캐시 단위와 실제 Jira 요청 묶음을 분리한다. 사람·상태·Epic 조건을

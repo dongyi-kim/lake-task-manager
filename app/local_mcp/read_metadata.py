@@ -49,6 +49,8 @@ def has_partial(data, *, requested_components=False):
             return True
         if requested_components and data.get("descriptionRequested") and data.get("descriptionMissingKeys"):
             return True
+        if requested_components and data.get("commentsRequested") and data.get("commentsMissingKeys"):
+            return True
         return any(has_partial(value, requested_components=requested_components) for value in data.values())
     return isinstance(data, (list, tuple)) and any(
         has_partial(row, requested_components=requested_components) for row in data)

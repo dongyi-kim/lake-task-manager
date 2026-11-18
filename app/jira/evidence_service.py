@@ -182,6 +182,17 @@ def _check_auth(client, data):
 
 
 def _comments_page(client, key, start_at, max_results):
+    from app.jira.comment_snapshot import cached_complete_comments, ordered_comments
+    shared = cached_complete_comments(client, key)
+    if shared is not None:
+        all_rows = ordered_comments(shared[0])
+        rows = [_identity(row) for row in all_rows[start_at:start_at + max_results]]
+        more = start_at + len(rows) < len(all_rows)
+        return {"key": key, "kind": "comments", "items": rows, "total": len(all_rows),
+                "sourceStartAt": 0, "sourceComplete": True, "complete": True, "partial": False,
+                "incompleteReason": None, "consistency": "cached_complete_embedded_snapshot",
+                "startAt": start_at, "maxResults": max_results, "returned": len(rows),
+                "hasMore": more, "nextStartAt": start_at + len(rows) if more else None}
     # Transport pages stay aligned even when the model-visible byte budget returns only
     # a handful of records. Continuations and single-record chunks reuse that source page.
     def source_page(source_start):

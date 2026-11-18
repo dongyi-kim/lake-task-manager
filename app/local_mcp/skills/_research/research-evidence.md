@@ -1,20 +1,20 @@
 # 최소 충분 근거와 완전성
 
-검색·계층 조회로 필요한 대상을 묶어 수집하고, 정해진 여러 key는 `get_tickets`로 함께 읽는다. 본문이 필요한 집합에만 `include_description=true`를 켠다. 이미 반환된 기본정보·본문은 재조회하지 않는다. `get_ticket(detail="read")`는 누락이나 렌더링 원문 확인에, `get_comments`는 필요한 최근 논의에 사용한다. 참조된 Confluence 문서는 필요한 부분을 실제로 읽고 ID·revision·위치를 남긴다. 최신 문서라는 이유만으로 실제 실행 기록을 덮지 않는다.
+검색·계층 조회로 대상을 묶고 정해진 key는 `get_tickets`로 함께 읽는다. 본문·논의의 포함 옵션과 완전성은 [선택 수집](heavy-content.md)을 따른다. 이미 받은 기본정보·본문·완전한 댓글은 재조회하지 않는다. `get_ticket(detail="read")`는 표시 HTML에, `get_comments`는 아직 받지 않은 최근 논의에 사용한다. Confluence 근거는 필요한 본문을 읽고 ID·revision·위치를 남긴다. 최신 문서라는 이유만으로 실행 기록을 덮지 않는다.
 
 | 필요한 답 | 추가 조회 |
 |---|---|
 | 최근 진행·결정·장애 요약 | 본문과 최근 댓글이 충분하면 종료; 확인한 범위를 표시 |
-| 취소·제외까지 반영한 완전 집계 | 해당 티켓 `get_evidence_page(kind="comments")`를 끝까지 읽음 |
+| 취소·제외까지 반영한 완전 집계 | 같은 key·허용 나이의 `commentsCoverage.complete=true`는 재사용; 부족한 논의만 후속 조회 |
 | 전이 시각·전후값·재오픈·과거 담당·충돌 해소 | 해당 key의 `kind="history"`를 추가 |
 | Epic/Task 아래 업무 | `get_descendants`로 관계 확인 후 관련 자식 본문·댓글 선택 |
 
-`get_comments`는 최대 20개 preview일 수 있다. preview로 취소가 없다고 단정하지 않는다. `get_evidence_page` 기본값은 comments이고 지정한 key 한 개만 읽는다. 자식 기록을 자동 포함하지 않는다. 전체 자식 history 수집을 일반 진척의 고정 단계로 만들지 않는다.
+`get_comments`는 최대 20개 preview다. bulk `fields.comment`는 이 제한과 다르며 완전성은 commentsCoverage로 확인한다. 월간 집계도 이미 받은 전체 논의를 또 읽지 않는다. 부분/미상 논의로 취소가 없다고 단정하지 않는다. `get_evidence_page`는 지정 key 한 개만 읽으며 자식을 자동 포함하지 않는다. 전체 자식 history 수집을 고정 단계로 만들지 않는다.
 
 ## 페이지와 긴 레코드
 
 - 실제 `nextStartAt`, `snapshotId`, `nextOffset` 등 해당 도구가 반환한 이어 읽기 계약을 따른다. 날짜 건너뛰기나 역순 페이지 인자를 만들어내지 않는다.
-- `get_evidence_page`는 `data.nextCall.arguments` 전체를 다음 호출에 복사한다. 긴 레코드의 내부 위치와 묶음 크기까지 포함하므로 `nextStartAt` 하나만 따라가지 않는다. 이전 서버에 nextCall이 없으면 마지막 item의 `nextRecordOffset`이 null이 아닐 때 `start_at=item.sourceIndex`, `record_offset=item.nextRecordOffset`으로 이어 읽는다. 이전 서버의 `max_results=1` 요구를 따른다.
+- bulk의 부분 댓글은 `commentsCoverage.nextCall`의 name·arguments를 따른다. 순서 미상으로 start_at=0일 수 있으므로 받은 개수로 offset을 만들지 않는다. 이후 `get_evidence_page`는 `data.nextCall.arguments` 전체를 복사한다. 원래 cache_mode를 유지하며 긴 레코드 위치·묶음 크기를 생략하지 않는다. 이전 서버에 nextCall이 없으면 마지막 item의 nextRecordOffset이 null이 아닐 때 start_at=sourceIndex, record_offset=nextRecordOffset으로 잇고 그 서버의 max_results=1 요구를 따른다.
 - 새 서버의 nextCall은 레코드 조각 뒤에도 요청한 묶음 크기를 유지한다. 이전 서버에서 조각이 끝난 뒤 `hasMore=true`이면 `start_at=nextStartAt`, `record_offset=0`과 원래 묶음 크기로 다음 페이지를 읽는다. nextCall이 null이어도 sourceComplete/partial을 확인한다. `hasMore=false`이고 미완료 조각이 없을 때 수집을 마치며, recordJson의 연속 offset·ID·SHA-256을 검증한다.
 - 위치는 서버가 반환한 값을 그대로 쓴다. JavaScript의 UTF-16 length나 UTF-8 byte 수로 record_offset을 다시 계산하지 않는다.
 - ID·recordFormat·digest가 같고 이미 검증한 전체 레코드가 저장돼 있으면 재사용할 수 있다. 위치가 달라져도 ID로 대조한다. 지원하는 무표기/v1↔v2 사이 형식 변경이나 같은 지원 형식의 digest 변경은 조각을 섞지 않고 해당 레코드만 다시 읽는다. v2는 본문·이력·비행위자 메타데이터와 제공된 actor 식별값을 보존하고 avatar·email·active 등 프로필 속성은 제외한다. 알 수 없는 format은 수집을 중단하고 미지원 형식을 진단한다. 그 기록 하나의 재조회로 미지원 수집을 정상화하거나 복원 완료로 처리하지 않는다.
@@ -28,6 +28,7 @@
 - 연결 오류·timeout으로 응답이 없거나 실패하면 그 구간은 미완료다. 완료 표시·cursor 전진·다음 그룹 조회를 하지 않는다. “최종합계 미확정”이라고 알리는 것만으로 복구를 대신하지 않는다.
 - 일시적 연결 오류는 같은 도구·인자로 재시도한다. 실제 오류의 `retryable`, `retryAfterSeconds`, 인증 안내를 따르고 연속 호출을 쏟지 않는다. 응답 유실로 읽기 완료 여부를 모르면 같은 위치를 다시 읽고 ID로 dedup한다. 정상 저장한 이전 구간은 보존한다.
 - 연결 복구 뒤 같은 그룹의 빠진 페이지·레코드 조각부터 끝낸다. snapshot 만료·상실은 해당 검색을 첫 페이지부터 다시 검증하고 저장 ID와 대조한다. 원본 ID/digest 변경은 해당 레코드를 다시 읽는다. 전체 조사를 무조건 처음부터 시작하지 않는다.
+- 크기 오류는 동일한 큰 요청을 반복하지 않고 [선택 수집](heavy-content.md)에 따라 현재 그룹만 나눈다. 큰 단일 댓글은 evidence 레코드 조각으로 복원하며, 성공 구간을 다시 받거나 미완료 그룹을 건너뛰지 않는다.
 - 반복해도 복구되지 않거나 로그인·권한 등 사용자 조치가 필요하면 현재 그룹에서 멈춘다. 실패 도구·인자·마지막 정상 위치·필요 조치를 저장하고 알린다. 미완료 그룹을 건너뛰거나 다음 그룹으로 넘어가지 않는다. 사용자가 명시적으로 부분 조사·건너뛰기를 요청한 경우에만 그 범위를 따른다. 복구 후 재개 대상도 이 그룹이다.
 
 ## 정상 응답이 반복되지만 전진하지 않을 때

@@ -2,7 +2,7 @@
 
 ## 먼저 확인할 것
 
-- `get_ticket(key, fresh=true)`로 현재 티켓과 상태를 읽는다. `statusCategory=done`은 LTM의 필드 수정 제한 기준이다. 이름이 Resolved/Closed인지로 추측하지 않는다.
+- 상태만 필요하면 `get_ticket(key, fresh=true, include_description=false, include_comments=false)`로 읽는다. 여러 key는 live 묶음 metadata를 활용하고, 같은 최신 필드를 이미 받았다면 재사용한다. `statusCategory=done`은 LTM 수정 제한 기준이며 이름으로 추측하지 않는다. 본문 편집 원문은 별도 edit 모드를 쓴다.
 - `list_options(kind="edit_fields", key=...)`는 이 티켓의 현재 Jira 편집 metadata다. 필드가 없으면 권한뿐 아니라 workflow나 편집 화면 설정 때문일 수 있다. 다른 티켓의 metadata를 재사용해 쓰기를 허용하지 않는다.
 - LTM은 로컬 단일 사용자 앱이며 별도 역할 제한이 없다. Jira 권한, workflow 조건과 validator가 최종 적용된다. metadata 조회 성공이 이후 쓰기의 성공을 보장하지 않는다.
 

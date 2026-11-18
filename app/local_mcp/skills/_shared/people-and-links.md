@@ -7,7 +7,7 @@
 - 결과가 많으면 `limit`을 최대 50까지 늘리거나 성명·회사·실제 username으로 좁힌다. `mayHaveMore=true`는 제한 도달, `null`은 전체 범위를 알 수 없다는 뜻이다. 후보가 하나여도 전사 유일 인물이라는 증거는 아니다.
 - `matchContext.configured`, `sameModule`, `recentLookupAt`, `recentSelectionAt`, `recentMentionAt`은 각각 독립된 참고 근거다. 최근성·같은 모듈만으로 동명이인을 자동 확정하지 않는다.
 - `contextAvailable`과 null 값으로 미확인 문맥을 구분한다. `contextChanged=true`면 계정이 바뀐 것이므로 다시 검색한다. 멘션 시각은 UI 삽입 시각이며 댓글 게시의 증거가 아니다.
-- “이 티켓 담당자”처럼 맥락이 명확하면 `get_ticket`의 실제 담당자 ID와 교차 확인한다. 자료를 확인해도 후보를 구분할 수 없으면 회사·모듈 등 구체적인 차이로 질문하고 해당 인물의 지정/멘션은 보류한다.
+- “이 티켓 담당자”는 이미 받은 실제 담당자 ID로 교차 확인한다. 빠졌을 때만 묶음 metadata나 `get_ticket(include_description=false, include_comments=false)`로 보충한다. 자료로도 구분할 수 없으면 회사·모듈 등 차이로 질문하고 지정/멘션은 보류한다.
 - `get_user(user_id)`는 확인한 ID의 상세 조회다. 빈 `user_id`는 로그인한 사용자다. 이메일에서 앞부분을 잘라 ID를 만들지 않는다.
 
 ## 실제 사람 멘션
@@ -28,7 +28,7 @@ Task·Epic·SubTask 작성에 실제로 참고한 Jira 이슈·Confluence 문서
 
 ## Jira 티켓
 
-key 또는 제목으로 `search_issues`/`search_workspace`에서 찾고 `get_ticket`으로 대상·내용을 확인한다. 링크는 응답의 사용자용 `url`을 사용한다. Jira REST `self`는 본문 탐색 링크가 아니다.
+key 또는 제목으로 `search_issues`/`search_workspace`에서 찾고 받은 대상·내용을 재사용한다. 필요한 본문·논의만 `get_tickets`의 include_description/include_comments로 보충하고 표시 HTML이 필요할 때 단건 read를 쓴다. 링크는 사용자용 `url`이며 Jira REST `self`는 탐색 링크가 아니다.
 
 ```html
 <p>단순 번호: __ISSUE_KEY__</p>

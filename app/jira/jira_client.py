@@ -2549,8 +2549,17 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """Normalize one provider comment for both cached UI and evidence snapshots."""
         c = comment if isinstance(comment, dict) else {}
         rb = c.get("renderedBody")
-        html = sanitize_html(_revive_checkboxes(rb)) \
-            if rb and str(rb).strip() else text_to_html(c.get("body") or "")
+        body = c.get("body") or ""
+        if rb and str(rb).strip():
+            html = sanitize_html(_revive_checkboxes(rb))
+        elif _looks_like_html(body):
+            html = sanitize_html(_revive_checkboxes(body))
+        elif self._comment_fmt() == "wiki":
+            from app.content.wikihtml import wiki_to_html
+            html = sanitize_html(_revive_checkboxes(flatten_mentions_html(
+                wiki_to_html(body, self.display_name_cached))))
+        else:
+            html = text_to_html(body)
         html = tidy_html(html)
         html = _sync_checkboxes(html, c.get("body"))
         html = mark_explicit_jira_links(html, c.get("body"))
@@ -2572,6 +2581,12 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     def _issue_comments(self, key, limit=5, *, fresh_after=None):
         """코멘트 — `comments:{env}:{key}` 로 티켓 단위 캐시(항상 CACHE_COMMENTS 건 보관)."""
         want = max(1, int(limit or 5))
+        from app.jira.comment_snapshot import cached_complete_comments, ordered_comments
+        shared = cached_complete_comments(self, key, fresh_after=fresh_after, for_ui=True)
+        if shared is not None:
+            raw_rows, _sources = shared
+            return [self._project_comment_row(row) for row in ordered_comments(
+                raw_rows, newest_first=True)[:min(want, self.CACHE_COMMENTS)]]
 
         def do():
             fence = self.cache.fence()
@@ -2621,6 +2636,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         return rows[:want]
 
     def comment_coverage(self, key, rows):
+        from app.jira.comment_snapshot import cached_complete_comments, ordered_comments
+        shared = cached_complete_comments(self, key, for_ui=True)
+        if shared is not None:
+            raw_rows, _sources = shared
+            preview = [self._project_comment_row(row) for row in ordered_comments(
+                raw_rows, newest_first=True)[:self.CACHE_COMMENTS]]
+            if _comment_signature(rows) == _comment_signature(preview):
+                return {"complete": len(raw_rows) <= self.CACHE_COMMENTS, "total": len(raw_rows)}
         hit = self.cache.get_alive(f"comments:{self.env}:{key}:coverage", record=False)
         proof = hit[0] if hit and isinstance(hit[0], dict) else {}
         matches = proof.get("signature") == _comment_signature(rows)
@@ -2629,6 +2652,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     def issue_comments_complete(self, key, *, fresh_after=None):
         """Dialog-only coverage, sharing completed snapshots and the normal mutation prefix."""
+        from app.jira.comment_snapshot import cached_complete_comments, ordered_comments
+        shared = cached_complete_comments(self, key, fresh_after=fresh_after, for_ui=True)
+        if shared is not None:
+            raw_rows, sources = shared
+            rows = [self._project_comment_row(row) for row in ordered_comments(raw_rows, newest_first=True)]
+            return {"key": key, "comments": self._comments_display_ownership(rows),
+                    "total": len(rows), "returned": len(rows), "pages": 1,
+                    "complete": True, "hasMore": False, "remaining": 0,
+                    "fetchedAt": min(source["fetchedAt"] for source in sources)}
         base_key = f"comments:{self.env}:{key}"
         with read_scope(strict=revalidating()) as base_sources:
             base, source = self.cache._display_snapshot(base_key)
@@ -4630,12 +4662,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 return {"id": str(comment_id), "html": html}
         return None
 
-    def _resolve_wiki_attachment_images(self, key, html):
+    def _resolve_wiki_attachment_images(self, key, html, *, attachments=None):
         """wiki의 ``!파일명!`` 이미지를 현재 티켓 첨부의 실제 content URL로 연결한다."""
         if "<img" not in (html or ""):
             return html
         try:
-            fields = (self.get_issue(key).get("fields") or {})
+            fields = ({"attachment": attachments} if attachments is not None else
+                      (self.get_issue(key).get("fields") or {}))
             by_name = {str(a.get("filename") or ""): str(a.get("content") or "")
                        for a in (fields.get("attachment") or []) if a.get("content")}
         except Exception:
@@ -4927,17 +4960,75 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "delete", key, parent_key=parent_key, epic_key=epic_key))
         return {"ok": True}
 
-    def ticket_view(self, key, fresh=False, *, detail="full"):
+    def ticket_view(self, key, fresh=False, *, detail="full", include_description=None,
+                    include_comments=False):
         """티켓 상세 다이얼로그용 리치 뷰 — 없으면 None. description 은 항상 정화된 안전 HTML.
 
         fresh=True 면 캐시를 건너뛰고 상류를 직접 본다(본문 편집 시작·충돌 감시).
         detail은 응답 조립만 제한하며 원본 조회·캐시는 그대로 공유한다.
         """
-        raw = self._get_issue_view(key, fresh=fresh)
+        wants_description = detail != "summary" if include_description is None else include_description
+        field_context = None
+        if include_description is None and not include_comments:
+            raw = self._get_issue_view(key, fresh=fresh)
+        else:
+            import json
+            from app.jira.body_search import known_key_search, search_body_page, ticket_field_context
+            key = str(key).strip().upper()
+            field_context = ticket_field_context(self)
+            requested = self._issue_fields(light=True).split(",")
+            if wants_description:
+                requested.append("description")
+            if include_comments:
+                requested.append("comment")
+            with read_scope(cache_mode="live" if fresh else None) as sources:
+                with known_key_search([key]):
+                    page = search_body_page(self, "key = " + json.dumps(key), start_at=0,
+                        max_results=1, fields=",".join(requested), light=False)
+            for source in sources:
+                note_read(source)
+            raw = next((row for row in page.get("issues", []) if row.get("key") == key), None)
         if not raw:
             return None
+        if wants_description and (include_description is not None or include_comments):
+            source_description = (raw.get("fields") or {}).get("description")
+            if isinstance(source_description, str) and self._description_fmt() == "wiki" and not _looks_like_html(source_description):
+                from app.content.wikihtml import wiki_to_html
+                html = flatten_mentions_html(wiki_to_html(source_description, self.display_name_cached))
+                filenames = re.findall(r'<img\b[^>]*\bsrc="([^"/:]+)"', html, re.I)
+                if filenames:
+                    from app.auth.base import QueryStateChanged
+                    with read_scope(cache_mode="live" if fresh else None) as attachment_sources:
+                        with known_key_search([key]):
+                            attachment_page = search_body_page(self, "key = " + json.dumps(key),
+                                max_results=1, fields="key,updated,attachment", light=False)
+                    for source in attachment_sources:
+                        note_read(source)
+                    field_context.check()
+                    attachment_issue = next((row for row in attachment_page.get("issues", []) if row.get("key") == key), None)
+                    version = (raw.get("fields") or {}).get("updated")
+                    if (not attachment_issue or not version or
+                            (attachment_issue.get("fields") or {}).get("updated") != version):
+                        raise QueryStateChanged("Ticket changed while resolving description attachments. Retry the ticket read.")
+                    attachments = (attachment_issue.get("fields") or {}).get("attachment")
+                    if not isinstance(attachments, list):
+                        raise ValueError("Jira did not return the requested description attachment metadata.")
+                    html = self._resolve_wiki_attachment_images(key, html, attachments=attachments)
+                raw = {**raw, "renderedFields": {**(raw.get("renderedFields") or {}), "description": html}}
+        representation = ("summary" if not wants_description else
+                          "read" if detail == "summary" else detail)
         view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base,
-                                  self.s.epic_link_field_id, self.s.epic_name_field_id, detail=detail)
+                                  self.s.epic_link_field_id, self.s.epic_name_field_id, detail=representation)
+        if include_comments:
+            from app.jira.comment_snapshot import embedded_comment_rows, embedded_comment_coverage
+            comment_value = (raw.get("fields") or {}).get("comment")
+            comments = embedded_comment_rows(comment_value)
+            view.update(comments=comments if comments is not None else [], commentsRequested=True,
+                        commentsCoverage=embedded_comment_coverage(comment_value, key),
+                        commentsMissingKeys=[key] if comments is None else [])
+        if wants_description and (include_description is not None or include_comments):
+            view.update(descriptionRequested=True, descriptionMissingKeys=(
+                [] if "description" in (raw.get("fields") or {}) else [key]))
         # 권한·projection에 따라 issue 응답의 사용자 객체가 username만 담는 경우가 있다. 필드
         # 트리거에 그 id가 그대로 보이지 않도록 기존 장기 user 캐시로 표시명을 보강한다.
         fields = raw.get("fields") or {}
@@ -4952,19 +5043,21 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 view[field + "Display"] = display
         # 화면 표시형 user-hover 앵커는 그대로 유지하고, 편집기에만 TipTap mention 노드를 준다.
         # 같은 descriptionHtml을 양쪽에 쓰면 수정 진입 때 일반 링크로 파싱돼 재저장 후 파란 링크가 된다.
-        if detail in ("full", "edit"):
+        if wants_description and detail in ("full", "edit"):
             view["descriptionEditHtml"] = self._description_edit_html(view["descriptionHtml"])
-        if detail in ("full", "read"):
+        if wants_description and detail in ("full", "read", "summary"):
             view["descriptionHtml"] = self._proxy_media(view["descriptionHtml"])
-        elif detail == "edit":
+        elif wants_description and detail == "edit":
             del view["descriptionHtml"]
-        if detail in ("full", "edit"):
+        if wants_description and detail in ("full", "edit"):
             view["descriptionEditHtml"] = self._proxy_media(view["descriptionEditHtml"])
         # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다
-        if detail == "full":
+        if wants_description and detail == "full":
             for sec in view.get("descriptionSections") or []:
                 sec["html"] = self._proxy_media(sec["html"])
             _log_sections(key, view)
+        if field_context is not None:
+            field_context.check()
         return view
 
     # ── 계보(좌측 스파인 패널) — 조상 체인 + 형제 ──
@@ -5821,7 +5914,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         ck = f"issueview:{self.env}:{key}"
 
         def fetch():
+            from app.jira.body_search import MAX_BODY_RESULT_BYTES, ticket_field_context
+            context = ticket_field_context(self)
             fence = self.cache.fence()
+            started = time.time()
             d = self.provider.get_json(
                 f"/rest/api/2/issue/{key}",
                 params={"fields": self._issue_fields(), "expand": "renderedFields"})
@@ -5830,6 +5926,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 이걸 재사용한다(경량 검색으로 issue:{key} 가 안 데워지는 걸 상쇄 + 기존 중복 제거).
             if isinstance(d, dict) and "fields" in d:
                 self.cache.set_if_fence(f"issue:{self.env}:{key}", d, self.s.cache_ttl_seconds, fence)
+                fields = d.get("fields") or {}
+                if "description" in fields:
+                    payload = {"key": d.get("key"), "updated": fields.get("updated"),
+                               "description": fields["description"]}
+                    # Legacy views may still display a single oversized body. Only the
+                    # independently bounded shared cache is skipped in that case.
+                    if encoded_size(payload) <= MAX_BODY_RESULT_BYTES:
+                        try:
+                            context.check()
+                            context.caches["description"].store([d], started)
+                        except QueryStateChanged:
+                            pass  # Concurrent invalidation must never publish the old field.
             return d
         if fresh:
             # **낡은 값을 받으면 안 되는 자리**(본문 편집 시작·편집 중 충돌 감시)에서만 쓴다.
