@@ -1,6 +1,6 @@
 /* Native document blocks, deliberately quieter than application cards. */
-.conf-editor-macro { margin:12px 0; border:1px solid var(--border-hi); border-left:3px solid var(--accent); border-radius:4px; overflow:hidden; }
-.conf-macro-settings { display:block; width:100%; border:0; border-bottom:1px solid var(--border); text-align:left; padding:5px 10px; background:var(--panel-2); color:var(--muted); font-family:inherit; font-size:11px; font-weight:500; line-height:1.6; cursor:pointer; }
+.conf-editor-macro { margin:12px 0; border:1px solid var(--border-hi); border-left:3px solid var(--accent); border-radius: var(--radius-card, 6px); overflow:hidden; }
+.conf-macro-settings { display:block; width:100%; border:0; border-bottom:1px solid var(--border); text-align:left; padding: 8px 12px; background:var(--panel-2); color:var(--muted); font-family:inherit; font-size: 12px; font-weight:500; line-height: 18px; cursor:pointer; }
 .conf-macro-content { padding:4px 12px; min-height:36px; }
 .conf-macro-content > :first-child { margin-top:6px; }
 .conf-macro-content > :last-child { margin-bottom:6px; }
@@ -10,25 +10,25 @@
 .conf-editor-macro-inline:has(img) { display:inline-flex; flex-direction:column; max-width:100%; }
 .conf-editor-macro img { max-width:100%; max-height:440px; object-fit:contain; }
 .conf-macro-overlay { position:fixed; inset:0; z-index:15000; background:#0008; display:flex; align-items:center; justify-content:center; padding:16px; }
-.conf-macro-dialog { width:460px; max-width:100%; max-height:85dvh; overflow:auto; background:var(--panel); color:var(--text); border:1px solid var(--border-hi); border-radius:10px; padding:20px; box-shadow:0 20px 70px #0005; scrollbar-width:thin; }
+.conf-macro-dialog { width:460px; max-width:100%; max-height:85dvh; overflow:auto; background:var(--panel); color:var(--text); border:1px solid var(--border-hi); border-radius: var(--radius-dialog, 10px); padding:20px; box-shadow: var(--shadow-overlay); scrollbar-width:thin; }
 .conf-macro-dialog header,.conf-macro-dialog footer { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-.conf-macro-dialog h3 { margin:0; font-size:17px; }
+.conf-macro-dialog h3 { margin:0; font-size: 15px; line-height: 22px; }
 .conf-macro-dialog label { display:grid; grid-template-columns:minmax(100px,1fr) minmax(0,2fr); gap:12px; align-items:center; margin:12px 0; font-size:13px; }
-.conf-macro-dialog :is(input,select) { width:100%; min-width:0; padding:7px 9px; border:1px solid var(--border-hi); background:var(--bg); color:var(--text); border-radius:4px; }
+.conf-macro-dialog :is(input,select) { width:100%; min-width:0; padding:7px 9px; border:1px solid var(--border-hi); background: var(--panel); color:var(--text); border-radius: var(--radius-control, 5px); }
 .conf-macro-dialog footer { margin-top:20px; justify-content:flex-end; }
 .conf-macro-result { display:block; width:100%; text-align:left; border:0; border-bottom:1px solid var(--border); background:transparent; color:var(--text); padding:9px; cursor:pointer; }
 .conf-macro-result:hover { background:var(--panel-2); }
 .conf-macro-result small { color:var(--muted); margin-left:8px; }
-.conf-document-body details.conf-expand { display:block; width:auto; height:auto; margin:10px 0; padding:0; border:1px solid var(--border); border-radius:4px; font:inherit; color:inherit; }
+.conf-document-body details.conf-expand { display:block; width:auto; height:auto; margin:10px 0; padding:0; border:1px solid var(--border); border-radius: var(--radius-card, 6px); font:inherit; color:inherit; }
 .conf-document-body details.conf-expand > summary { padding:5px 9px; cursor:pointer; font-size:13px; line-height:20px; font-weight:500; background:color-mix(in srgb,var(--panel-2) 45%,var(--panel)); }
 .conf-document-body details.conf-expand > summary::marker { color:var(--muted); font-size:10px; }
 .conf-document-body details.conf-expand > :not(summary) { margin-left:10px; margin-right:10px; }
-.conf-native-panel { border:1px solid var(--border-hi); padding:12px 16px; margin:16px 0; border-radius:4px; }
+.conf-native-panel { border:1px solid var(--border-hi); padding:12px 16px; margin:16px 0; border-radius: var(--radius-card, 6px); }
 .conf-macro-unavailable { color:var(--muted); font-size:12px; padding:10px 12px; border-left:2px solid var(--border-hi); }
-.conf-status { display:inline-block; font-size:11px; font-weight:700; padding:2px 7px; line-height:1.5; border-radius:3px; background:var(--conf-status-color,#64748b); color:white; }
-.conf-status-red { --conf-status-color:#c9372c; }.conf-status-yellow { --conf-status-color:#936400; }.conf-status-green { --conf-status-color:#21784c; }.conf-status-blue { --conf-status-color:#2563c7; }
-.conf-status-subtle { color:var(--conf-status-color,#64748b); background:color-mix(in srgb,var(--conf-status-color,#64748b) 12%,var(--panel)); }
-:root[data-theme="dark"] .conf-status-subtle { color:color-mix(in srgb,var(--conf-status-color,#64748b) 35%,white); }
+.conf-status { display:inline-block; font-size: 12px; font-weight: 600; padding:2px 7px; line-height:1.5; border-radius: var(--radius-control, 5px); background:var(--conf-status-color,var(--muted)); color: var(--on-accent); }
+.conf-status-red { --conf-status-color: var(--danger); }.conf-status-yellow { --conf-status-color: var(--warn); }.conf-status-green { --conf-status-color: var(--good); }.conf-status-blue { --conf-status-color: var(--info); }
+.conf-status-subtle { color:var(--conf-status-color,var(--muted)); background:color-mix(in srgb,var(--conf-status-color,var(--muted)) 12%,var(--panel)); }
+:root[data-theme="dark"] .conf-status-subtle { color:color-mix(in srgb,var(--conf-status-color,var(--muted)) 35%,white); }
 .conf-document-body pre.conf-code { display:flex; gap:16px; }
 .conf-document-body pre.conf-no-panel { background:transparent; color:inherit; border:0; padding:0; }
 .conf-code-lines { user-select:none; color:var(--muted); border-right:1px solid var(--border-hi); padding-right:12px; text-align:right; }

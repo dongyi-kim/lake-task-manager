@@ -1,8 +1,8 @@
 /* search.css — 헤더 검색 버튼 + 통합 검색 오버레이(스포트라이트). */
 
 .top-actions { display: inline-flex; align-items: center; gap: 8px; }
-.search-trig { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted);
-  background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px 5px 11px; cursor: pointer; }
+.search-trig { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-control, 5px); padding: 5px 10px 5px 11px; cursor: pointer; min-height: 30px; }
 .search-trig:hover { color: var(--text); border-color: var(--accent); }
 .search-trig svg { width: 14px; height: 14px; }
 .search-trig kbd { font: 600 10.5px/1 ui-monospace, monospace; color: var(--muted); background: var(--panel-2);
@@ -15,26 +15,21 @@
   padding: 5px 11px; cursor: pointer; }
 .update-trig:hover { background: color-mix(in srgb, var(--accent) 20%, var(--panel)); }
 .update-trig:disabled { cursor: default; opacity: .75; }
-.update-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none;
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); animation: update-pulse 1.8s ease-out infinite; }
+.update-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--info); flex: none;
+  box-shadow: none; animation: none; }
 .update-trig.busy .update-dot { animation: none; }
-@keyframes update-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
-  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
-}
 
 /* ── 오버레이 ── */
 .sr-ov { position: fixed; inset: 0; z-index: 9200; display: flex; align-items: flex-start; justify-content: center;
   background: rgba(17, 20, 28, .5); backdrop-filter: blur(2px); padding: 68px 16px 24px; }
 .sr-box { width: min(820px, 100%); max-height: calc(100vh - 100px); display: flex; flex-direction: column;
-  background: var(--panel); border: 1px solid var(--border-hi); border-radius: 12px; overflow: hidden;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, .4); }
+  background: var(--panel); border: 1px solid var(--border-hi); border-radius: var(--radius-dialog, 10px); overflow: hidden;
+  box-shadow: var(--shadow-overlay); }
 
-.sr-top { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.sr-top { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
 .sr-top .sr-ic { width: 18px; height: 18px; color: var(--muted); flex: none; }
 .sr-input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text);
-  font-size: 15.5px; font-family: inherit; }
+  font-size: 15px; font-family: inherit; line-height: 22px; }
 .sr-input::placeholder { color: var(--muted); }
 .sr-x { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel-2);
   color: var(--muted); cursor: pointer; flex: none; }
@@ -48,11 +43,11 @@
 .sr-optbtn.open .chev { transform: rotate(90deg); }
 .sr-optbtn b { color: var(--text); font-weight: 700; }
 .sr-optbody { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 0 14px 10px; }
-.sr-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.sr-seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-control, 5px); overflow: hidden; border-color: var(--border-hi); }
 .sr-seg button { background: var(--panel); border: 0; border-left: 1px solid var(--border); color: var(--muted);
   font-size: 12px; padding: 5px 12px; cursor: pointer; }
 .sr-seg button:first-child { border-left: 0; }
-.sr-seg button.on { background: var(--accent); color: #fff; }
+.sr-seg button.on { background: var(--accent); color: var(--on-accent); }
 .sr-hint { font-size: 11px; }
 
 /* ── 결과 ── */
@@ -63,34 +58,34 @@
 /* 검색어가 바뀌어 이 소스 결과가 낡았을 때 — 이전 결과를 흐리게 두고(오래된 걸 새 결과인 양
    보여 주지 않음) 위의 '불러오는 중' 스피너가 갱신을 알린다. 클릭/키보드 선택도 막힌다. */
 .sr-sec.stale .sr-item { opacity: .4; pointer-events: none; filter: grayscale(.3); }
-.sr-sec-h { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .3px; padding: 8px 10px 4px; }
+.sr-sec-h { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+  text-transform: none; letter-spacing: 0; padding: 8px 10px 4px; }
 .sr-sec-h b { color: var(--text); font-variant-numeric: tabular-nums; }
 .sr-src { font-weight: 800; letter-spacing: 0; text-transform: none; padding: 1px 7px; border-radius: 5px; font-size: 10.5px; }
 .sr-src.jira { color: var(--accent); background: var(--dev-bg); }
-.sr-src.conf { color: var(--good); background: rgba(62, 207, 176, .13); }
-.sr-src.bb { color: var(--epic); background: rgba(167, 139, 250, .14); }
-.sr-mock { text-transform: none; letter-spacing: 0; color: var(--muted); font-size: 10.5px; }
-.sr-serr { text-transform: none; letter-spacing: 0; color: var(--today); font-size: 11px; }
+.sr-src.conf { color: var(--good); background: color-mix(in srgb, var(--good) 12%, var(--panel)); }
+.sr-src.bb { color: var(--epic); background: color-mix(in srgb, var(--epic) 12%, var(--panel)); }
+.sr-mock { text-transform: none; letter-spacing: 0; color: var(--muted); font-size: 12px; line-height: 18px; }
+.sr-serr { text-transform: none; letter-spacing: 0; color: var(--today); font-size: 12px; line-height: 18px; }
 .sr-none { color: var(--muted); font-size: 12px; padding: 3px 12px 6px; }
 
-.sr-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; cursor: pointer; min-width: 0; }
-.sr-item.active { background: var(--panel-2); }
+.sr-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--radius-card, 6px); cursor: pointer; min-width: 0; }
+.sr-item.active { background: var(--selected); box-shadow: inset 3px 0 var(--accent); }
 .sr-item.mock { cursor: default; opacity: .82; }
 .sr-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-todo); }
 .sr-dot.st-inprogress { background: var(--st-prog); }
 .sr-dot.st-done { background: var(--st-done); }
-.sr-key { flex: none; color: var(--accent); font-weight: 700; font-size: 11.5px;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
-.sr-title { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.sr-key { flex: none; color: var(--info); font-weight: 700; font-size: 12px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.sr-title { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; }
 .sr-excerpt { flex: 1 1 6em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--muted); font-size: 12px; }
-.sr-meta { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.sr-meta { flex: none; margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; line-height: 18px; }
 /* 검색 결과 티켓의 소속 Epic — 상위 Task 피커와 같은 시그니처색 뱃지(우측, 담당자 앞) */
 .sr-epic { flex: none; margin-left: auto; max-width: 30%; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-size: 10px; font-weight: 700; line-height: 1; padding: 2px 8px;
-  border-radius: 999px; color: #fff; background: var(--ec, var(--accent));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent); }
+  border-radius: var(--radius-control); color: var(--text); background: color-mix(in srgb, var(--ec, var(--accent)) 12%, var(--panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ec, var(--accent)) 45%, var(--border)); }
 .sr-epic + .sr-meta { margin-left: 8px; }        /* Epic 뒤 meta 는 붙여서(둘 다 우측 묶음) */
 .sr-pageic, .sr-repoic { width: 13px; height: 13px; flex: none; background: currentColor; color: var(--muted);
   -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
