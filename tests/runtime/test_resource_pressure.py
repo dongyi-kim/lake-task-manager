@@ -1,5 +1,9 @@
 """Exercise pressure policy without exhausting the machine running the tests."""
 import threading
+import json
+import os
+import sys
+import time
 
 import pytest
 
@@ -76,3 +80,43 @@ def test_real_sampler_returns_only_memory_counters():
     assert set(result) == {"processBytes", "availableBytes", "totalBytes"}
     assert result["processBytes"] > 0
     assert 0 <= result["availableBytes"] <= result["totalBytes"]
+
+
+def test_browser_tree_pressure_refuses_even_when_python_is_small():
+    value = {"processBytes": 10, "availableBytes": 1000, "totalBytes": 4000,
+             "jobBytes": 750, "jobLimitBytes": 1000}
+    gate = ResourcePressure(sampler=lambda: dict(value), soft_limit=100, reserve=100, interval=0)
+    with pytest.raises(ResourceBusy):
+        gate.check()
+    assert gate.snapshot()["jobSoftLimitBytes"] == 750
+    value["jobBytes"] = 700
+    with pytest.raises(ResourceBusy):
+        gate.check()
+    value["jobBytes"] = 600
+    gate.check()
+    assert gate.snapshot()["busy"] is False
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows job counters')
+def test_owned_worker_reads_current_aggregate_job_commit(tmp_path):
+    from app.launcher.supervisor import OwnedWorker
+    from support.paths import REPO_ROOT
+    target = tmp_path / 'memory.json'
+    program = (
+        'import json, pathlib, sys; '
+        'from app.infra.resource_pressure import sample_memory; '
+        'pathlib.Path(sys.argv[1]).write_text(json.dumps(sample_memory()))'
+    )
+    worker = OwnedWorker([sys.executable, '-B', '-c', program, str(target)],
+        cwd=str(REPO_ROOT), env={**os.environ, 'LAKE_SUPERVISED_WORKER': 'counter-test'},
+        memory_limit=256 * 1024 * 1024)
+    try:
+        deadline = time.monotonic() + 10
+        while worker.poll() is None and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert worker.poll() == 0
+        data = json.loads(target.read_text())
+        assert data['jobLimitBytes'] == 256 * 1024 * 1024
+        assert data['jobBytes'] >= data['processBytes'] > 0
+    finally:
+        worker.close()

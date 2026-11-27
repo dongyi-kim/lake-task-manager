@@ -1,7 +1,27 @@
 // Bounded display cache. Source timestamps come from the server, never from a cache hit.
+function retainedBytes(value, limit) {
+  // Count conservatively without allocating a second full JSON string. Also
+  // bound traversal work for tiny-object-heavy payloads.
+  const stack = [value], seen = new WeakSet();
+  let bytes = 0, nodes = 0;
+  while (stack.length && bytes <= limit && ++nodes <= 100000) {
+    const item = stack.pop();
+    if (typeof item === 'string') bytes += 2 * item.length + 32;
+    else if (item && typeof item === 'object' && !seen.has(item)) {
+      seen.add(item); bytes += 64;
+      for (const key in item) {
+        if (++nodes > 100000) return limit + 1;
+        bytes += 2 * key.length + 16; stack.push(item[key]);
+      }
+    } else bytes += 8;
+  }
+  return stack.length || nodes > 100000 ? limit + 1 : bytes;
+}
 export class CacheMemo {
-  constructor(fetcher, publish = () => {}, now = () => Date.now() / 1000) {
+  constructor(fetcher, publish = () => {}, now = () => Date.now() / 1000,
+    limits = { entries: 300, bytes: 32 * 1024 * 1024, entryBytes: 4 * 1024 * 1024 }) {
     this.fetcher = fetcher; this.publish = publish; this.now = now; this.rows = new Map(); this.nextRevision = 0;
+    this.limits = limits;
     this.policy = { displaySeconds: 86400, freshnessSeconds: 600,
       resolvedFreshnessSeconds: 86400, resolvedCommentsFreshnessSeconds: 3600,
       metadataDisplaySeconds: 2592000, metadataFreshnessSeconds: 86400 };
@@ -48,11 +68,7 @@ export class CacheMemo {
         row.displayUntil = metadata?.displayUntil ?? (now + this.policy.displaySeconds);
         row.displayKind = metadata?.displayKind;
         if (revalidate) this.publish({ path, value });
-        // Prune only unused values past cold retention. Reads never delete a value
-        // merely because it is stale; a successful refresh replaces it in place.
-        if (this.rows.size > 300) for (const [key, cached] of this.rows) {
-          if (!cached.pending && cached.fetchedAt < now - 30 * 86400) this.rows.delete(key);
-        }
+        row.bytes = retainedBytes(value, this.limits.entryBytes);
         // A first request can itself be a server SWR hit; update this open view as well.
         needsRefresh = !revalidate && row.freshUntil < now;
         return value;
@@ -64,10 +80,25 @@ export class CacheMemo {
         throw error;
       }).finally(() => {
         if (row.pending === pending) row.pending = null;
+        this.trim();
         if (needsRefresh && this.rows.get(path) === row) queueMicrotask(() => this.fetch(path, row, opts, true).catch(() => {}));
       });
     row.pending = pending;
     return pending;
+  }
+  trim() {
+    // This releases browser RAM only. Persistent server snapshots keep their
+    // cold retention and can still render before upstream revalidation.
+    let bytes = 0;
+    for (const [key, row] of this.rows) {
+      if (!row.pending && row.bytes > this.limits.entryBytes) this.rows.delete(key);
+      else bytes += row.bytes || 0;
+    }
+    for (const [key, row] of this.rows) {
+      if (bytes <= this.limits.bytes && this.rows.size <= this.limits.entries) break;
+      if (row.pending) continue;
+      this.rows.delete(key); bytes -= row.bytes || 0;
+    }
   }
   configure(policy) {
     this.policy = policy;
@@ -109,8 +140,10 @@ export class CacheMemo {
     // required by freshness-sensitive reads. Fence any earlier pending request.
     this.rows.set(path, { value, fetchedAt: now, sourceFetchedAt: null,
       freshUntil: 0, displayUntil: now + this.policy.displaySeconds,
-      invalidated: true, revision: ++this.nextRevision, pending: null });
+      invalidated: true, revision: ++this.nextRevision, pending: null,
+      bytes: retainedBytes(value, this.limits.entryBytes) });
     this.publish({ path, value });
+    this.trim();
   }
   delete(path) { this.rows.delete(path); }
   clear() { this.rows.clear(); }
