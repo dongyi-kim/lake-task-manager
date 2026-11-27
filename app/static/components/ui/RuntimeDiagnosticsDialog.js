@@ -5,6 +5,8 @@ const EVENTS = {
   worker_started: "앱 시작", worker_stopped: "앱 중지", worker_spawned: "앱 실행",
   worker_exit: "앱 종료", worker_recovery: "앱 복구", worker_cooldown: "복구 대기",
   worker_spawn_failed: "앱 실행 실패", fatal_error: "프로세스 오류",
+  browser_recovery_started: "앱 창 복구", browser_recovery_completed: "앱 창 복구 완료",
+  browser_recovery_failed: "앱 창 복구 실패", browser_recovery_cancelled: "앱 창 복구 중지",
   mcp_recovery_started: "MCP 복구", mcp_recovery_completed: "MCP 복구 완료",
   mcp_recovery_failed: "MCP 복구 실패", mcp_worker_started: "MCP 시작",
 };

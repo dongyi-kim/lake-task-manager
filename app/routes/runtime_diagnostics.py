@@ -15,7 +15,7 @@ from app.local_mcp.security import local_request_error
 
 MAX_READ_BYTES = 256 * 1024
 MAX_RECORDS = 200
-LOG_FILES = tuple(f"{name}.jsonl{suffix}" for name in ("worker", "supervisor", "failures", "launcher-failures")
+LOG_FILES = tuple(f"{name}.jsonl{suffix}" for name in ("worker", "supervisor", "browser", "failures", "launcher-failures")
                   for suffix in ("", ".1", ".2")) + tuple(
     f"fatal-{role}.log{suffix}" for role in ("worker", "launcher") for suffix in ("", ".1"))
 HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}

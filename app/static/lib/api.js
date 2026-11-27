@@ -7,10 +7,10 @@ import { createAuthRecovery } from "./apiAuth.js";
 // updated: 2026-07-09
 import { clearPendingMutation, loadPendingMutation, newMutationId,
          savePendingMutation } from "./mutationId.js";
-const REQUEST_TIMEOUT_MS = 35 * 1000;
-// 타임라인은 보조 정보이고 하위 changelog까지 모아 일반 조회보다 비싸다. 이 요청 하나가
-// 다이얼로그를 오래 붙잡지 않게 더 짧게 끊고, 해당 패널에서만 다시 시도하게 한다.
-const TIMELINE_TIMEOUT_MS = 15 * 1000;
+// One total deadline covers browser admission, network/auth/retries and body parsing.
+// Slow Jira waits asynchronously; the request pools keep admitted work bounded.
+const REQUEST_TIMEOUT_MS = 240 * 1000;
+const TIMELINE_TIMEOUT_MS = 240 * 1000;
 const readPool = new RequestPool(6, 32);
 const writePool = new RequestPool(2, 0);
 const controlPool = new RequestPool(2, 8);
@@ -668,7 +668,7 @@ export const api = {
     fd.append("file", file, file.name || "paste.png");
     fd.append("clientMutationId", mutationId);
     return req("/api/ticket/" + encodeURIComponent(key) + "/attachment",
-               { method: "POST", body: fd, timeoutMs: 16 * 60 * 1000, mutation: true })
+               { method: "POST", body: fd, timeoutMs: 18 * 60 * 1000, mutation: true })
       .then((r) => {
         try { sessionStorage.removeItem(storageKey); } catch (_) { /* noop */ }
         evict(encodeURIComponent(key)); return r;

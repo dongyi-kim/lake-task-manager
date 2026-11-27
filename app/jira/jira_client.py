@@ -631,6 +631,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self._bg_lock = threading.Lock()
         self._bg_pool = None
         self._bg_inflight = set()
+        self._timeline_failures = {}  # Bounded scalar failures, never exceptions/tracebacks.
         # 포커스 복귀가 여러 번 겹치거나 브라우저 탭이 둘 이상이어도 /myself 확인과
         # silent SSO 갱신은 하나만 수행한다. 겹친 요청에는 pending 또는 직전 결과를 반환한다.
         self._auth_probe_lock = threading.Lock()
@@ -1142,6 +1143,66 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     self.cache.refresh(key, ttl, producer)
 
         self._submit_bg(key, refresh)
+
+    def _deferred_timeline_part(self, key, producer):
+        value = self.cache.get(key)
+        if value is not None:
+            return value
+        stale = self.cache.get_stale(key)
+        scope = (self.cache.fence(), self._provider_generation)
+        unbuilt = not self._provider_built
+        auth_epoch = getattr(self, "_auth_proof_epoch", 0)
+        now = time.monotonic()
+        with self._bg_lock:
+            failure = self._timeline_failures.get(key)
+            if failure and (failure[0] <= now or failure[1] != scope
+                            or (failure[2] == "auth" and failure[4] != auth_epoch)):
+                self._timeline_failures.pop(key, None)
+                failure = None
+        if failure:
+            if stale is not None:
+                return stale
+            kind, status = failure[2:4]
+            message = "타임라인 조회에 실패했습니다. 잠시 후 다시 시도해 주세요."
+            if kind == "auth":
+                raise SessionExpired(message)
+            if kind == "permission":
+                raise PermissionDenied("timeline")
+            if kind == "status":
+                raise UpstreamError(status, "timeline")
+            if kind == "busy":
+                raise UpstreamBusy(message)
+            raise UpstreamUnavailable(message)
+
+        def guarded():
+            try:
+                value = producer()
+            except Exception as exc:
+                status = getattr(exc, "status", None)
+                kind = ("permission" if isinstance(exc, (PermissionDenied, PermissionError)) else
+                        "status" if isinstance(exc, UpstreamError) else
+                        "auth" if isinstance(exc, SessionExpired) else
+                        "busy" if isinstance(exc, UpstreamBusy) else "transport")
+                if kind == "status" and status == 401:
+                    kind = "auth"
+                failure_scope = scope
+                # A first lazy provider publication is not a login/reset. Keep
+                # its failure cooldown, but never adopt a later reset's scope.
+                if (unbuilt and self._provider_built
+                        and self._provider_generation == scope[1] + 1):
+                    failure_scope = (scope[0], self._provider_generation)
+                with self._bg_lock:
+                    # A long UI wait must not resubmit an already failed Jira lookup on every poll.
+                    if len(self._timeline_failures) >= 128:
+                        self._timeline_failures.pop(next(iter(self._timeline_failures)))
+                    self._timeline_failures[key] = (time.monotonic() + 30, failure_scope, kind, status, auth_epoch)
+                raise
+            with self._bg_lock:
+                self._timeline_failures.pop(key, None)
+            return value
+
+        self._refresh_bg(key, self.s.cache_ttl_seconds, guarded)
+        return stale
 
     def _submit_bg(self, key, producer):
         """One bounded, deduplicated queue shared by SWR and post-write refresh."""
@@ -2558,6 +2619,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     UI_COMMENT_MAX_BYTES = 1024 * 1024
     UI_COMMENT_MAX_ROW_BYTES = 128 * 1024
     UI_COMMENT_SECONDS = 10
+    UI_COMMENT_COLLECTION_SECONDS = 240
     UI_DESCRIPTION_MAX_BYTES = 512 * 1024
     UI_ISSUE_SOURCE_MAX_BYTES = 8 * 1024 * 1024
 
@@ -2804,7 +2866,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         if type(start_at) is not int or start_at < 0 or type(max_results) is not int or not 1 <= max_results <= 20:
             raise ValueError("Invalid comment page bounds")
         resource_pressure.check()
-        started, fence = time.monotonic(), self.cache.fence()
+        fence = self.cache.fence()
         data = self.provider.get_json(f"/rest/api/2/issue/{key}/comment", params={
             "startAt": start_at, "maxResults": max_results, "orderBy": "-created", "expand": "renderedBody"})
         if self._looks_anonymous(data):
@@ -2820,6 +2882,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         if not valid:
             return {**self._incomplete_ui_comments(key, [], total, "invalid_page"),
                     "startAt": start_at, "sourceReturned": 0, "pageComplete": False, "nextStartAt": None}
+        started = time.monotonic()  # Network time has its own provider deadline.
         rows, skipped, used, reason = [], [], 2, ""
         for raw in raw_rows:
             resource_pressure.check()
@@ -2895,13 +2958,17 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         reason = ""
         error = ""
         started = time.monotonic()
+        processing_seconds = 0
         used_bytes = 2
         fence = self.cache.fence() if _for_ui else None
         try:
             while maximum is None or len(rows) < maximum:
                 if _for_ui:
                     resource_pressure.check()
-                    if time.monotonic() - started >= self.UI_COMMENT_SECONDS:
+                    if time.monotonic() - started >= self.UI_COMMENT_COLLECTION_SECONDS:
+                        reason = "collection_deadline"
+                        break
+                    if processing_seconds >= self.UI_COMMENT_SECONDS:
                         reason = "time_budget"
                         break
                 data = self.provider.get_json(
@@ -2934,10 +3001,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     break
                 pages += 1
                 duplicate = False
+                processing_started = time.monotonic()
                 for comment in raw_page:
                     if _for_ui:
                         resource_pressure.check()
-                        if time.monotonic() - started >= self.UI_COMMENT_SECONDS:
+                        if processing_seconds + time.monotonic() - processing_started >= self.UI_COMMENT_SECONDS:
                             reason = "time_budget"
                             break
                     comment_id = str(comment.get("id") or "")
@@ -2958,6 +3026,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                         break
                     if maximum is not None and len(rows) >= maximum:
                         break
+                processing_seconds += time.monotonic() - processing_started
                 if duplicate:
                     reason = "duplicate_page"
                     break
@@ -4948,7 +5017,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # name for offline fallback, but evict malformed/key-only rows before get_or_set sees them.
         stale = self.cache.get_stale(cache_key)
         if stale is not None and not self._usable_epic_metadata(stale, key):
-            self.cache.invalidate_keys([cache_key])
+            self.cache.forget(cache_key)
 
         def produce():
             return self._fetch_epic_metadata(key)
@@ -5894,21 +5963,15 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         self_key = f"timeline:{self.env}:{key}:self:v2"
         children_key = f"timeline:{self.env}:{key}:children:v2"
         if defer and not current_read_policy().explicit:
-            own = self.cache.get(self_key)
+            own = self._deferred_timeline_part(self_key, build_self)
             if own is None:
-                own = self.cache.get_stale(self_key)
-                self._refresh_bg(self_key, self.s.cache_ttl_seconds, build_self)
-                if own is None:
-                    return None
+                return None
             if not include_children:
                 return merge(own, [])
 
-            children = self.cache.get(children_key)
+            children = self._deferred_timeline_part(children_key, build_children)
             if children is None:
-                children = self.cache.get_stale(children_key)
-                self._refresh_bg(children_key, self.s.cache_ttl_seconds, build_children)
-                if children is None:
-                    return None
+                return None
             return merge(own, children)
 
         own = self._swr(self_key, build_self)

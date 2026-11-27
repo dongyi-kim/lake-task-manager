@@ -12,8 +12,11 @@ from app.local_mcp.read_tools import register_reads
 ])
 def test_large_ticket_projection_only_renders_the_requested_body(build_env, monkeypatch, detail, body_field):
     env = build_env()
-    # More than 1 MiB, with distinct trailing content to catch accidental clipping.
-    text = "complete large description " * 45000 + "TAIL-OF-COMPLETE-DESCRIPTION"
+    # Exercise a substantial permitted body separately from explicit oversize
+    # omission/refusal tests. A trailing marker still detects accidental clipping.
+    chunk = "complete large description "
+    body_bytes = min(1200000, env.client.UI_DESCRIPTION_MAX_BYTES - 1024)
+    text = chunk * (body_bytes // len(chunk)) + "TAIL-OF-COMPLETE-DESCRIPTION"
     raw = {"key": "DL-1", "fields": {
         "summary": "Large description", "description": text,
         "issuetype": {"name": "Task"},
@@ -67,7 +70,7 @@ def test_large_ticket_projection_only_renders_the_requested_body(build_env, monk
         assert result[body_field] == full[body_field]
         assert result[body_field].endswith("TAIL-OF-COMPLETE-DESCRIPTION</p>")
     assert raw["fields"]["description"] is text
-    # The projection is response-only: the original raw body and default UI stay complete.
+    # The projection is response-only: permitted raw bodies and default UI stay complete.
     monkeypatch.undo()
     monkeypatch.setattr(env.client, "_get_issue_view", upstream)
     assert env.client.ticket_view("DL-1") == full

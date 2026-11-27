@@ -14,13 +14,15 @@ import pytest
 
 from support.paths import REPO_ROOT
 from app.launcher import runtime_health
+from app.launcher.window_recovery import BrowserOwnerProbe, WindowSessionFailure, run_window_recovery
 
 
 def launcher_functions(*names):
     tree = ast.parse((REPO_ROOT / "run.py").read_text(encoding="utf-8"))
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {"threading": threading, "time": time, "sys": sys,
-                 "_APP_WINDOW_LOCK": threading.Lock(), "_WINDOW_ICONS": {}, "_BOOT_DATA_URL": "data:text/html,boot"}
+                 "_APP_WINDOW_LOCK": threading.Lock(), "_WINDOW_ICONS": {}, "_BOOT_DATA_URL": "data:text/html,boot",
+                 "WindowSessionFailure": WindowSessionFailure}
     namespace["runtime_failures"] = []
     namespace["_record_runtime_failure"] = lambda component, error: namespace["runtime_failures"].append(
         (component, type(error).__name__))
@@ -77,7 +79,8 @@ def test_navigation_has_one_deadline_without_unbounded_evaluate():
     assert max(budgets) <= 2000
 
 
-def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closing=None, browser_crash=False):
+def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closing=None, browser_crash=False,
+                   cleanup_error=False):
     ns = launcher_functions("_window_session", "_check_server")
     events, profiles = [], []
     main = ModuleType("app.main")
@@ -100,7 +103,7 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
             ns.setdefault("clipboard_grants", []).append((permissions, origin))
 
         def wait_for_event(self, name, timeout):
-            if browser_crash:
+            if browser_crash and (not callable(browser_crash) or browser_crash()):
                 handlers["crash"]()
                 closed[0] = True
                 raise RuntimeError("closed after renderer crash")
@@ -109,12 +112,15 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
 
         def close(self):
             events.append(("context.close", threading.get_ident()))
+            if cleanup_error:
+                raise RuntimeError("injected cleanup failure")
             if closing:
                 closing[0].set()
                 assert closing[1].wait(2)
 
     def launch(**kwargs):
         profiles.append(kwargs["user_data_dir"])
+        closed[0] = False
         if launch_error:
             raise RuntimeError("injected persistent profile lock")
         return Context()
@@ -134,14 +140,145 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
     return ns, events, profiles
 
 
-def test_renderer_crash_followed_by_page_close_is_saved_and_marks_window_failed(monkeypatch):
+def test_renderer_crash_followed_by_page_close_is_saved_and_allows_local_recovery(monkeypatch):
     ns, _events, _profiles = window_harness(monkeypatch, browser_crash=True)
     phases = []
     ns["_window_phase"] = lambda phase, *args: phases.append(phase)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(WindowSessionFailure) as caught:
         ns["_window_session"](SimpleNamespace(app_port=4457, jira_env="mock"))
     assert ns["runtime_failures"] == [("browser", "RuntimeError")]
-    assert phases[-1] == "failed"
+    assert caught.value.cleanup_confirmed and phases[-1] == "recovering"
+
+
+def test_real_window_session_recreates_only_after_owner_cleanup_and_keeps_server_running(monkeypatch):
+    crashes = [True, False]
+    ns, events, profiles = window_harness(monkeypatch, browser_crash=lambda: crashes.pop(0))
+    clock, recovery = [0.0], []
+    settings = SimpleNamespace(app_port=4457, jira_env="mock")
+    server = SimpleNamespace(should_exit=False, _ltm_stopped=threading.Event())
+
+    def session(*, on_ready):
+        return ns["_window_session"](settings, server=server, on_ready=on_ready)
+
+    assert run_window_recovery(session, should_stop=lambda: server.should_exit,
+        clock=lambda: clock[0], wait=lambda delay: clock.__setitem__(0, clock[0] + delay),
+        record=lambda event, **fields: recovery.append(event))
+    assert profiles == [str(Path("persistent-profile"))] * 2
+    assert [name for name, _thread in events] == ["opened", "closed", "context.close", "playwright.stop"] * 2
+    assert all(thread_id == threading.get_ident() for _name, thread_id in events)
+    assert not server.should_exit and not server._ltm_stopped.is_set()
+    assert recovery == ["browser_recovery_started", "browser_recovery_completed"]
+
+
+def test_failed_context_cleanup_retains_profile_lease_and_requires_process_recovery(monkeypatch):
+    ns, _events, profiles = window_harness(monkeypatch, cleanup_error=True)
+    phases = []
+    ns["_window_phase"] = lambda phase, *args: phases.append(phase)
+    settings = SimpleNamespace(app_port=4457, jira_env="mock")
+    with pytest.raises(WindowSessionFailure) as caught:
+        ns["_window_session"](settings)
+    assert not caught.value.cleanup_confirmed and phases[-1] == "failed"
+    assert ns["_APP_WINDOW_LOCK"].locked()
+    assert ns["_window_session"](settings) is False
+    assert len(profiles) == 1
+
+
+@pytest.mark.parametrize("driver_exit,browser_exit,termination_status,stop_raises,reason,confirmed", [
+    (None, 0, 0, False, None, True),
+    (None, 17, 17, False, "browser_crash", True),
+    (None, None, 17, True, "cleanup_failed", False),
+    (17, 0, 0, True, "driver_disconnected", True),
+    (17, None, None, True, "cleanup_failed", False),
+])
+def test_closed_page_uses_owned_process_evidence_instead_of_assuming_user_intent(
+        monkeypatch, driver_exit, browser_exit, termination_status, stop_raises, reason, confirmed):
+    from app.launcher import window_recovery
+    ns, _events, _profiles = window_harness(monkeypatch)
+    probe = object.__new__(BrowserOwnerProbe)
+    probe._driver = SimpleNamespace(returncode=driver_exit)
+    probe._driver_error, probe._handle = None, None
+    probe._browser_exit = lambda: browser_exit
+    probe._browser_termination_status = lambda: termination_status
+    if driver_exit is None and termination_status == 17:
+        assert probe.failure_reason() == "browser_crash"
+    monkeypatch.setattr(window_recovery, "BrowserOwnerProbe", lambda *args: probe)
+    ns["_wire_external_links"] = lambda context, page: setattr(page, "is_closed", lambda: True)
+    if stop_raises:
+        def broken_stop():
+            raise RuntimeError("driver already exited")
+        p = sys.modules["playwright.sync_api"].sync_playwright().start()
+        p.stop = broken_stop
+    settings = SimpleNamespace(app_port=4457, jira_env="mock")
+    if reason is None:
+        assert ns["_window_session"](settings) is True
+        assert ns["runtime_failures"] == []
+    else:
+        with pytest.raises(WindowSessionFailure) as caught:
+            ns["_window_session"](settings)
+        assert caught.value.reason == reason and caught.value.cleanup_confirmed is confirmed
+    assert ns["_APP_WINDOW_LOCK"].locked() is not confirmed
+
+
+def test_user_page_close_during_navigation_never_respawns(monkeypatch):
+    ns, _events, profiles = window_harness(monkeypatch)
+    ns["_wire_external_links"] = lambda context, page: setattr(page, "is_closed", lambda: True)
+
+    def closed_navigation(*args):
+        raise RuntimeError("page closed during pending navigation")
+
+    ns["_navigate_app"] = closed_navigation
+    settings = SimpleNamespace(app_port=4457, jira_env="mock")
+    assert run_window_recovery(lambda **kwargs: ns["_window_session"](settings, **kwargs),
+                               should_stop=lambda: False) is False
+    assert len(profiles) == 1 and ns["runtime_failures"] == []
+
+
+@pytest.mark.parametrize("mode", ["tray", "nontray"])
+def test_production_window_wrapper_quit_and_server_stop_cancel_recovery(monkeypatch, mode):
+    from app.launcher import window_recovery
+    ns, _events, profiles = window_harness(monkeypatch, browser_crash=True)
+    tree = ast.parse((REPO_ROOT / "run.py").read_text(encoding="utf-8"))
+    wrapper = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_window_with_recovery")
+    nontray = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_app_window")
+    tray = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_tray")
+    open_callback = next(node for node in tray.body if isinstance(node, ast.FunctionDef) and node.name == "open_window")
+    quit_callback = next(node for node in tray.body if isinstance(node, ast.FunctionDef) and node.name == "on_quit")
+    exec(compile(ast.Module(body=[wrapper, nontray, open_callback, quit_callback], type_ignores=[]), "run.py", "exec"), ns)
+    server = SimpleNamespace(should_exit=False, _ltm_stopped=threading.Event())
+    window_stop, stopped, callbacks, recovery, hooks = threading.Event(), [], [], [], []
+    icon = SimpleNamespace(stop=lambda: stopped.append(1))
+    ns.update(server=server, window_stop=window_stop, _runtime_status=runtime_health.runtime_status,
+        _serve_bg=lambda *args, **kwargs: server, _warm_session_bg=lambda settings: None,
+        _hide_console_win=lambda: callbacks.append(1),
+        _record_browser_recovery=lambda event, **fields: recovery.append(event))
+    sys.modules["app.main"].set_runtime_health_hook = lambda hook: hooks.append(hook)
+    original = window_recovery.run_window_recovery
+    forwarded, clock = [], [0.0]
+
+    def wait(delay):
+        clock[0] += delay
+        if mode == "tray":
+            ns["on_quit"](icon, None)
+        else:
+            server.should_exit = True
+        return False
+
+    def controlled(session, **kwargs):
+        forwarded.append(kwargs)
+        return original(session, clock=lambda: clock[0], wait=wait, **kwargs)
+
+    monkeypatch.setattr(window_recovery, "run_window_recovery", controlled)
+    settings = SimpleNamespace(app_port=4457, jira_env="mock")
+    if mode == "tray":
+        ns.update(s=settings, _open={"t": 0.0, "ready": True}, _OPEN_MIN=1.5, _OPEN_WAIT=15.0,
+            threading=SimpleNamespace(Thread=lambda **kwargs: SimpleNamespace(start=kwargs["target"])))
+        ns["open_window"](initial=True)
+        assert forwarded[0]["stop_event"] is window_stop and window_stop.is_set() and stopped == [1]
+    else:
+        ns["_run_app_window"](settings)
+        assert hooks == [runtime_health.runtime_status]
+    assert server.should_exit and len(profiles) == 1 and callbacks == [1]
+    assert recovery == ["browser_recovery_started", "browser_recovery_cancelled"]
 
 
 @pytest.mark.parametrize("driver_error,launch_error,port", [(False, False, 4457), (True, False, 4567), (False, True, 4457)])
@@ -215,7 +352,7 @@ def test_native_window_icon_messages_have_a_timeout(monkeypatch):
 
 
 @pytest.mark.parametrize("phase,timeout", [("starting", 60), ("running", 15), ("closing", 60),
-                                          ("login", 360), ("download", 900)])
+                                          ("login", 360), ("download", 900), ("recovering", 90)])
 def test_window_health_respects_operation_deadlines(monkeypatch, phase, timeout):
     clock = [0.0]
     monkeypatch.setattr(runtime_health, "time", SimpleNamespace(monotonic=lambda: clock[0]))
@@ -246,6 +383,27 @@ def test_native_tray_probe_only_targets_own_hwnd_and_skips_unsupported(monkeypat
     assert runtime_health.probe_tray_pump(SimpleNamespace()) is None
     monkeypatch.setattr(ctypes, "windll", SimpleNamespace(), raising=False)
     assert runtime_health.probe_tray_pump(SimpleNamespace(_hwnd=123)) is None
+
+
+def test_recovering_browser_preserves_liveness_only_while_tray_and_owner_are_responsive(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(runtime_health, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(runtime_health, "_window_runtime", ("closed", 0))
+    runtime_health.window_phase("recovering", 90)
+    state = runtime_health.runtime_status({"healthy": True, "at": clock[0]})
+    assert state["healthy"] and state["windowHealthy"] and state["windowRecovering"]
+    assert not runtime_health.runtime_status({"healthy": False, "at": clock[0]})["healthy"]
+    clock[0] += 91
+    assert not runtime_health.runtime_status({"healthy": True, "at": clock[0]})["healthy"]
+
+
+def test_nontray_window_owner_deadlines_are_reported_to_process_liveness(monkeypatch):
+    monkeypatch.setattr(runtime_health, "_window_runtime", ("closed", 0))
+    runtime_health.window_phase("recovering", 60)
+    assert runtime_health.runtime_status()["healthy"]
+    assert "trayHealthy" not in runtime_health.runtime_status()
+    runtime_health.window_phase("failed")
+    assert not runtime_health.runtime_status()["healthy"]
 
 
 def test_blocking_tray_job_does_not_block_callbacks_and_coalesces_duplicates():
@@ -308,7 +466,9 @@ def test_update_launch_starts_its_own_supervisor(monkeypatch):
     tray = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_tray")
     restart = next(node for node in tray.body if isinstance(node, ast.FunctionDef) and node.name == "restart")
     server = SimpleNamespace(should_exit=False)
-    ns = {"os": os, "sys": sys, "server": server, "_launcher_bat": lambda: REPO_ROOT / "run.py"}
+    window_stop = threading.Event()
+    ns = {"os": os, "sys": sys, "server": server, "window_stop": window_stop,
+          "_launcher_bat": lambda: REPO_ROOT / "run.py"}
     exec(compile(ast.Module(body=[restart], type_ignores=[]), "run.py", "exec"), ns)
     seen = []
     monkeypatch.setenv("LAKE_SUPERVISED_WORKER", "previous-worker-nonce")
@@ -318,7 +478,7 @@ def test_update_launch_starts_its_own_supervisor(monkeypatch):
     ns["restart"](SimpleNamespace(stop=stopped.set))
     assert "LAKE_SUPERVISED_WORKER" not in seen[0]["env"]
     assert seen[0]["env"]["LAKE_RESTART"] == "1"
-    assert server.should_exit and stopped.is_set()
+    assert server.should_exit and stopped.is_set() and window_stop.is_set()
 
 
 def test_slow_login_fallback_keeps_full_interactive_allowance_healthy(monkeypatch):

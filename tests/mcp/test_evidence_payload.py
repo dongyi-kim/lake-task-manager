@@ -3,7 +3,6 @@
 import copy
 import hashlib
 import json
-from types import SimpleNamespace
 
 import pytest
 import anyio
@@ -13,13 +12,8 @@ from mcp import Client
 from app.jira.evidence_service import get_evidence_page
 
 
-def client_for(kind, rows, source_cap=100):
-    cached, calls = {}, []
-
-    def get_or_set(key, ttl, producer):
-        if key not in cached:
-            cached[key] = producer()
-        return cached[key], False
+def client_for(factory, kind, rows, source_cap=100):
+    calls = []
 
     def get_json(path, params):
         calls.append(copy.deepcopy(params))
@@ -29,10 +23,9 @@ def client_for(kind, rows, source_cap=100):
                     "comments": copy.deepcopy(rows[start:start + size])}
         return {"changelog": {"startAt": 0, "total": len(rows), "histories": copy.deepcopy(rows)}}
 
-    return SimpleNamespace(env="mock", s=SimpleNamespace(cache_ttl_seconds=60),
-        cache=SimpleNamespace(get_or_set_strict=get_or_set),
-        provider=SimpleNamespace(get_json=get_json), _looks_anonymous=lambda data: False,
-        source_calls=calls)
+    client = factory(get_json, cache_ttl_seconds=60)
+    client.source_calls = calls
+    return client
 
 
 def assert_bounded(page):
@@ -40,9 +33,9 @@ def assert_bounded(page):
     assert page["complete"] and page["sourceComplete"] and not page["partial"]
 
 
-def test_evidence_page_stops_between_records_without_skipping_or_truncating():
+def test_evidence_page_stops_between_records_without_skipping_or_truncating(jira_client_factory):
     rows = [{"id": str(index), "body": "본문 " * 150} for index in range(20)]
-    client = client_for("comments", rows)
+    client = client_for(jira_client_factory, "comments", rows)
     start, collected, pages = 0, [], []
     while True:
         page = get_evidence_page(client, "DL-1", start_at=start)
@@ -59,9 +52,9 @@ def test_evidence_page_stops_between_records_without_skipping_or_truncating():
 
 
 @pytest.mark.parametrize("source_cap", [100, 17])
-def test_adaptive_comment_pages_reuse_aligned_source_and_respect_server_clamps(source_cap):
+def test_adaptive_comment_pages_reuse_aligned_source_and_respect_server_clamps(source_cap, jira_client_factory):
     rows = [{"id": str(index), "body": "세부 근거 " * 100} for index in range(205)]
-    client = client_for("comments", rows, source_cap=source_cap)
+    client = client_for(jira_client_factory, "comments", rows, source_cap=source_cap)
     start, collected = 0, []
     while True:
         page = get_evidence_page(client, "DL-1", start_at=start)
@@ -100,7 +93,7 @@ def test_205_real_jira_comments_need_only_three_upstream_pages(build_env):
 
 
 @pytest.mark.parametrize("kind", ["comments", "history"])
-def test_large_unicode_record_roundtrips_all_json_chunks(kind):
+def test_large_unicode_record_roundtrips_all_json_chunks(kind, jira_client_factory):
     text = '한글🙂 e\u0301 "인용" \\ 경로\n' * 3000
     record = {"id": "17", "author": {"name": "alice", "displayName": "작성자"},
               "created": "2026-11-04T09:00:00+09:00"}
@@ -108,7 +101,7 @@ def test_large_unicode_record_roundtrips_all_json_chunks(kind):
         record.update(body=text, renderedBody="<p>" + text + "</p>")
     else:
         record["items"] = [{"field": "description", "fromString": text, "toString": text[::-1]}]
-    client = client_for(kind, [record])
+    client = client_for(jira_client_factory, kind, [record])
     offset, fragments, digests = 0, [], set()
     while True:
         page = get_evidence_page(client, "DL-1", kind=kind, max_results=1, record_offset=offset)
@@ -132,10 +125,10 @@ def test_large_unicode_record_roundtrips_all_json_chunks(kind):
     assert len(client.source_calls) == 1
 
 
-def test_oversized_middle_record_keeps_collection_cursor_until_its_final_chunk():
+def test_oversized_middle_record_keeps_collection_cursor_until_its_final_chunk(jira_client_factory):
     rows = [{"id": "1", "body": "before"}, {"id": "2", "body": "large " * 6000},
             {"id": "3", "body": "after"}]
-    client = client_for("comments", rows)
+    client = client_for(jira_client_factory, "comments", rows)
     first = get_evidence_page(client, "DL-1")
     assert_bounded(first)
     assert [row["id"] for row in first["items"]] == ["1"] and first["nextStartAt"] == 1
@@ -158,13 +151,12 @@ def test_oversized_middle_record_keeps_collection_cursor_until_its_final_chunk()
     assert len(client.source_calls) == 1
 
 
-def test_record_digest_exposes_edits_between_continuation_reads():
+def test_record_digest_exposes_edits_between_continuation_reads(jira_client_factory):
     rows = [{"id": "1", "body": "old " * 6000}]
-    client = client_for("comments", rows)
-    # Simulate cache invalidation after a successful comment edit.
-    client.cache.get_or_set_strict = lambda key, ttl, producer: (producer(), False)
+    client = client_for(jira_client_factory, "comments", rows)
     first = get_evidence_page(client, "DL-1", max_results=1)["items"][0]
     rows[0]["body"] = "new " * 6000
+    client.cache.invalidate("comments:mock:DL-1")
     second = get_evidence_page(client, "DL-1", max_results=1,
                               record_offset=first["nextRecordOffset"])["items"][0]
     assert first["id"] == second["id"] and first["totalCharacters"] == second["totalCharacters"]
@@ -173,20 +165,20 @@ def test_record_digest_exposes_edits_between_continuation_reads():
 
 @pytest.mark.parametrize("arguments", [{"record_offset": -1}, {"record_offset": True},
     {"max_results": 1, "record_offset": 1000000}])
-def test_record_continuation_rejects_invalid_ranges(arguments):
+def test_record_continuation_rejects_invalid_ranges(arguments, jira_client_factory):
     with pytest.raises(ValueError):
-        get_evidence_page(client_for("comments", [{"id": "1", "body": "hello"}]), "DL-1", **arguments)
+        get_evidence_page(client_for(jira_client_factory, "comments", [{"id": "1", "body": "hello"}]), "DL-1", **arguments)
 
 
 @pytest.mark.parametrize('kind,source_cap', [('comments', 100), ('comments', 17), ('history', 100)])
 @pytest.mark.parametrize('batch_size', [3, 100])
-def test_ready_continuation_roundtrips_middle_chunk_and_keeps_batch_size(kind, source_cap, batch_size):
+def test_ready_continuation_roundtrips_middle_chunk_and_keeps_batch_size(kind, source_cap, batch_size, jira_client_factory):
     text = '긴 원문🙂 "인용" \\ 줄\n' * 2000
     rows = [{'id': '0', 'body': 'before'}, {'id': '1', 'body': text},
             *[{'id': str(index), 'body': 'after'} for index in range(2, 32)]]
     if kind == 'history':
         rows = [{'id': row['id'], 'items': [{'field': 'description', 'toString': row['body']}]} for row in rows]
-    client = client_for(kind, rows, source_cap=source_cap)
+    client = client_for(jira_client_factory, kind, rows, source_cap=source_cap)
     arguments = {'key': 'DL-1', 'kind': kind, 'max_results': batch_size}
     collected, fragments, previous, resumed_batches = [], [], None, []
     for _ in range(100):

@@ -49,7 +49,9 @@ def test_local_history_keeps_instance_scope_without_jira_identity(people, monkey
             pytest.fail("Local history must not fetch identity")
         return original(path, **kwargs)
     monkeypatch.setattr(env.provider, "get_json", unavailable)
-    env.cache.invalidate(f"myself:{env.client.env}")
+    # Invalidation keeps a known cached actor available offline. This case
+    # specifically exercises an installation with no retained identity at all.
+    env.cache.forget(f"myself:{env.client.env}")
     env.client._session_dead = True
     assert context.record_person_event(env.client, settings, "sua.one", "selection", "obsolete-actor")
     env.client._session_dead = False

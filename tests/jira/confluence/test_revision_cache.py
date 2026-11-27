@@ -140,6 +140,11 @@ def test_30_day_retention_survives_purge_and_preserves_source_age(source, monkey
     source.cache.configure(CachePolicy(confluenceBodyRetentionSeconds=10 * 86400))
     assert source.cache.get(body_key) is None
     source.cache.purge()
+    # Shorter display eligibility does not erase a recently used source before
+    # the physical 30-day retention floor, nor rewrite its source timestamp.
+    assert source.cache.get_stale_at(body_key)[1] == now - 20 * 86400
+    now += 31 * 86400
+    source.cache.purge()
     assert source.cache.get_stale(body_key) is None
 
 

@@ -15,18 +15,21 @@ def window_phase(phase, timeout=0):
 
 def window_healthy():
     phase, deadline = _window_runtime
+    # A clean browser owner can recreate its session while the server/tray remain
+    # live. Failed cleanup or an overdue owner still requires process recovery.
     return phase == "closed" or (phase != "failed" and time.monotonic() <= deadline)
 
 
-def runtime_status(tray_probe):
+def runtime_status(tray_probe=None):
     phase, deadline = _window_runtime
     now = time.monotonic()
-    tray_age = max(0, now - tray_probe["at"])
+    tray_age = max(0, now - tray_probe["at"]) if tray_probe is not None else 0
     window_ok = window_healthy()
-    tray_ok = tray_probe["healthy"] and tray_age < 15
+    tray_ok = tray_probe is None or tray_probe["healthy"] and tray_age < 15
     return {"healthy": window_ok and tray_ok, "windowPhase": phase,
             "windowHealthy": window_ok, "windowOverdueSeconds": round(max(0, now - deadline), 2)
-            if phase != "closed" else 0, "trayHealthy": tray_ok, "trayProbeAgeSeconds": round(tray_age, 2)}
+            if phase != "closed" else 0, "windowRecovering": phase == "recovering",
+            **({"trayHealthy": tray_ok, "trayProbeAgeSeconds": round(tray_age, 2)} if tray_probe is not None else {})}
 
 
 def probe_tray_pump(icon):

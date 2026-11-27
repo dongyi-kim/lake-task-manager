@@ -2,19 +2,16 @@
 from copy import deepcopy
 import hashlib
 import json
-from types import SimpleNamespace
 
 import pytest
 
-from app.infra.cache import Cache
 from app.infra.cache_policy import read_scope
 from app.jira.evidence_service import get_evidence_page
 from app.local_mcp.schemas.tickets import EvidencePage
 
 
 @pytest.fixture
-def source_client():
-    cache = Cache(":memory:")
+def source_client(jira_client_factory):
     rows, calls = [], []
     def fetch(path, params):
         calls.append((path, deepcopy(params)))
@@ -22,10 +19,8 @@ def source_client():
             start = params['startAt']
             return {'startAt': start, 'total': len(rows), 'comments': deepcopy(rows[start:start + 100])}
         return {'changelog': {'startAt': 0, 'total': len(rows), 'histories': deepcopy(rows)}}
-    client = SimpleNamespace(env='mock', s=SimpleNamespace(cache_ttl_seconds=600), cache=cache,
-                             provider=SimpleNamespace(get_json=fetch), _looks_anonymous=lambda _: False)
+    client = jira_client_factory(fetch)
     yield client, rows, calls
-    cache.close()
 
 
 def actor(identity):

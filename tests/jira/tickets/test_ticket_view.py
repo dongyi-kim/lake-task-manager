@@ -5,6 +5,7 @@ mock(jira820 renderedFields) 경유로 실제 렌더된다.
 """
 import os
 import sys
+from html.parser import HTMLParser
 
 from app.infra.cache import Cache            # noqa: E402
 from app.jira.jira_client import JiraClient, _build_ticket_view   # noqa: E402
@@ -128,6 +129,17 @@ def _key_of_type(t):
     raise AssertionError("no issue of type " + t)
 
 
+def _assert_static_read_image(html):
+    images = []
+    class Images(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "img":
+                images.append(dict(attrs))
+    Images().feed(html)
+    image = next(row for row in images if row.get("src") == "/ticket-sample.svg")
+    assert image["loading"] == "lazy" and image["decoding"] == "async"
+
+
 def test_mock_bug_description_has_rich_elements():
     v = _client().ticket_view(_key_of_type("Bug"))
     assert v is not None
@@ -136,7 +148,7 @@ def test_mock_bug_description_has_rich_elements():
     assert "<table " in html and "<th " in html           # 표
     assert '<pre class="jecodeblock">' in html and "<code" in html  # 코드블록
     assert "callout callout-warning" in html              # 콜아웃
-    assert '<img src="/ticket-sample.svg"' in html        # 이미지(오프라인)
+    _assert_static_read_image(html)                      # 이미지(오프라인)
     assert "<ol>" in html                                  # 번호 목록(재현 절차)
     assert 'class="conf-link"' in html                     # Confluence 링크 뱃지(런북, URL 판별)
     assert 'class="user-hover"' in html                    # 맨션(실 Jira 프로필 앵커)
@@ -148,7 +160,7 @@ def test_mock_story_description_has_quote_and_code():
     html = v["descriptionHtml"]
     assert "<blockquote>" in html                          # 인용
     assert '<pre class="jecodeblock">' in html               # 코드
-    assert '<img src="/ticket-sample.svg"' in html
+    _assert_static_read_image(html)
     assert "<script" not in html.lower()
 
 
@@ -198,7 +210,7 @@ def test_mock_does_not_proxy_app_static_images():
     # 앱이 직접 서빙하는 static 이미지는 dev 에서 프록시로 바꾸지 않는다(그대로 로드된다)
     v = _client().ticket_view(_key_of_type("Bug"))
     assert "/api/img?u=" not in v["descriptionHtml"]
-    assert '<img src="/ticket-sample.svg"' in v["descriptionHtml"]
+    _assert_static_read_image(v["descriptionHtml"])
 
 
 def test_mock_proxies_jira_attachment_images():

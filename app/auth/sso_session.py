@@ -81,11 +81,14 @@ class SsoSessionProvider(AuthProvider):
 
     supports_parallel = False
 
-    # Playwright 기본 30초보다 짧게 명시한다. 상류가 끊겼을 때 첫 실패를 유한 시간 안에
-    # 확정해야 큐에 매달린 나머지 FastAPI worker 도 함께 풀어 줄 수 있다.
-    REQUEST_TIMEOUT_MS = 20_000
+    # Slow Jira is allowed to finish without growing concurrency. Queue delay
+    # and actual execution have independent finite budgets.
+    REQUEST_TIMEOUT_MS = 120_000
+    AUTH_PROBE_TIMEOUT_MS = 20_000
     START_TIMEOUT = 20
-    JOB_TIMEOUT = 30
+    QUEUE_TIMEOUT = 60
+    JOB_TIMEOUT = 150
+    RENEW_TIMEOUT = 30
     MAX_QUEUED_JOBS = 32
     MAX_LIVE_OWNERS = 2
 
@@ -255,7 +258,10 @@ class SsoSessionProvider(AuthProvider):
         box = [None, None]   # [result, error]
         job_lock = threading.Lock()
         limit = wait if wait else self.JOB_TIMEOUT      # 업로드는 크기에 맞춘 한도를 받는다
-        queue_deadline = _time.monotonic() + limit
+        # Explicit short deadlines still apply to queueing; a long upload must
+        # not expand how long an unstarted write can wait behind another job.
+        queue_limit = min(limit, self.QUEUE_TIMEOUT)
+        queue_deadline = _time.monotonic() + queue_limit
         job_state = {"started": False, "started_at": None, "cancelled": False, "dispatched": False}
 
         def execute():
@@ -285,7 +291,7 @@ class SsoSessionProvider(AuthProvider):
         if self.broken:
             # Retirement may have raced the initial health check before this enqueue.
             self._mark_broken(self._broken_reason)
-        if not done.wait(limit):
+        if not done.wait(queue_limit):
             with job_lock:
                 if not job_state["started"]:
                     job_state["cancelled"] = True
@@ -389,7 +395,7 @@ class SsoSessionProvider(AuthProvider):
             return None
         try:
             probe = self._context.request.get(
-                self.base + "/rest/api/2/myself", timeout=self.REQUEST_TIMEOUT_MS)
+                self.base + "/rest/api/2/myself", timeout=self.AUTH_PROBE_TIMEOUT_MS)
         except Exception:
             return None
         with _response_body(probe):
@@ -500,7 +506,7 @@ class SsoSessionProvider(AuthProvider):
         check_create_body(method, path, json_body)
         url = path if path.startswith(("http://", "https://")) else self.base + path
         fn = getattr(self._context.request, method)     # post/put/delete
-        kw = {"params": params or {}, "headers": self._xsrf_headers(url)}
+        kw = {"params": params or {}, "headers": self._xsrf_headers(url), "timeout": self.REQUEST_TIMEOUT_MS}
         if json_body is not None:
             kw["data"] = _json.dumps(json_body)          # data=dict 인코딩 어긋남 방지 → 명시 직렬화
         with _response_body(fn(url, **kw)) as resp:
@@ -571,7 +577,7 @@ class SsoSessionProvider(AuthProvider):
         # ★ Playwright 의 request 타임아웃 기본값은 **30초**다. 12MB 짜리 첨부가 사내망에서
         #   그 안에 안 올라가 'Timeout 30000ms exceeded' 로 죽었다(리포트된 버그).
         #   업로드 시간은 파일 크기에 비례하므로 크기로 정한다 — 최소 2분, 1MB 당 +20초,
-        #   상한 15분. 큐 대기(JOB_TIMEOUT)와는 다른 층이라 그쪽도 함께 늘려야 의미가 있다.
+        #   상한 15분. 실행 예산은 여기에 맞추되 큐 대기는 QUEUE_TIMEOUT으로 따로 제한한다.
         up_timeout = self._upload_timeout_ms(len(data or b""))
         with ExitStack() as responses:
             resp = responses.enter_context(_response_body(self._context.request.post(
@@ -628,8 +634,8 @@ class SsoSessionProvider(AuthProvider):
 
     def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
         # params 는 첨부 업로드에선 쓰지 않으나 인터페이스 통일용으로 받는다.
-        # 큐 대기 한도(JOB_TIMEOUT)도 업로드에 맞춰 늘린다 — 요청 자체는 15분까지 기다릴 수
-        # 있는데 큐가 180초에 끊어 버리면 결국 같은 실패가 된다(층이 둘이라 둘 다 맞춰야 한다).
+        # Upload execution can take up to 15 minutes plus cleanup. Unstarted
+        # uploads retain the same queue bound as ordinary writes.
         return self._submit(lambda: self._write_multipart(path, field, filename, data, content_type),
                             PRIO_WRITE,
                             wait=self._upload_timeout_ms(len(data or b"")) / 1000 + 30,
@@ -646,7 +652,7 @@ class SsoSessionProvider(AuthProvider):
             def identity_probe():
                 try:
                     with _response_body(self._context.request.get(
-                            self.base + "/rest/api/2/myself", timeout=self.REQUEST_TIMEOUT_MS,
+                            self.base + "/rest/api/2/myself", timeout=self.AUTH_PROBE_TIMEOUT_MS,
                             max_redirects=0, max_retries=0)) as response:
                         return identity_response(response.status,
                                                  response.json() if response.status == 200 else None)
@@ -772,7 +778,7 @@ class SsoSessionProvider(AuthProvider):
 
         # 주기 유지 작업은 사용자 읽기/쓰기를 앞지르지 않는다. 명시적 로그인만 호출자가
         # write_upstream을 사용하고, 백그라운드 coordinator는 background_upstream을 쓴다.
-        return self._submit(do, upstream_priority())
+        return self._submit(do, upstream_priority(), wait=self.RENEW_TIMEOUT)
 
     def close(self):
         """퇴역은 즉시 반환한다. 멎은 Playwright 호출 때문에 로그인/종료까지 멎으면 안 된다."""

@@ -9,6 +9,8 @@ from .issue_create import check_create_body, log_create_response
 
 class BasicAuthProvider(AuthProvider):
     supports_parallel = True   # requests.Session 은 스레드 간 동시 GET 안전
+    REQUEST_TIMEOUT = (10, 120)  # Connect deadline and response-read inactivity, in seconds.
+    AUTH_PROBE_TIMEOUT = (10, 20)
 
     def __init__(self, base, user, token, auth="basic"):
         self.base = base.rstrip("/")
@@ -20,7 +22,7 @@ class BasicAuthProvider(AuthProvider):
 
     def _get(self, path, params):
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        r = self.session.get(url, params=params, timeout=30)
+        r = self.session.get(url, params=params, timeout=self.REQUEST_TIMEOUT)
         if r.status_code in (401, 403) or r.status_code >= 500:
             raise SessionExpired(f"HTTP {r.status_code} on {path}")
         r.raise_for_status()
@@ -33,7 +35,7 @@ class BasicAuthProvider(AuthProvider):
         check_create_body(method, path, json_body)
         url = path if path.startswith(("http://", "https://")) else self.base + path
         fn = getattr(self.session, method)
-        r = fn(url, json=json_body, params=params, timeout=30, headers=WRITE_HEADERS)
+        r = fn(url, json=json_body, params=params, timeout=self.REQUEST_TIMEOUT, headers=WRITE_HEADERS)
         log_create_response(method, path, json_body, r.status_code, r.text if r.status_code >= 400 else "")
         if r.status_code == 401:
             raise SessionExpired(f"HTTP 401 on {path}")
@@ -58,7 +60,7 @@ class BasicAuthProvider(AuthProvider):
     def post_multipart(self, path, filename, data, content_type=None, field="file", params=None):
         url = path if path.startswith(("http://", "https://")) else self.base + path
         files = {field: (filename, data, content_type or "application/octet-stream")}
-        r = self.session.post(url, files=files, params=params, timeout=60, headers=MULTIPART_HEADERS)
+        r = self.session.post(url, files=files, params=params, timeout=self.REQUEST_TIMEOUT, headers=MULTIPART_HEADERS)
         if r.status_code == 401:
             raise SessionExpired(f"HTTP 401 on {path}")
         if r.status_code >= 400:
@@ -77,7 +79,7 @@ class BasicAuthProvider(AuthProvider):
 
         def identity_probe():
             try:
-                with self.session.get(self.base + "/rest/api/2/myself", timeout=30,
+                with self.session.get(self.base + "/rest/api/2/myself", timeout=self.AUTH_PROBE_TIMEOUT,
                                       allow_redirects=False) as response:
                     data = response.json() if response.status_code == 200 else None
                     return identity_response(response.status_code, data)
@@ -86,7 +88,7 @@ class BasicAuthProvider(AuthProvider):
 
         try:
             with self.session.request("GET" if body is None else "POST", url, data=body,
-                                      headers=headers, timeout=30, allow_redirects=False,
+                                      headers=headers, timeout=self.REQUEST_TIMEOUT, allow_redirects=False,
                                       stream=True) as response:
                 data = bytearray()
                 for chunk in response.iter_content(chunk_size=65536):
@@ -99,7 +101,7 @@ class BasicAuthProvider(AuthProvider):
 
     def get_bytes(self, path, params=None):
         url = path if path.startswith(("http://", "https://")) else self.base + path
-        r = self.session.get(url, params=params, timeout=30)
+        r = self.session.get(url, params=params, timeout=self.REQUEST_TIMEOUT)
         if r.status_code in (401, 403) or r.status_code >= 500:
             raise SessionExpired(f"HTTP {r.status_code} on {path}")
         r.raise_for_status()

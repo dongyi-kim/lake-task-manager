@@ -24,9 +24,11 @@ from pathlib import Path
 import uvicorn
 
 from app.infra.process_identity import reexec_with_process_name
-from app.infra.runtime_diagnostics import record_failure as _record_runtime_failure
+from app.infra.runtime_diagnostics import (record_failure as _record_runtime_failure,
+                                           record_browser_recovery as _record_browser_recovery)
 from app.infra.settings import APP_ROOT, get_settings
 from app.launcher.hotkey import parse_hotkey as _parse_hotkey
+from app.launcher.window_recovery import WindowSessionFailure
 from app.launcher.runtime_health import (
     probe_tray_pump as _probe_tray_pump,
     window_phase as _window_phase,
@@ -1049,11 +1051,13 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
     import app.main as appmain
     from playwright.sync_api import TimeoutError as PWTimeoutError
     from playwright.sync_api import sync_playwright
+    from app.launcher.window_recovery import BrowserOwnerProbe
     if not _APP_WINDOW_LOCK.acquire(blocking=False):
         return False
     p = context = page = None
+    owner_probe = None
     registered = False
-    failed = False
+    failure = None
     crashed = False
     _window_phase("starting", 60)
 
@@ -1089,6 +1093,7 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
         p = sync_playwright().start()
         # Never fall back to an empty profile: drafts and pending mutation identifiers live here.
         context = _launch(str(_appwin_profile()))
+        owner_probe = BrowserOwnerProbe(p, context)
         try:
             # Only the local app origin may read clipboard text; SSO/Jira pages get no grant.
             context.grant_permissions(["clipboard-read"], origin=url.rstrip("/"))
@@ -1101,8 +1106,9 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
         _wire_external_links(context, page)
         dlq = _wire_downloads(context)
         if not _navigate_app(page, url, server):
-            if crashed:
-                raise RuntimeError("App browser renderer crashed")
+            reason = "renderer_crash" if crashed else owner_probe.failure_reason()
+            if reason:
+                raise RuntimeError(reason)
             return False
         from app.infra.settings import STATIC_DIR
         ico_path = str(STATIC_DIR / "favicon.ico")
@@ -1150,38 +1156,81 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
                 break
             except PWTimeoutError:
                 continue
-        if crashed:
-            raise RuntimeError("App browser renderer crashed")
+        reason = "renderer_crash" if crashed else owner_probe.failure_reason()
+        if reason:
+            raise RuntimeError(reason)
         return True
     except Exception as error:
-        if not crashed and page is not None and page.is_closed():
+        reason = "renderer_crash" if crashed else owner_probe.failure_reason() if owner_probe is not None else None
+        if not reason and page is not None and page.is_closed():
             return False  # User closed the window during a pending Playwright operation.
-        failed = True
         if not crashed:
             _record_runtime_failure("window", error)
-        raise
+        failure = WindowSessionFailure(reason or "browser_error")
+        raise failure from error
     finally:
         _window_phase("closing", 60)
+        cleanup_confirmed, cleanup_error = False, None
         try:
             if registered:
-                appmain.note_window_closed()
+                try:
+                    appmain.note_window_closed()
+                except Exception as error:
+                    _record_runtime_failure("window_bookkeeping", error)
             # Sync Playwright cleanup must stay on its owner thread. A genuinely stuck owner
             # retains the profile lease until process recovery; it must not create a second owner.
             for closer in ((context.close,) if context is not None else ()) + ((p.stop,) if p is not None else ()):
                 try:
                     closer()
-                except Exception:
-                    failed = True  # Cleanup could not confirm release of the persistent profile.
+                except Exception as error:
+                    cleanup_error = error
+                    _record_runtime_failure("window_cleanup", error)
+            cleanup_confirmed = cleanup_error is None or (owner_probe is not None and owner_probe.cleanup_confirmed())
         finally:
-            _window_phase("failed" if failed else "closed")
-            _APP_WINDOW_LOCK.release()
+            if owner_probe is not None:
+                try:
+                    owner_probe.close()
+                except Exception:
+                    pass
+            if cleanup_confirmed:
+                if failure is not None:
+                    failure.cleanup_confirmed = True
+                    _window_phase("recovering", 60)
+                else:
+                    _window_phase("closed")
+                _APP_WINDOW_LOCK.release()
+            else:
+                # Preserve the lease when cleanup failed or was interrupted.
+                # Only process recovery may replace this uncertain profile owner.
+                _window_phase("failed")
+                if cleanup_error is not None:
+                    raise WindowSessionFailure("cleanup_failed") from cleanup_error
+
+
+def _run_window_with_recovery(s, *, auto_login=False, on_ready=None, server=None, stop_event=None):
+    from app.launcher.window_recovery import run_window_recovery
+    first_attempt = True
+
+    def session(*, on_ready):
+        nonlocal first_attempt
+        login = auto_login and first_attempt
+        first_attempt = False
+        return _window_session(s, auto_login=login, on_ready=on_ready, server=server)
+
+    def stopping():
+        return server is not None and (server.should_exit or server._ltm_stopped.is_set())
+
+    return run_window_recovery(session, should_stop=stopping, stop_event=stop_event,
+        on_ready=on_ready, phase=_window_phase, record=_record_browser_recovery)
 
 
 def _run_app_window(s):
     """[비-트레이 폴백] 서버 + 앱 창 1개. 창 닫으면 서버도 종료(기존 동작)."""
     server = _serve_bg(s, wait=False)                  # 창 먼저 뜨게 non-blocking
     _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)
-    _window_session(s, auto_login=True, on_ready=_hide_console_win, server=server)
+    import app.main as appmain
+    appmain.set_runtime_health_hook(_runtime_status)
+    _run_window_with_recovery(s, auto_login=True, on_ready=_hide_console_win, server=server)
     try:
         server.should_exit = True
     except Exception:
@@ -1196,6 +1245,7 @@ def _run_tray(s):
     from app.infra.settings import STATIC_DIR
 
     server = _serve_bg(s, wait=False)                  # 백엔드 상시(창과 독립)
+    window_stop = threading.Event()
     _warm_session_bg(s)                                # SSO 세션 미리 데우기(창 기동과 병렬)
     threading.Thread(target=_ensure_start_menu_shortcut, name="start-menu-shortcut", daemon=True).start()
 
@@ -1210,6 +1260,8 @@ def _run_tray(s):
         트레이 아이콘은 한 번 눌러도 이벤트가 여러 번 오고(기본 항목 + 더블클릭), 창이 뜨기까지
         몇 초 걸려 사용자는 '안 눌렸나' 하고 또 누른다. 그대로 두면 창이 서너 개 뜬다.
         """
+        if window_stop.is_set() or server.should_exit:
+            return
         now = time.monotonic()
         gap = now - _open["t"]
         if gap < (_OPEN_MIN if _open["ready"] else _OPEN_WAIT):
@@ -1226,7 +1278,8 @@ def _run_tray(s):
 
         def run():
             try:
-                _window_session(s, auto_login=initial, on_ready=ready, server=server)
+                _run_window_with_recovery(s, auto_login=initial, on_ready=ready, server=server,
+                                          stop_event=window_stop)
             except Exception as e:                     # 조용히 죽지 않게 로그는 남긴다
                 print("app window error:", e)
             finally:
@@ -1385,6 +1438,7 @@ def _run_tray(s):
             print("[tray] run.bat 을 찾지 못해 재시작을 건너뜁니다(앱은 유지).", file=sys.stderr, flush=True)
             return
         try:
+            window_stop.set()
             server.should_exit = True
         except Exception:
             pass
@@ -1406,6 +1460,7 @@ def _run_tray(s):
         run_tray_job("health", lambda: show_health_status(health_snapshot()))
 
     def on_quit(icon, item):
+        window_stop.set()
         try:
             server.should_exit = True
         except Exception:
@@ -1511,6 +1566,7 @@ def _run_tray(s):
                 _check_server(server)
         except Exception as error:
             runtime_failure.append(error)
+            window_stop.set()
             server.should_exit = True
             icon.stop()
 
@@ -1520,6 +1576,7 @@ def _run_tray(s):
         threading.Thread(target=monitor_tray, name="tray-monitor", daemon=True).start()
 
     icon.run(setup=setup)  # Start monitoring only after the tray message loop is ready.
+    window_stop.set()
     if runtime_failure:
         raise runtime_failure[0]
 

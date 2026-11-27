@@ -118,6 +118,7 @@ class JiraIdentityMixin:
         """Record a successful direct Jira identity check or completed login."""
         self.mark_transport_ok()
         self._session_dead = False
+        self._auth_proof_epoch = getattr(self, "_auth_proof_epoch", 0) + 1
         # Do not replay a briefly memoized needLogin result after another direct /myself (for
         # example the status rechecker) has already proved the session recovered.
         self._auth_probe_result = None

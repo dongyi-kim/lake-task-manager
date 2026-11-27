@@ -32,7 +32,8 @@ def test_failed_people_retry_individually_without_refreshing_successful_rows():
     assert '@click.stop="retryPerson(p.id)"' in view
     assert "불러오는 중… (재시도: " in view
     assert "일시 오류 · 자동 재시도" not in view
-    assert "loading: true, retrying: true" in view
+    assert "loading: retrying, retrying, errorKind: kind" in view
+    assert "failed(pid, kind, (e && e.message) || String(e), true, nextAttempt);" in view
     assert "새로고침으로 재시도" not in view
 
 
@@ -48,7 +49,7 @@ def test_http_200_error_bundle_uses_the_same_bounded_person_retry_path():
     assert 'errorKind: kind' in view
     person_api = api[api.index("workloadPerson: (u, days, assignedWindow)"):
                      api.index("workloadBucket:", api.index("workloadPerson: (u, days, assignedWindow)"))]
-    assert "if (result && (result.error || (result.partial && result.retryable))) _memo.delete(path);" in person_api
+    assert "if (result && (result.error || (result.partial && result.retryable))) _memo.invalidate(path);" in person_api
 
 
 def test_partial_parent_resolution_keeps_counts_and_rows_visible_during_targeted_retry():
@@ -66,7 +67,7 @@ def test_partial_parent_resolution_keeps_counts_and_rows_visible_during_targeted
     assert "if (onPartial) onPartial(rows, attempt + 1, incomplete);" in recovery
     assert "result.partial && result.retryable" in api
     assert "rows.some((row) => row && row.epicResolution" in api
-    assert "&& row.epicResolution.retryable)) _memo.delete(path);" in api
+    assert "&& row.epicResolution.retryable)) _memo.invalidate(path);" in api
     assert "t.epicResolution && t.epicResolution.complete === false" in view
     assert "t.epicResolution.retryable ? 'Epic 미확인' : '조회 제외'" in view
 
@@ -75,7 +76,7 @@ def test_partial_activity_response_is_not_stuck_in_browser_memo():
     api = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
     start = api.index("activity: (user) => {")
     activity = api[start:api.index("myTasks:", start)]
-    assert "if (result && result.partial) _memo.delete(path);" in activity
+    assert "if (result && result.partial) _memo.invalidate(path);" in activity
 
 
 def test_detail_buckets_have_independent_state_and_retry_only_the_failed_bucket():
@@ -88,13 +89,15 @@ def test_detail_buckets_have_independent_state_and_retry_only_the_failed_bucket(
     assert 'this._loadDetailBucket(id, bucket, { resetRows: false, priority: 40 });' in view
     assert '@click.stop="retryBucket(p.id, c.k)"' in view
     assert 'bucketStateOf(p.id, c.k).status === \'success\'' in view
-    # A failed request must not become a successful empty list.
-    assert "box[bucket] = [];" not in view
+    # Only a confirmed permission loss removes retained rows; network/auth
+    # failures retain them under a non-success state.
+    assert "if (result.status === 'permission') box[bucket] = [];" in view
+    assert 'box.states[bucket] = bucketState(result.status' in view
     empty_marker = '<div v-if="!(tkd[p.id][c.k] || []).length" class="muted mini">없음</div>'
     assert empty_marker in view
     assert view.rfind(
-        'v-else-if="bucketStateOf(p.id, c.k).status === \'success\' || '
-        'bucketStateOf(p.id, c.k).status === \'partial\'"',
+        'bucketStateOf(p.id, c.k).status !== \'permission\' && ((tkd[p.id][c.k] || []).length || '
+        'bucketStateOf(p.id, c.k).status === \'success\' || bucketStateOf(p.id, c.k).status === \'partial\')',
         0, view.index(empty_marker)) >= 0
 
     done_change = view[view.index("setDoneDays(d)"):view.index("setAssignedWindow(window)")]
@@ -148,10 +151,12 @@ def test_incomplete_detail_and_due_risk_never_claim_normal_empty_results():
     assert "dueRisk.complete ? dueRisk.over.length" in view
     assert "!dueRisk.over.length && !dueRisk.soon.length && dueRisk.complete" in view
     assert "const publish = () =>" in view
-    assert "parts[partKey] = Object.assign({ id: p.id, bucket }, result);\n          publish();" in view
+    assert "result.status === 'error' && prior?.status === 'success'" in view
+    assert "? { ...prior, refreshError: true, kind: result.kind }" in view
+    assert ": Object.assign({ id: p.id, bucket }, result);\n          publish();" in view
     assert "확인된 위험 없음 · 일부 항목 미확인" in view
     assert 'v-if="dueRisk.failures && !dueRiskBusy"' in view
-    assert "if (!previous || previous.status !== \"error\"" in view
+    assert "if (!previous || (previous.status !== \"error\" && !previous.refreshError)" in view
     assert "curMod && curMod.peopleCount && !statsComplete ? '+' : ''" in view
     assert "statsComplete" in view
 
@@ -162,5 +167,5 @@ def test_first_auth_failure_pauses_remaining_people_until_auth_ok():
     assert "if (epoch !== this.peopleLoadEpoch || authPaused)" in view
     assert "authPaused = true" in view
     assert "for (const pending of queue.splice(0))" in view
-    assert 'message: "인증 복구 대기 중"' in view
+    assert "failed(pending.pid, 'auth', '인증 복구 대기 중');" in view
     assert "if (!authPaused) pump()" in view

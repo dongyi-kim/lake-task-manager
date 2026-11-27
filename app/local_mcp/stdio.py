@@ -69,7 +69,7 @@ def connection_settings():
 
 async def proxy():
     url, token = connection_settings()
-    async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + token}, timeout=120,
+    async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + token}, timeout=300,
                                   follow_redirects=False, trust_env=False) as http:
         async with stdio_server() as (incoming, outgoing), resilient_http_client(url, http) as (reads, writes):
             async with anyio.create_task_group() as group:

@@ -91,10 +91,19 @@ def sample_memory():
             "totalBytes": values["MemTotal"]}
 
 
+def memory_policy(total):
+    """RAM-adaptive headroom; reserve space before the OS or job denies commit."""
+    return {
+        "hardLimitBytes": min(8192 * MiB, max(512 * MiB, total // 3)),
+        "softLimitBytes": min(4096 * MiB, max(256 * MiB, total // 4)),
+        "reserveBytes": min(2048 * MiB, max(128 * MiB, total // 16)),
+    }
+
+
 def worker_memory_limit():
     """Commit cap for the Windows owned worker tree; supervisor stays outside it."""
     try:
-        return min(2048 * MiB, max(512 * MiB, sample_memory()["totalBytes"] // 3))
+        return memory_policy(sample_memory()["totalBytes"])["hardLimitBytes"]
     except (OSError, ValueError, KeyError, AttributeError):
         return 2048 * MiB
 
@@ -119,9 +128,9 @@ class ResourcePressure:
                     self._next = now + self.interval
                     try:
                         sample = self.sampler()
-                        total = sample["totalBytes"]
-                        limit = self.soft_limit if self.soft_limit is not None else min(1024 * MiB, max(256 * MiB, total // 4))
-                        reserve = self.reserve if self.reserve is not None else min(512 * MiB, max(128 * MiB, total // 20))
+                        policy = memory_policy(sample["totalBytes"])
+                        limit = self.soft_limit if self.soft_limit is not None else policy["softLimitBytes"]
+                        reserve = self.reserve if self.reserve is not None else policy["reserveBytes"]
                         recovering = self._state["busy"]
                         job_limit = int(sample.get("jobLimitBytes", 0) * .75)
                         busy = (sample["processBytes"] >= limit * (.85 if recovering else 1)

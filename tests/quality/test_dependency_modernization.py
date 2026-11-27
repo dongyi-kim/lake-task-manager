@@ -18,7 +18,7 @@ RUNTIME_PINS = {
     "python-multipart": "0.0.32",
     "pydantic": "2.13.4",
     "pywin32": "312",
-    "jira820": "0.13.0",
+    "jira820": "0.13.1",
     "langchain": "1.3.15",
     "langchain-core": "1.5.6",
     "langchain-openai": "1.5.1",
@@ -47,7 +47,7 @@ SSO_PINS = {
 }
 
 RUNTIME_SOURCE_PINS = {
-    "jira820": "https://github.com/dongyi-kim/jira820/archive/021628129e231b0e3ec80030e3039fdeeb97987f.zip",
+    "jira820": "https://github.com/dongyi-kim/jira820/archive/0b3a85f02f7bee462588e32bc4ca6bf91400c5a8.zip",
 }
 
 
