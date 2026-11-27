@@ -2,6 +2,7 @@
 // description 은 백엔드에서 **정화된 HTML**(app/htmlsafe.py) 이라 v-html 로 그대로 렌더(table/code/quote/panel/callout/img).
 // 코멘트 텍스트는 Vue 기본 이스케이프({{ }})로 안전 표시. Esc/백드롭/X 로 닫기.
 import { api } from "../../lib/api.js";
+import { RequestPool } from "../../lib/requestPool.js";
 import { extOf } from "../../lib/filetype.js";
 import FieldEdit from "./FieldEdit.js";
 import PriIcon, { priRankOf } from "./PriIcon.js";
@@ -50,6 +51,8 @@ function confTitleFromUrl(u) {
   return null;
 }
 const _BROWSE_RE = /\/browse\/([A-Z][A-Z0-9]+-\d+)/;
+const enrichmentPool = new RequestPool(2, 32);
+const MAX_DISPLAY_COMMENTS = 100;
 export default {
   name: "TicketDialog",
   components: { TypeBadge, Avatar, CommentEditor, SettingsMenu, LinkPicker, FieldEdit, PriIcon,
@@ -60,6 +63,8 @@ export default {
            theme: { type: String, default: "light" } },   // 페이지 모드 테마 버튼 표시용
   emits: ["close", "search", "toggle-theme"],
   data() { return { v: null, comments: null, ancestors: [], siblings: [], timeline: [], children: [], related: [], atts: [], docs: [],
+                    commentStartAt: 0, commentTotal: null, commentNext: null, commentPaged: false,
+                    commentPageBusy: false, commentPageErr: "", commentPageTrail: [],
                     updateBaseline: null, updateOpenedAt: 0, updatesReady: false,
                     pdesc: null, pdescOpen: false, pdescErr: "",
                     composing: false, composeCollapsed: false, composePreview: "", composeHasDraft: false,
@@ -103,7 +108,7 @@ export default {
         if (event.detail.removed) this.err = '티켓이 삭제되었거나 접근 권한이 없습니다.';
       }
       const commentsPath = '/api/issue/' + encodeURIComponent(this.keyId) + '/comments';
-      if (path === commentsPath && !this.editingId) {
+      if (path === commentsPath && !this.editingId && this.commentStartAt === 0) {
         const metadata = api.cacheMetadata(path);
         if (this._updateCommentsEvidence?.full && metadata?.commentsComplete !== 1) {
           // A late first-page SWR must not shrink a complete displayed list. If that page
@@ -115,7 +120,7 @@ export default {
           }
         } else this.applyUpdateComments(value, path);
       }
-      if (path === commentsPath + '/complete' && !this.editingId && value?.complete) {
+      if (path === commentsPath + '/complete' && !this.editingId && !this.commentPaged && value?.complete) {
         this.applyUpdateComments(value.comments, path, value);
       }
       const panels = { ancestors: 'ancestors', siblings: 'siblings', children: 'children',
@@ -198,6 +203,7 @@ export default {
     loadTiptap().catch(() => { /* CDN 차단 등 — 실제 사용 시 에러 표시 */ });
   },
   unmounted() {
+    this._commentPageAbort?.abort(); this._enrichmentAbort?.abort();
     window.removeEventListener('api-cache-updated', this._cacheUpdated);
     window.removeEventListener('cache-policy-changed', this._cachePolicy);
     window.removeEventListener('tickets-updated', this._ticketsUpdated);
@@ -276,7 +282,7 @@ export default {
     tk() { return (this.v && this.v.key) || this.keyId; },   // 쓰기 대상 티켓 키
     // 코멘트 정렬 — created 를 ms 로 파싱해 **초 단위까지** 비교(같은 분에 여러 개 달려도 안정).
     sortedComments() {
-      return sortComments(this.comments, this.cmtSort);
+      return sortComments((this.comments || []).slice(0, MAX_DISPLAY_COMMENTS), this.cmtSort);
     },
     /** 에디터가 서버를 기다리지 않고 먼저 보여 줄 티켓 관련자. 최근 댓글/멘션 순서를 보존한다. */
     mentionUsers() {
@@ -349,6 +355,7 @@ export default {
     // (구버전 캐시 등) 없으면 통짜 descriptionHtml 하나로 폴백한다.
     descSections() {
       const v = this.v; if (!v) return [];
+      if (this.largeDescription(v)) return [];
       const secs = v.descriptionSections;
       return (secs && secs.length) ? secs : [{ title: null, html: v.descriptionHtml || "" }];
     },
@@ -394,11 +401,62 @@ export default {
         && isRecentUnread(event.updated || event.date, this.updateBaseline);
     },
     applyUpdateComments(rows, path, coverage) {
+      const metadata = api.cacheMetadata(path);
       this._updateCommentsEvidence = coverage ? { fetchedAt: coverage.fetchedAt, complete: coverage.complete === true, full: true }
-        : { fetchedAt: api.cacheMetadata(path)?.fetchedAt, complete: api.cacheMetadata(path)?.commentsComplete === 1 };
-      this.comments = rows;
+        : { fetchedAt: metadata?.fetchedAt, complete: metadata?.commentsComplete === 1 };
+      this.commentStartAt = 0;
+      this.commentTotal = coverage?.total ?? metadata?.commentsTotal ?? null;
+      this.comments = this.boundedComments(rows);
+      if (this.comments.length !== rows.length || this.comments.some(c => c.bodyTooLarge)) this._updateCommentsEvidence.complete = false;
+      this.commentPaged = (this.commentTotal || rows.length) > MAX_DISPLAY_COMMENTS;
+      this.commentPageTrail = [];
+      this.commentNext = this._updateCommentsEvidence.complete || (this.commentTotal != null && this.comments.length >= this.commentTotal)
+        ? null : this.comments.length || null;
+    },
+    boundedComments(rows) {
+      let characters = 0;
+      return (rows || []).slice(0, MAX_DISPLAY_COMMENTS).map(row => {
+        const size = (row.html || '').length;
+        characters += size;
+        return size > 128 * 1024 || characters > 512 * 1024
+          ? { ...row, html: '', bodyTooLarge: true } : row;
+      });
+    },
+    async loadCommentPage(startAt) {
+      if (this.commentPageBusy || this.editingId || startAt == null) return;
+      this._commentPageAbort?.abort();
+      const controller = this._commentPageAbort = new AbortController();
+      const key = this.keyId, requestId = this._req;
+      const commentsId = this._commentsReq = (this._commentsReq || 0) + 1;
+      const path = '/api/issue/' + encodeURIComponent(key) + '/comments';
+      const revision = api.cacheRevision(path);
+      const fresh = () => requestId === this._req && key === this.keyId
+        && commentsId === this._commentsReq && revision === api.cacheRevision(path);
+      this.commentPageBusy = true; this.commentPageErr = '';
+      try {
+        const value = await api.ticketCommentsPage(key, startAt, controller.signal);
+        if (!fresh()) return;
+        if (!Array.isArray(value?.comments) || ['invalid_page', 'changed_during_read'].includes(value.incompleteReason)
+            || (value.partial && !value.comments.length)) {
+          throw new Error('댓글 응답이 불완전하거나 조회 중 변경되었습니다. 다시 시도해 주세요.');
+        }
+        const previous = this.commentPageTrail.lastIndexOf(startAt);
+        this.commentPageTrail = previous >= 0 ? this.commentPageTrail.slice(0, previous)
+          : [...this.commentPageTrail, this.commentStartAt].slice(-500);
+        this.comments = this.boundedComments(value.comments);
+        this.commentStartAt = startAt; this.commentTotal = value.total;
+        this.commentNext = value.nextStartAt ?? null; this.commentPaged = true;
+        this._updateCommentsEvidence = { fetchedAt: value.fetchedAt, complete: startAt === 0 && value.complete === true };
+      } catch (error) {
+        if (!controller.signal.aborted && fresh()) this.commentPageErr = requestErrorText(error);
+      } finally {
+        if (this._commentPageAbort === controller) this.commentPageBusy = false;
+      }
     },
     refreshUpdateComments(key, after, complete = false) {
+      // Large threads are read explicitly in pages. Unread bookkeeping must not
+      // trigger collection/rendering of the entire discussion in the background.
+      if (this.commentPaged || (complete && this.commentTotal > MAX_DISPLAY_COMMENTS)) return;
       if (this._updateCommentsPending) {
         if (complete) this._updateCommentsQueuedAfter = Math.max(this._updateCommentsQueuedAfter || 0, after || 0);
         return;
@@ -415,7 +473,13 @@ export default {
       this._updateCommentsPending = job;
       pending.then(value => {
         if (!fresh()) return;
-        if (complete && !value?.complete) { this._updateCommentsFailedAt = Date.now(); return; }
+        if (complete && !value?.complete) {
+          this._updateCommentsFailedAt = Date.now();
+          if (['byte_budget', 'cap_exceeded', 'resource_pressure', 'time_budget', 'body_too_large', 'comment_too_large'].includes(value?.incompleteReason)) {
+            this.commentPaged = true; this.commentTotal = value.total ?? this.commentTotal;
+          }
+          return;
+        }
         const rows = complete ? value.comments : value;
         if (api.cacheRevision(path) === revision && Array.isArray(rows)) {
           this.applyUpdateComments(rows, path, complete ? value : null); applied = true;
@@ -662,10 +726,12 @@ export default {
      *  저장하게 되고 남의 수정이 조용히 사라진다. 못 받으면 지금 화면의 본문으로 연다
      *  (편집 자체를 막을 이유는 없다 — 저장할 때 다시 실패하면 그때 알린다). */
     async startDescEdit() {
+      if (this.largeDescription(this.v)) return;
       this.descErr = ""; this.descConflict = false;
       try {
         const v = await api.ticket(this.keyId, true);      // 캐시 건너뛰기 — 기준이 낡으면 안 된다
         if (v && this.v && v.descriptionHtml !== undefined) {
+          if (this.largeDescription(v)) { this.v = v; return; }
           this.v.descriptionHtml = v.descriptionHtml;
           this.v.descriptionEditHtml = v.descriptionEditHtml;
           this.v.descriptionSections = v.descriptionSections;
@@ -767,6 +833,11 @@ export default {
       window.dispatchEvent(new CustomEvent('force-refresh'));
     },
     async load(force, quiet) {
+      this._commentPageAbort?.abort(); this._enrichmentAbort?.abort();
+      this._enrichmentAbort = new AbortController(); this._enrichmentCount = 0; this._faviconCount = 0;
+      this.commentStartAt = 0; this.commentTotal = null; this.commentNext = null;
+      this.commentPaged = false; this.commentPageBusy = false; this.commentPageErr = '';
+      this.commentPageTrail = [];
       // quiet=true (필드 저장 후 재조회 등): v·패널을 **비우지 않는다** → 스켈레톤으로 돌아가 레이아웃이
       // 깨졌다 복구되는 대신, 응답이 오는 대로 **제자리에서** 값만 갱신된다(편집 시 깨짐 방지).
       const key = this.keyId;
@@ -781,7 +852,8 @@ export default {
         this.spineLoading = true; this.timelineLoading = true; this.timelineErr = "";
         this.panelState = {};
         this.v = api.cached('/api/ticket/' + encodeURIComponent(key)) || null;
-        this.comments = api.cached('/api/issue/' + encodeURIComponent(key) + '/comments') || null;
+        const cachedComments = api.cached('/api/issue/' + encodeURIComponent(key) + '/comments');
+        this.comments = cachedComments ? this.boundedComments(cachedComments) : null;
         const base = '/api/ticket/' + encodeURIComponent(key);
         this.ancestors = api.cached(base + '/ancestors') || [];
         this.siblings = api.cached(base + '/siblings') || []; this.timeline = [];
@@ -829,7 +901,7 @@ export default {
 
       // 본문을 먼저 큐에 넣어 prod 직렬 SSO에서도 읽을 내용을 최우선으로 둔다.
       await vp;                                          // 1순위: 티켓정보·설명·일정
-      if (!fresh()) return false;
+      if (!fresh() || !this.v) return false;
       // 편집 권한을 가장 먼저, 그 뒤 보조 패널을 우선순위 순으로 **모두 출발**시킨다. 어느 하나도
       // 다음 요청의 시작을 막지 않고, 각 패널은 자기 성공/오류 상태만 갱신한다.
       DIALOG_PANEL_ORDER.forEach((name) => this._loadDialogPanel(name, key, my, quiet));
@@ -840,6 +912,7 @@ export default {
       return detailLoaded;
     },
     typeColor(t) { return TYPE_BG[t] || "var(--ty-task)"; },
+    largeDescription(value) { return !!value?.descriptionTooLarge || (value?.descriptionHtml || '').length > 512 * 1024; },
     typeLabel(t) { return typeLabel(t); },
     descEmpty(html) { return descriptionEmpty(html); },
     fsize(n) {
@@ -1043,7 +1116,7 @@ export default {
       return childCard(c, this.v && this.v.due);
     },
     // Jira의 댓글 편집 권한은 저장/삭제 요청에서 확인한다. 로컬 작성자 비교로 기능을 숨기지 않는다.
-    canEdit(c) { return !!c; },
+    canEdit(c) { return !!c && !c.bodyTooLarge; },
     reloadComments() {
       return this.retryPanel("comments");
     },
@@ -1184,6 +1257,20 @@ export default {
       }
     },
     augment() { this.augmentZoomables(); this.augmentLinks(); this.highlightCode(); },
+    async enrichLink(fetcher, apply) {
+      if ((this._enrichmentCount || 0) >= 64) return;
+      this._enrichmentCount = (this._enrichmentCount || 0) + 1;
+      const signal = this._enrichmentAbort?.signal;
+      let release;
+      try {
+        release = await enrichmentPool.acquire(signal);
+        if (!signal?.aborted) {
+          const value = await fetcher();
+          if (!signal?.aborted) apply(value);
+        }
+      } catch (_) { /* Keep the usable original link when enrichment is busy. */ }
+      finally { release?.(); }
+    },
     highlightCode() { try { hljsHighlight(this.$el); } catch (e) { /* noop */ } },
     // 설명/코멘트 내 링크를 뱃지로: Confluence(문서 제목=URL 슬러그), Jira 티켓(이름/상태/담당자).
     augmentLinks() {
@@ -1207,9 +1294,9 @@ export default {
         // ② 슬러그가 없으면 **서버에서 문서 제목을 받아 온다**(Confluence 링크는 무조건 제목으로).
         //    받아오는 동안은 링크 텍스트로 임시 표시(빈 뱃지보단 낫다).
         setLabel((a.textContent || "").trim() || "Confluence 문서");
-        api.linkTitle(href).then((r) => {
+        this.enrichLink(() => api.linkTitle(href), (r) => {
           if (r && r.title && a.isConnected) setLabel(r.title);
-        }).catch(() => { /* 못 받으면 임시 라벨 유지 */ });
+        });
       });
       // 2) Jira 티켓 링크(/browse/KEY) → 뱃지. href 제거하고 인앱 다이얼로그로 열기.
       root.querySelectorAll(".tkt-desc a[href]").forEach((a) => {
@@ -1232,8 +1319,8 @@ export default {
         // 나오므로 중복인 데다 무슨 뜻인지 읽히지 않았다 → 그 자리를 **타입 뱃지**로 바꾼다.
         a.innerHTML = '<span class="tbadge v-solid jb-type"></span><b class="jb-key">' + esc(key) + "</b>"
           + '<span class="jb-name"></span><span class="jb-meta"></span>';
-        api.ticketBadge(key).then((b) => {
-          if (!b) return;
+        this.enrichLink(() => api.ticketBadge(key), (b) => {
+          if (!b || !a.isConnected) return;
           const tb = a.querySelector(".jb-type");
           tb.textContent = typeLabel(b.type || "");
           tb.style.setProperty("--tc", TYPE_BG[b.type] || "var(--ty-task)");
@@ -1243,7 +1330,7 @@ export default {
           meta.textContent = b.status || "";
           meta.className = "jb-meta st-" + (b.statusCategory || "todo");
           a.title = key + " " + (b.summary || "") + (b.status ? " (" + b.status + ")" : "");
-        }).catch(() => { /* 조회 실패 시 키만 표시 */ });
+        });
       });
       // 3) 일반 웹 링크 → favicon 뱃지(에디터와 동일한 모양). Confluence/Jira 뱃지는 위에서 처리됨.
       root.querySelectorAll(".tkt-desc a[href]").forEach((a) => {
@@ -1256,7 +1343,10 @@ export default {
         if (!/^https?:\/\//i.test(href)) return;
         a.dataset.web = "1";
         a.classList.add("web-badge");
-        a.style.setProperty("--fav", "url('/api/favicon?u=" + encodeURIComponent(href) + "')");
+        if ((this._faviconCount || 0) < 32) {
+          this._faviconCount = (this._faviconCount || 0) + 1;
+          a.style.setProperty("--fav", "url('/api/favicon?u=" + encodeURIComponent(href) + "')");
+        }
       });
     },
     // v-html 로 렌더된 이미지/표에 '확대' 버튼을 얹는다(우측 상단). 중복 주입 방지 마커 사용.
@@ -1599,6 +1689,10 @@ export default {
             <div v-if="pdescOpen" class="pdesc-body">
               <div v-if="pdescErr" class="muted">상위 설명을 불러오지 못했습니다: {{ pdescErr }}</div>
               <div v-else-if="!pdesc" class="loading">불러오는 중…</div>
+              <div v-else-if="largeDescription(pdesc)" class="tkt-desc-box muted">
+                상위 티켓의 설명이 커서 여기서는 펼치지 않습니다.
+                <a :href="pdesc.descriptionUrl || pdesc.url" target="_blank" rel="noopener">Jira에서 설명 보기</a>
+              </div>
               <div v-else-if="descEmpty(pdesc.descriptionHtml)" class="tkt-desc tkt-desc-box pdesc-box">
                 <p class="muted">상위 티켓에도 설명이 없습니다.</p></div>
               <div v-else class="tkt-desc tkt-desc-box pdesc-box" @click="onContentClick"
@@ -1631,6 +1725,10 @@ export default {
             </div>
           </div>
 
+          <div v-else-if="largeDescription(v)" class="tkt-desc-box muted">
+            설명이 커서 여기서는 펼치지 않습니다.
+            <a :href="v.descriptionUrl || v.url" target="_blank" rel="noopener">Jira에서 설명 보기 · 수정</a>
+          </div>
           <div v-else-if="ownDescEmpty">
             <div class="tkt-sec-t">설명
               <button v-if="fmeta('description')" class="sec-edit" @click="startDescEdit">수정</button>
@@ -1812,7 +1910,7 @@ export default {
 
           <!-- 코멘트 — 본문(v)과 무관하게 자기 상태로 렌더 -->
           <template v-if="!err">
-            <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ comments.length }})</span>
+            <div class="tkt-sec-t">코멘트<span v-if="comments"> ({{ commentTotal ?? comments.length }})</span>
               <span v-if="comments && comments.length > 1" class="cmt-sort">
                 <button type="button" class="cmt-sort-b" :class="{ on: cmtSort === 'new' }"
                         @click="cmtSort = 'new'" title="최신 댓글이 위로">최신순</button>
@@ -1843,9 +1941,21 @@ export default {
                   <CommentEditor v-if="editingId === c.id" :ticket-key="tk" :mention-users="mentionUsers" :initial="editInitial" :draft-scope="'comment:' + tk + ':' + c.id"
                     submit-label="저장" :submit-fn="(md) => submitEdit(c, md)"
                     @submitted="onEdited" @cancel="cancelEdit" />
+                  <div v-else-if="c.bodyTooLarge" class="tkt-cmt-b muted">
+                    내용이 큰 댓글입니다. <a :href="c.originalUrl || v?.url" target="_blank" rel="noopener">Jira에서 댓글 보기 · 수정</a>
+                  </div>
                   <div v-else class="tkt-cmt-b tkt-desc" @click="(e) => onContentClick(e, c)" v-html="c.html"></div>
                 </div>
               </div>
+              <div v-if="commentPaged || commentStartAt || commentNext != null" class="cmt-sort" aria-label="댓글 페이지">
+                <button type="button" class="tkt-cmt-act" :disabled="commentPageBusy || !!editingId || commentStartAt === 0"
+                        @click="loadCommentPage(commentPageTrail[commentPageTrail.length - 1] ?? 0)">이전 댓글 페이지</button>
+                <span>{{ commentStartAt + 1 }}–{{ commentStartAt + comments.length }}{{ commentTotal != null ? ' / ' + commentTotal : '' }}</span>
+                <button type="button" class="tkt-cmt-act" :disabled="commentPageBusy || !!editingId || commentNext == null"
+                        @click="loadCommentPage(commentNext)">{{ commentPageBusy ? '불러오는 중…' : '다음 댓글 페이지' }}</button>
+              </div>
+              <div v-if="commentPaged" class="muted mini">현재 페이지의 댓글을 표시합니다. 페이지별 조회만으로는 전체 읽음으로 처리하지 않습니다.</div>
+              <div v-if="commentPageErr" class="tkt-cmt-err">{{ commentPageErr }}</div>
               <div v-if="editErr" class="tkt-cmt-err">{{ editErr }}</div>
             </template>
           </template>

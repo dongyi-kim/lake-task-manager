@@ -91,6 +91,7 @@ def updates_dialog(static_server):
                     route.fulfill(status=503, json={"detail": "comments unavailable"})
                 else:
                     route.fulfill(json=state["comments"], headers={
+                        **({"X-LTM-Comments-Total": str(state['comments_total'])} if 'comments_total' in state else {}),
                         "X-LTM-Comments-Complete": "1" if state["comments_complete"] else "0",
                         **({"X-LTM-Fresh-Until": str(state["comments_fresh_until"] / 1000)}
                            if state["comments_fresh_until"] is not None else {}),
