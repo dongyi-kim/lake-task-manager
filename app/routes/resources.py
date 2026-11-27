@@ -117,6 +117,12 @@ def build_resource_router(*, get_client, cache, settings) -> APIRouter:
         headers = {"X-LTM-Comments-Fetched-At": str(source)} if source is not None else {}
         return JSONResponse(result, headers=headers)
 
+    @router.get("/api/issue/{key}/comments/page")
+    def api_issue_comments_page(key: str, startAt: int = Query(default=0, ge=0),
+                                maxResults: int = Query(default=20, ge=1, le=20)):
+        result = get_client().issue_comments_page(key, start_at=startAt, max_results=maxResults)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @router.get("/api/recent")
     def api_recent(limit: int = 20, kind: str = ""):
         return JSONResponse(cache.recent_items(max(1, min(limit, 100)), kind or None))

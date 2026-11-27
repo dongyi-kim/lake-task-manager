@@ -46,6 +46,51 @@ def provider(monkeypatch):
     result.close()
 
 
+def test_hung_retired_owners_bound_replacement_until_real_disposal(provider, monkeypatch):
+    # The fixture owns one real owner slot; a second can recover it, never a third.
+    first_entered, second_entered, release = threading.Event(), threading.Event(), threading.Event()
+    store = provider._store
+    second = None
+    calls = []
+    def hold(entered):
+        entered.set()
+        assert release.wait(5)
+        return "finished"
+    first_done, first_result, _ = _call(lambda: provider._submit(lambda: hold(first_entered), wait=.03))
+    try:
+        assert first_entered.wait(1) and first_done.wait(1)
+        assert isinstance(first_result["error"], UpstreamUnavailable)
+        provider.close()
+        second = SsoSessionProvider("https://jira.example", store)
+        second_done, second_result, _ = _call(lambda: second._submit(lambda: hold(second_entered), wait=.03))
+        assert second_entered.wait(1) and second_done.wait(1)
+        assert isinstance(second_result["error"], UpstreamUnavailable)
+        second.close()
+        independent_store = SimpleNamespace(any_exists=lambda: True, merged=lambda: {"cookies": [], "origins": []})
+        independent = SsoSessionProvider("https://other-jira.example", independent_store)
+        independent.close()
+        independent._thread.join(timeout=1)
+        assert not independent._thread.is_alive()
+        monkeypatch.setattr("app.auth.sso_session._launch", lambda *_args, **_kwargs: calls.append("spawned"))
+        with pytest.raises(UpstreamBusy):
+            SsoSessionProvider("https://jira.example", store)
+        assert calls == []
+    finally:
+        release.set()
+        provider._thread.join(timeout=2)
+        if second is not None:
+            second._thread.join(timeout=2)
+    assert not provider._thread.is_alive() and not second._thread.is_alive()
+    # Only completed owner disposal reopens construction.
+    with monkeypatch.context() as patch:
+        patch.setattr("app.auth.sso_session._launch", lambda *_args, **_kwargs: SimpleNamespace(
+            new_context=lambda **_: object(), is_connected=lambda: True, close=lambda: None))
+        recovered = SsoSessionProvider("https://jira.example", store)
+        recovered.close()
+        recovered._thread.join(timeout=2)
+        assert not recovered._thread.is_alive()
+
+
 @pytest.mark.parametrize("priority", [PRIO_BACKGROUND, PRIO_USER, PRIO_WRITE])
 def test_expired_queued_job_never_runs_or_retires_active_upload(provider, priority):
     started, release = threading.Event(), threading.Event()

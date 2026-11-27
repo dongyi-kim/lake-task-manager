@@ -37,6 +37,7 @@ export function createMentionAvatar(userId, label) {
   }
 
   const img = new Image();
+  img.loading = 'lazy'; img.decoding = 'async';
   img.className = "mention-av-img";
   img.alt = "";
   img.onload = () => {

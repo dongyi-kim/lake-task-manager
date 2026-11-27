@@ -9,6 +9,7 @@ import CacheSettingsDialog from "./CacheSettingsDialog.js";
 import AgentSettingsDialog from "./AgentSettingsDialog.js";
 import LocalMcpDialog from "./LocalMcpDialog.js";
 import WorkspaceAdminDialog from "./WorkspaceAdminDialog.js";
+import RuntimeDiagnosticsDialog from "./RuntimeDiagnosticsDialog.js";
 
 const SERVICES = ["Jira", "Confluence", "Bitbucket"];
 // 빠른 열기 전역 단축키 선택지 — run.py 가 이 spec 을 등록한다(데스크톱 앱). 기본 ctrl+alt+space.
@@ -20,7 +21,7 @@ const HOTKEYS = [
 
 export default {
   name: "SettingsMenu",
-  components: { AgentSettingsDialog, CacheSettingsDialog, LocalMcpDialog, WorkspaceAdminDialog },
+  components: { AgentSettingsDialog, CacheSettingsDialog, LocalMcpDialog, WorkspaceAdminDialog, RuntimeDiagnosticsDialog },
   props: { theme: { type: String, default: "light" } },
   emits: ["toggle-theme"],
   data() {
@@ -34,6 +35,7 @@ export default {
       hotkey: "ctrl+alt+space", hkBusy: false,   // 빠른 열기 단축키(저장됨)
       // 에이전트는 선택 설치라 아예 없을 수 있다 — 그때는 이유를 보여 준다.
       agentOn: false, agentWhy: "", agentDlg: false, cacheDlg: false, mcpDlg: false, workspaceDlg: false,
+      diagnosticsDlg: false,
     };
   },
   computed: {
@@ -108,6 +110,10 @@ export default {
     },
     closeWorkspace() {
       this.workspaceDlg = false;
+      this.$nextTick(() => this.$el.querySelector(".setmenu-trig")?.focus());
+    },
+    closeDiagnostics() {
+      this.diagnosticsDlg = false;
       this.$nextTick(() => this.$el.querySelector(".setmenu-trig")?.focus());
     },
     // 서비스별 **병렬** 프로브 — 각 응답이 오는 대로 그 행만 갱신(하나 느려도 나머지는 즉시).
@@ -242,6 +248,11 @@ export default {
       </div>
 
       <div class="sm-sec">
+        <div class="sm-h">문제 해결</div>
+        <button class="sm-btn" @click="diagnosticsDlg = true; close()">오류 기록 보기 →</button>
+      </div>
+
+      <div class="sm-sec">
         <div class="sm-h">Dev Tools</div>
         <a class="sm-btn sm-devgo" href="#/devtools" @click="close()">개발용 API 열기 →</a>
       </div>
@@ -258,5 +269,6 @@ export default {
     <AgentSettingsDialog v-if="agentDlg" @close="agentDlg = false" />
     <LocalMcpDialog v-if="mcpDlg" @close="closeMcp" />
     <WorkspaceAdminDialog v-if="workspaceDlg" @close="closeWorkspace" />
+    <RuntimeDiagnosticsDialog v-if="diagnosticsDlg" @close="closeDiagnostics" />
   </div>`,
 };

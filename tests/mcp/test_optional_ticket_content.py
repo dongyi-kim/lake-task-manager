@@ -335,6 +335,32 @@ def test_combined_output_budget_refuses_large_comments_plus_description_without_
     anyio.run(scenario)
 
 
+@pytest.mark.parametrize("detail", ["read", "edit", "summary", "full"])
+def test_rich_description_omission_is_an_explicit_error_and_raw_body_stays_available(build_env, detail):
+    env = build_env()
+    source = ContentSource(env, total=1, comments=0)
+    original = "source-start:" + "x" * (600 * 1024) + ":source-end"
+    source.rows["DL-0001"]["fields"]["description"] = original
+
+    async def scenario():
+        async with Client(env.runtime.server) as mcp:
+            result = await mcp.call_tool("get_ticket", {"key": "DL-0001", "detail": detail,
+                                                      "include_description": True})
+            assert result.is_error
+            payload = result.structured_content
+            assert not payload["ok"] and "data" not in payload
+            error = payload["error"]
+            assert error["code"] == "response_too_large" and error["status"] == 413
+            assert error["limitBytes"] == env.client.UI_DESCRIPTION_MAX_BYTES
+            assert "512 KiB" in error["message"] and "get_tickets" in error["message"]
+            assert "16 MiB" not in error["message"]
+            # The real ticket_view applied its UI-only display guard. That must
+            # neither fabricate an empty MCP body nor shrink the shared raw cache.
+            raw = await call_data(mcp, "get_tickets", {"keys": ["DL-0001"], "include_description": True})
+            assert raw["issues"][0]["fields"]["description"] == original
+    anyio.run(scenario)
+
+
 def test_real_jira820_search_projects_raw_comments_like_its_comment_endpoint(build_env):
     env = build_env()
     transport = env.provider._client

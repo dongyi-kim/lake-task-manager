@@ -15,6 +15,31 @@ class ResourceBusy(UpstreamBusy):
     """No new work should start until memory headroom recovers."""
 
 
+def _sample_job_memory(kernel, handle=None):
+    """Current commit of the owned worker tree, including nested browser jobs.
+
+    A peak counter cannot be used for admission: it never falls after recovery.
+    JobObjectMemoryUsageInformation (28) reports current committed bytes.
+    """
+    from ctypes import wintypes
+    import pywintypes
+    import win32job
+
+    class JobMemory(ctypes.Structure):
+        _fields_ = [("current", ctypes.c_ulonglong), ("peak", ctypes.c_ulonglong)]
+
+    kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+        ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+    usage = JobMemory()
+    if not kernel.QueryInformationJobObject(handle, 28, ctypes.byref(usage), ctypes.sizeof(usage), None):
+        raise OSError(ctypes.get_last_error(), "Job memory counters unavailable")
+    try:
+        limits = win32job.QueryInformationJobObject(handle, win32job.JobObjectExtendedLimitInformation)
+    except pywintypes.error as error:
+        raise OSError("Job memory limits unavailable") from error
+    return {"jobBytes": usage.current, "jobLimitBytes": limits["JobMemoryLimit"]}
+
+
 def sample_memory():
     if os.name == "nt":
         from ctypes import wintypes
@@ -38,7 +63,25 @@ def sample_memory():
         if not kernel.GlobalMemoryStatusEx(ctypes.byref(memory)) or not psapi.GetProcessMemoryInfo(
                 kernel.GetCurrentProcess(), ctypes.byref(process), process.size):
             raise OSError(ctypes.get_last_error(), "Memory counters unavailable")
-        return {"processBytes": process.private, "availableBytes": memory.available, "totalBytes": memory.total}
+        sample = {"processBytes": process.private, "availableBytes": memory.available, "totalBytes": memory.total}
+        if os.environ.get("LAKE_SUPERVISED_WORKER"):
+            # Only production's explicitly owned job is relevant; an unrelated
+            # shell/test-runner job must not become the app's resource policy.
+            import pywintypes
+            import win32api
+            import win32job
+            job = None
+            try:
+                name = os.environ.get("LAKE_WORKER_JOB_NAME")
+                if name:
+                    job = win32job.OpenJobObject(win32job.JOB_OBJECT_QUERY, False, name)
+                sample.update(_sample_job_memory(kernel, int(job) if job is not None else None))
+            except pywintypes.error as error:
+                raise OSError("Owned job memory counters unavailable") from error
+            finally:
+                if job is not None:
+                    win32api.CloseHandle(job)
+        return sample
     values = {}
     for line in Path("/proc/meminfo").read_text().splitlines():
         name, value = line.split(":", 1)
@@ -80,9 +123,13 @@ class ResourcePressure:
                         limit = self.soft_limit if self.soft_limit is not None else min(1024 * MiB, max(256 * MiB, total // 4))
                         reserve = self.reserve if self.reserve is not None else min(512 * MiB, max(128 * MiB, total // 20))
                         recovering = self._state["busy"]
+                        job_limit = int(sample.get("jobLimitBytes", 0) * .75)
                         busy = (sample["processBytes"] >= limit * (.85 if recovering else 1)
-                                or sample["availableBytes"] <= reserve * (1.25 if recovering else 1))
+                                or sample["availableBytes"] <= reserve * (1.25 if recovering else 1)
+                                or (job_limit > 0 and sample.get("jobBytes", 0)
+                                    >= job_limit * (.85 if recovering else 1)))
                         self._state = {**sample, "softLimitBytes": limit, "reserveBytes": reserve,
+                                       "jobSoftLimitBytes": job_limit,
                                        "busy": busy, "supported": True}
                     except (OSError, ValueError, KeyError, AttributeError):
                         pass  # A transient counter failure must not clear observed pressure.

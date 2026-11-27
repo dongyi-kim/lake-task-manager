@@ -77,7 +77,7 @@ def test_navigation_has_one_deadline_without_unbounded_evaluate():
     assert max(budgets) <= 2000
 
 
-def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closing=None):
+def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closing=None, browser_crash=False):
     ns = launcher_functions("_window_session", "_check_server")
     events, profiles = [], []
     main = ModuleType("app.main")
@@ -90,7 +90,8 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
     app.main = main
     settings = ModuleType("app.infra.settings")
     settings.STATIC_DIR = Path("unused")
-    page = SimpleNamespace(is_closed=lambda: False)
+    closed, handlers = [False], {}
+    page = SimpleNamespace(is_closed=lambda: closed[0], on=lambda event, callback: handlers.update({event: callback}))
 
     class Context:
         pages = [page]
@@ -99,6 +100,10 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
             ns.setdefault("clipboard_grants", []).append((permissions, origin))
 
         def wait_for_event(self, name, timeout):
+            if browser_crash:
+                handlers["crash"]()
+                closed[0] = True
+                raise RuntimeError("closed after renderer crash")
             if driver_error:
                 raise RuntimeError("injected driver pipe failure")
 
@@ -127,6 +132,16 @@ def window_harness(monkeypatch, *, driver_error=False, launch_error=False, closi
               _wire_downloads=lambda *args: None, _drain_downloads=lambda *args: None,
               _set_window_icon_win=lambda *args: None, _window_phase=lambda *args: None)
     return ns, events, profiles
+
+
+def test_renderer_crash_followed_by_page_close_is_saved_and_marks_window_failed(monkeypatch):
+    ns, _events, _profiles = window_harness(monkeypatch, browser_crash=True)
+    phases = []
+    ns["_window_phase"] = lambda phase, *args: phases.append(phase)
+    with pytest.raises(RuntimeError):
+        ns["_window_session"](SimpleNamespace(app_port=4457, jira_env="mock"))
+    assert ns["runtime_failures"] == [("browser", "RuntimeError")]
+    assert phases[-1] == "failed"
 
 
 @pytest.mark.parametrize("driver_error,launch_error,port", [(False, False, 4457), (True, False, 4567), (False, True, 4457)])

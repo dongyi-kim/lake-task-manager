@@ -21,6 +21,7 @@ from app.auth.base import UpstreamBusy
 
 _UPLOAD = re.compile(r"(?:/api/ticket/[^/]+/attachment|/api/confluence/pages/[^/]+/attachments)/?$")
 _CANCEL = re.compile(r"/api/tracking/runs/[^/]+/cancel/?$")
+_DIAGNOSTICS = re.compile(r"/api/app/diagnostics(?:/[A-Za-z0-9.-]+/download)?/?$")
 _LIGHTWEIGHT = {("GET", "/api/health/live"), ("POST", "/api/app/open"), ("POST", "/api/app/quit")}
 
 
@@ -73,7 +74,8 @@ class RequestAdmissionMiddleware:
         # must remain reachable even when both cancellation workers are stuck.
         if (method, path.rstrip("/")) in _LIGHTWEIGHT:
             return await self.app(scope, receive, send)
-        control = method == "POST" and bool(_CANCEL.fullmatch(path))
+        control = (method == "POST" and bool(_CANCEL.fullmatch(path))) or (
+            method == "GET" and bool(_DIAGNOSTICS.fullmatch(path)))
         upload = method == "POST" and bool(_UPLOAD.fullmatch(path))
         if not self._acquire(control, upload):
             return await self._reject(scope, receive, send, 429, "request_capacity",

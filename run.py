@@ -1054,7 +1054,14 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
     p = context = page = None
     registered = False
     failed = False
+    crashed = False
     _window_phase("starting", 60)
+
+    def browser_crashed(*_args):
+        nonlocal crashed
+        if not crashed:
+            crashed = True
+            _record_runtime_failure("browser", RuntimeError("renderer_crashed"))
 
     def _launch(udd):
         return p.chromium.launch_persistent_context(
@@ -1089,9 +1096,13 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
             pass  # Unsupported browsers retain their normal permission flow.
         _window_phase("starting", 60)
         page = context.pages[0] if context.pages else context.wait_for_event("page", timeout=5000)
+        if callable(getattr(page, "on", None)):
+            page.on("crash", browser_crashed)
         _wire_external_links(context, page)
         dlq = _wire_downloads(context)
         if not _navigate_app(page, url, server):
+            if crashed:
+                raise RuntimeError("App browser renderer crashed")
             return False
         from app.infra.settings import STATIC_DIR
         ico_path = str(STATIC_DIR / "favicon.ico")
@@ -1105,6 +1116,8 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
             appmain.request_service_login("jira")
         i = 0
         while not page.is_closed():
+            if crashed:
+                raise RuntimeError("App browser renderer crashed")
             _window_phase("running", 15)
             _check_server(server)
             if appmain._login_requested.is_set():
@@ -1137,12 +1150,15 @@ def _window_session(s, auto_login=False, headless=False, on_ready=None, server=N
                 break
             except PWTimeoutError:
                 continue
+        if crashed:
+            raise RuntimeError("App browser renderer crashed")
         return True
     except Exception as error:
-        if page is not None and page.is_closed():
+        if not crashed and page is not None and page.is_closed():
             return False  # User closed the window during a pending Playwright operation.
         failed = True
-        _record_runtime_failure("window", error)
+        if not crashed:
+            _record_runtime_failure("window", error)
         raise
     finally:
         _window_phase("closing", 60)
@@ -1649,6 +1665,10 @@ def main():
         from app.local_mcp.stdio import main as mcp_stdio
         mcp_stdio()
         return
+    from app.infra.runtime_diagnostics import install_exception_hooks
+    from app.infra.settings import CACHE_DIR
+    install_exception_hooks(CACHE_DIR / "logs" / "runtime",
+                            role="worker" if os.getenv("LAKE_SUPERVISED_WORKER") else "launcher")
     # Windows 콘솔(cp949)에서도 유니코드 출력이 크래시하지 않도록 utf-8 로 강제.
     for _stream in (sys.stdout, sys.stderr):
         try:

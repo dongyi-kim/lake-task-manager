@@ -28,12 +28,12 @@ _known_keys = ContextVar("body_search_known_keys", default=None)
 MAX_BODY_RESULT_BYTES = 16 * 1024 * 1024
 BODY_PAGE_LIMIT_MESSAGE = (
     "Heavy-field search page exceeds 16 MiB. Reduce max_results to 1 and paginate "
-    "with the same content options. For one oversized description use get_ticket(detail='read'); "
+    "with the same content options. For one oversized description open the original ticket in Jira; "
     "for comments use get_evidence_page(kind='comments').")
 BODY_BATCH_LIMIT_MESSAGE = (
     "Ticket batch exceeds 16 MiB. Use fewer keys or search_issues(max_results=1, "
     "include_description=true) pagination. For oversized comments use get_evidence_page(kind='comments'). "
-    "For one oversized body use get_ticket(detail='read').")
+    "For one oversized body open the original ticket in Jira.")
 
 
 def is_body_projection(fields):

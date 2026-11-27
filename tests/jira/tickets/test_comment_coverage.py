@@ -18,6 +18,9 @@ def comments_client(monkeypatch):
     clock = [time.time()]
     monkeypatch.setattr("app.infra.cache.time.time", lambda: clock[0])
     client = JiraClient(get_settings(), Cache(":memory:"))
+    # These tests exercise multi-page provenance rather than production UI admission.
+    # The bounded collector's default limits have dedicated large-dialog regressions.
+    client.UI_COMMENT_CAP = 1000
     client.env = "prod"  # Exercise authenticated media rewriting with only the fake provider below.
     stamp = lambda days: datetime.fromtimestamp(clock[0] - days * 86400, timezone.utc).isoformat()
     rows = [{"id": str(index), "created": stamp(10 + index), "updated": stamp(10 + index),
@@ -230,9 +233,16 @@ def test_partial_refresh_keeps_old_complete_data_and_mutation_expires_both_cache
     assert first["fetchedAt"] == previous[1]
     # Each malformed pagination terminates on the next page, rather than looping.
     assert len(calls) == 6
+    retained = {suffix: client.cache.get_stale_at(f"comments:{client.env}:DL-9007{suffix}")
+                for suffix in ("", ":coverage", ":full")}
     client._invalidate_ticket_content("DL-9007", comments=True)
     for suffix in ("", ":coverage", ":full"):
-        assert client.cache.get_stale(f"comments:{client.env}:DL-9007{suffix}") is None
+        key = f"comments:{client.env}:DL-9007{suffix}"
+        # Mutation revokes freshness/coverage authority, while the established
+        # retained-display policy keeps payloads and their original source age.
+        assert client.cache.get(key) is None
+        assert client.cache.metadata(key)["invalidated"] is True
+        assert client.cache.get_stale_at(key) == retained[suffix]
 
 
 @pytest.mark.parametrize("when", ["while_loading", "after_publish"])

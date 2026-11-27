@@ -36,7 +36,11 @@ class OwnedWorker:
         if memory_limit is None:
             from app.infra.resource_pressure import worker_memory_limit
             memory_limit = worker_memory_limit()
-        self._job = win32job.CreateJobObject(None, "")
+        # A venv redirector or embedding host can leave multiple enclosing jobs.
+        # Give admission an explicit handle to the exact aggregate limit we own.
+        job_name = "Local\\LTMWorker-" + secrets.token_hex(16)
+        self._job = win32job.CreateJobObject(None, job_name)
+        env = {**env, "LAKE_WORKER_JOB_NAME": job_name}
         process = thread = None
         try:
             info = win32job.QueryInformationJobObject(self._job, win32job.JobObjectExtendedLimitInformation)

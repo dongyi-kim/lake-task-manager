@@ -1,4 +1,5 @@
 import { CacheMemo } from "./cacheMemo.js";
+import { RequestPool } from "./requestPool.js";
 import { rememberDraftContext } from "./draftIdentity.js";
 import { createAuthRecovery } from "./apiAuth.js";
 // api.js — 백엔드 리소스 호출 래퍼. 401 needLogin 을 전역 이벤트로 알린다(LoginOverlay 가 수신).
@@ -10,6 +11,9 @@ const REQUEST_TIMEOUT_MS = 35 * 1000;
 // 타임라인은 보조 정보이고 하위 changelog까지 모아 일반 조회보다 비싸다. 이 요청 하나가
 // 다이얼로그를 오래 붙잡지 않게 더 짧게 끊고, 해당 패널에서만 다시 시도하게 한다.
 const TIMELINE_TIMEOUT_MS = 15 * 1000;
+const readPool = new RequestPool(6, 32);
+const writePool = new RequestPool(2, 0);
+const controlPool = new RequestPool(2, 8);
 
 const authRecovery = createAuthRecovery({
   probe: () => req("/api/auth/probe?recover=1", { method: "POST", timeoutMs: 45 * 1000 }),
@@ -95,11 +99,14 @@ async function req(path, opts) {
   o.signal = ctl.signal;
   const read = !mutation && /^(GET|HEAD)$/.test(String(o.method || 'GET').toUpperCase());
   const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
-  let r;
+  let r, release, started = false;
   try {
+    const control = authControlPath(path) || /^\/api\/(?:health|app\/diagnostics|app\/quit)(?:[/?]|$)/.test(path);
+    release = await (control ? controlPool : read ? readPool : writePool).acquire(ctl.signal);
     for (let attempt = 0; ; attempt++) {
       ctl.signal.throwIfAborted();
       // Auth recovery owns its abort classification (in particular a rejected write).
+      started = true;
       r = await fetchWithAuth(path, o);
       ctl.signal.throwIfAborted();
       if (r.ok) break;
@@ -153,13 +160,15 @@ async function req(path, opts) {
       const error = new Error(read ? '응답 대기 시간이 초과되었습니다. 잠시 후 다시 시도할 수 있습니다.'
         : "요청 시간이 초과되었습니다. 입력은 보존되며 잠시 후 다시 시도할 수 있습니다.");
       error.reason = 'request_timeout'; error.retryable = read;
-      error.uncertain = !!e.uncertain || (mutation && !e.authRejected);
+      error.uncertain = !!e.uncertain || (mutation && started && !e.authRejected);
+      if (!started) error.executed = false;
       error.authRecoveryPending = !!e.authRejected;
       throw error;
     }
-    if (mutation && e && !e.status && !e.authRejected) e.uncertain = true;
+    if (mutation && e && !e.status && !e.authRejected) e.uncertain = started;
     throw e;
   } finally {
+    release?.();
     clearTimeout(timer);
     if (callerSignal) callerSignal.removeEventListener("abort", abortFromCaller);
   }
@@ -551,6 +560,8 @@ export const api = {
     freshAfter ? { freshAfter } : undefined),
   ticketCommentsComplete: (key, freshAfter) => get("/api/issue/" + encodeURIComponent(key) + "/comments/complete",
     freshAfter ? { freshAfter } : undefined),
+  ticketCommentsPage: (key, startAt, signal) => req("/api/issue/" + encodeURIComponent(key)
+    + "/comments/page?startAt=" + startAt + "&maxResults=20", { signal }),
 
   // ── 링크 걸기(관련 티켓 / 관련문서) ──
   linkTypes: () => get("/api/linktypes"),                              // 관계 선택지(캐시됨)

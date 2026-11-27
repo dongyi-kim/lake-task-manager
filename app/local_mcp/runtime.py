@@ -23,6 +23,8 @@ from app.auth.web_forms import FormTransportUnavailable
 from app.infra.cache import CacheReadPolicyError
 from app.infra.cache_policy import resolve_read_policy
 from app.infra.resource_pressure import ResourceBusy, resource_pressure
+from app.infra.json_payload import encoded_size
+from app.local_mcp import response_budget
 from app.local_mcp.read_metadata import read_result, has_partial
 from app.local_mcp.output_schema import schema_for
 from app.local_mcp.security import Credentials, LocalGuard
@@ -216,6 +218,8 @@ class LocalMcpRuntime:
                              for name, label in PROFILE_LABELS.items()]}
 
     def _error(self, exc):
+        if isinstance(exc, response_budget.ResponseTooLarge):
+            return response_budget.error_payload(exc)
         if isinstance(exc, CacheReadPolicyError):
             return {"code": "cache_policy_unavailable", "status": 503, "message": str(exc),
                     "retryable": True, "needLogin": False}
@@ -445,11 +449,35 @@ class LocalMcpRuntime:
                         "service": payload["error"].get("service", "jira"), "interactive": True}})
                 return payload
 
+        def prepare(payload):
+            if read_only and encoded_size(payload) > response_budget.MAX_TOOL_RESPONSE_BYTES:
+                # Bound both text and structuredContent before the SDK duplicates
+                # and serializes them. Mutation receipts/results are never replaced
+                # by a read-size refusal after an operation may have committed.
+                payload = {"ok": False, "error": response_budget.error_payload(response_budget.ResponseTooLarge())}
+            try:
+                contract.model_validate(payload)
+            except ValidationError:
+                # A command may have completed before its output failed validation. Preserve
+                # its result/receipt and forbid blind retries; do not turn this into a new write.
+                payload = {"ok": False, "error": {"code": "output_schema_mismatch",
+                    "message": "LTM 응답 형식이 도구의 출력 스키마와 다릅니다. operationResult를 확인하세요.",
+                    "retryable": False, "repeatWrite": False,
+                    "operationResult": json.loads(json.dumps(payload, ensure_ascii=False, default=str))}}
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False,
+                                                                 separators=(",", ":"), default=str))],
+                structured_content=payload, is_error=not payload["ok"],
+            )
+
         async def invoke(**kwargs):
             try:
                 if lane is self._work_lane:
                     resource_pressure.check()
-                payload = await lane.run(lambda: call(kwargs))
+                # Large output validation/encoding belongs to the same worker and
+                # admission lease as the operation. A finished Jira call must not
+                # free a permit and move megabytes of preparation onto the SDK loop.
+                return await lane.run(lambda: prepare(call(kwargs)))
             except ResourceBusy as exc:
                 payload = resource_refusal(exc)
             except ToolRequestCancelled:
@@ -462,19 +490,8 @@ class LocalMcpRuntime:
                     "retryable": True, "retryAfterSeconds": 1, "executed": False,
                     "retryWithSameMutationId": not read_only and fn.__name__ not in AUTH_TOOLS | CONFIG_WRITES | LLM_TOOLS | HEALTH_TOOLS,
                 }}
-            try:
-                contract.model_validate(payload)
-            except ValidationError:
-                # A command may have completed before its output failed validation. Preserve
-                # its result/receipt and forbid blind retries; do not turn this into a new write.
-                payload = {"ok": False, "error": {"code": "output_schema_mismatch",
-                    "message": "LTM 응답 형식이 도구의 출력 스키마와 다릅니다. operationResult를 확인하세요.",
-                    "retryable": False, "repeatWrite": False,
-                    "operationResult": json.loads(json.dumps(payload, ensure_ascii=False, default=str))}}
-            return CallToolResult(
-                content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, default=str))],
-                structured_content=payload, is_error=not payload["ok"],
-            )
+            # Only fixed-size admission envelopes reach this path; no tool ran.
+            return prepare(payload)
         invoke.__name__, invoke.__doc__ = fn.__name__, fn.__doc__
         result_annotation = Annotated[CallToolResult, contract]
         signature = inspect.signature(fn)

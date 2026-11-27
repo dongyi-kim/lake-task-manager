@@ -874,7 +874,8 @@ async def live_health():
         mcp_health = _local_mcp.transport_host.health_snapshot()
         if mcp_health["state"] == "recovery_failed":
             components = {**(components if isinstance(components, dict) else {}), "mcp": mcp_health}
-            healthy = False
+            # MCP owns its recovery. Replacing a responsive desktop process here
+            # closes the user's window and abandons unrelated UI/Jira work.
     return JSONResponse(status_code=200 if healthy else 503,
                         content={"status": "ok" if healthy else "unresponsive", "pid": os.getpid(),
                                  "instance": os.environ.get("LAKE_SUPERVISED_WORKER", ""),
@@ -1165,6 +1166,7 @@ app.include_router(build_confluence_authoring_router(get_client=lambda: _client)
 app.include_router(build_mytasks_router(get_client=lambda: _client))
 app.include_router(build_tracking_router(get_client=lambda: _client))
 app.include_router(build_ticket_router(get_client=lambda: _client))
+from app.routes.runtime_diagnostics import build_runtime_diagnostics_router
 app.include_router(build_ticket_command_router(
     get_client=lambda: _client,
     settings=_settings,
@@ -1199,6 +1201,7 @@ def _classify_mcp_error(exc):
 
 from app.infra.settings import CACHE_DIR
 from app.local_mcp.runtime import LocalMcpRuntime
+app.include_router(build_runtime_diagnostics_router(directory=CACHE_DIR / "logs" / "runtime", port=_settings.app_port))
 
 _local_mcp = LocalMcpRuntime(
     get_client=lambda: _client, settings=_settings,
