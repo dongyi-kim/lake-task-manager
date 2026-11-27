@@ -200,3 +200,101 @@ def test_http_disconnect_before_worker_dispatch_prevents_late_write():
             request_disconnected.reset(token)
         assert await lane.run(lambda: "ready") == "ready"
     anyio.run(scenario)
+
+
+def test_large_output_preparation_keeps_worker_admission_and_transport_responsive(build_env, monkeypatch):
+    import json
+
+    env = build_env()
+    release = threading.Event()
+    prepared = []
+    lock = threading.Lock()
+    original_dumps = json.dumps
+
+    def dumps(value, *args, **kwargs):
+        data = value.get("data") if isinstance(value, dict) else None
+        if isinstance(data, dict) and data.get("serialization_probe"):
+            # A delay in encoding must hold the business permit without holding the SDK loop.
+            assert threading.get_ident() != env.runtime.transport_host._worker.current.thread.ident
+            with lock:
+                prepared.append(threading.get_ident())
+            assert release.wait(10), "test did not release output preparation"
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, "dumps", dumps)
+
+    def large_read() -> dict:
+        return {"serialization_probe": True, "description": "한글 본문 " * 32768,
+                "comments": [{"body": "discussion " * 1024} for _ in range(8)]}
+
+    env.runtime.register(large_read, read_only=True, output_type=dict)
+    results = []
+
+    async def scenario():
+        async with env.app.router.lifespan_context(env.app):
+            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=env.app),
+                    base_url=env.runtime.url.removesuffix("/mcp"),
+                    headers={"Authorization": "Bearer " + env.runtime.credentials.token()}) as http:
+                async with Client(streamable_http_client(env.runtime.url, http_client=http)) as mcp:
+                    await mcp.list_tools()
+                    async def call():
+                        results.append(await mcp.call_tool("large_read", {}))
+                    async with anyio.create_task_group() as group:
+                        try:
+                            for _ in range(8):
+                                group.start_soon(call)
+                            with anyio.fail_after(5):
+                                while len(prepared) != 8:
+                                    await anyio.sleep(.001)
+                            assert not env.runtime._work_lane.quiescent
+                            with anyio.fail_after(2):
+                                health = await mcp.call_tool("get_mcp_health", {})
+                                refused = await mcp.call_tool("large_read", {})
+                            assert not health.is_error
+                            assert refused.structured_content["error"]["code"] == "rate_limited"
+                            assert len(prepared) == 8
+                        finally:
+                            release.set()
+                    assert len(results) == 8 and all(not result.is_error for result in results)
+                    assert env.runtime._work_lane.quiescent
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize("comments", [False, True])
+def test_ticket_size_refusal_never_returns_truncated_success(build_env, monkeypatch, comments):
+    from app.local_mcp import read_tools
+    env = build_env()
+    monkeypatch.setattr(read_tools, "MAX_BODY_RESULT_BYTES", 1024)
+    monkeypatch.setattr(env.client, "ticket_view", lambda *_args, **_kwargs: {
+        "key": "DL-1", "descriptionHtml": "body" * 1024, "summary": "Large ticket"})
+
+    async def scenario():
+        async with Client(env.runtime.server) as mcp:
+            result = await mcp.call_tool("get_ticket", {"key": "DL-1", "detail": "read",
+                                                      "include_comments": comments})
+            payload = result.structured_content
+            assert result.is_error and not payload["ok"]
+            assert payload["error"]["code"] == "response_too_large"
+            assert payload["error"]["status"] == 413
+            assert "data" not in payload
+            assert "Jira" in payload["error"]["message"]
+    anyio.run(scenario)
+
+
+def test_read_response_budget_precedes_schema_and_duplicate_text_encoding(build_env, monkeypatch):
+    from app.local_mcp import response_budget
+    env = build_env()
+    monkeypatch.setattr(response_budget, "MAX_TOOL_RESPONSE_BYTES", 1024)
+    def large_read() -> dict:
+        return {"history": [{"body": "content" * 1024}]}
+    env.runtime.register(large_read, read_only=True, output_type=dict)
+
+    async def scenario():
+        async with Client(env.runtime.server) as mcp:
+            result = await mcp.call_tool("large_read", {})
+            assert result.is_error
+            error = result.structured_content["error"]
+            assert error["code"] == "response_too_large" and error["limitBytes"] == 1024
+            assert "data" not in result.structured_content
+            assert len(result.content[0].text) < 1024
+    anyio.run(scenario)

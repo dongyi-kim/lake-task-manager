@@ -6,6 +6,8 @@ Phase A 범위: Epic 자식 SP 롤업. (기능2·3 의 검색/활동은 후속 P
 """
 
 import hashlib
+import heapq
+from itertools import chain
 import re
 import sys
 import threading
@@ -23,7 +25,7 @@ from app.auth.base import (LoginRequired, MutationPreflightBusy, MutationPreflig
 from app.infra.cache_policy import (CacheMode, RequestReadPolicy, current_read_policy,
                                    note_read, read_scope, reduce_read_metadata, revalidating,
                                    observed_reads)
-from app.infra.resource_pressure import resource_pressure
+from app.infra.resource_pressure import ResourceBusy, resource_pressure
 from app.infra.json_payload import encoded_size
 from app.content.htmlsafe import (_CONF_RE, flatten_mentions_html, flatten_section_titles,
                        flatten_task_lists, lift_mentions_html, mark_explicit_jira_links, sanitize_html,
@@ -91,6 +93,14 @@ class _UncacheablePartial(RuntimeError):
 def _comment_signature(rows):
     return [[str(row.get(field) or "") for field in ("id", "date", "updated")]
             for row in rows if isinstance(row, dict)]
+
+
+def _lazy_read_images(html):
+    """Read projections defer offscreen image decoding; editor source stays unchanged."""
+    def image(match):
+        attrs = re.sub(r'''\s+(?:loading|decoding)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)''', "", match.group(1), flags=re.I)
+        return '<img loading="lazy" decoding="async"' + attrs + '>'
+    return re.sub(r"<img\b([^>]*)>", image, html or "", flags=re.I)
 
 
 def _repair_leaked_color_macros(html):
@@ -2544,10 +2554,34 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
     COMMENT_SNAPSHOT_CAP = 200
     COMMENT_SNAPSHOT_PAGE_SIZE = 50
     DIRECT_CHILD_SNAPSHOT_CAP = 100
+    UI_COMMENT_CAP = 100
+    UI_COMMENT_MAX_BYTES = 1024 * 1024
+    UI_COMMENT_MAX_ROW_BYTES = 128 * 1024
+    UI_COMMENT_SECONDS = 10
+    UI_DESCRIPTION_MAX_BYTES = 512 * 1024
+    UI_ISSUE_SOURCE_MAX_BYTES = 8 * 1024 * 1024
+
+    def _oversized_comment(self, comment):
+        c = comment if isinstance(comment, dict) else {}
+        return {"id": str(c.get("id") or ""), "date": c.get("created") or "",
+                "updated": c.get("updated") or "", "html": "", "bodyTooLarge": True,
+                "author": real_name((c.get("author") or {}).get("displayName")
+                                    or (c.get("author") or {}).get("name")),
+                "authorId": (c.get("author") or {}).get("name")}
+
+    def _comment_source_links(self, rows, key):
+        from urllib.parse import quote
+        return [dict(row, originalUrl=self.s.jira_base.rstrip("/") + "/browse/" + quote(key, safe="")
+                     + "?focusedCommentId=" + quote(row["id"], safe="") + "#comment-" + quote(row["id"], safe=""))
+                if row.get("bodyTooLarge") else row for row in rows]
 
     def _project_comment_row(self, comment, *, proxy_media=True):
         """Normalize one provider comment for both cached UI and evidence snapshots."""
         c = comment if isinstance(comment, dict) else {}
+        # Check source before any HTML/wiki parsing, media rewriting or string copies.
+        # Evidence snapshots retain their separate raw, bounded pagination contract.
+        if proxy_media and encoded_size(c) > self.UI_COMMENT_MAX_ROW_BYTES:
+            return self._oversized_comment(c)
         rb = c.get("renderedBody")
         body = c.get("body") or ""
         if rb and str(rb).strip():
@@ -2567,8 +2601,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # Evidence snapshots are consumed as plain text and deliberately avoid environment-
         # dependent media rewriting.  The cached UI path keeps its historical behavior.
         if proxy_media:
-            html = self._proxy_media(html)
-        return {
+            html = _lazy_read_images(self._proxy_media(html))
+        row = {
             "id": str(c.get("id") or ""),
             "date": c.get("created") or "",
             "updated": c.get("updated") or "",
@@ -2577,6 +2611,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "authorId": (c.get("author") or {}).get("name"),
             "html": html,
         }
+        return self._oversized_comment(c) if proxy_media and encoded_size(row) > self.UI_COMMENT_MAX_ROW_BYTES else row
 
     def _issue_comments(self, key, limit=5, *, fresh_after=None):
         """코멘트 — `comments:{env}:{key}` 로 티켓 단위 캐시(항상 CACHE_COMMENTS 건 보관)."""
@@ -2585,8 +2620,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         shared = cached_complete_comments(self, key, fresh_after=fresh_after, for_ui=True)
         if shared is not None:
             raw_rows, _sources = shared
-            return [self._project_comment_row(row) for row in ordered_comments(
-                raw_rows, newest_first=True)[:min(want, self.CACHE_COMMENTS)]]
+            rows, _reason = self._bounded_ui_comment_rows(ordered_comments(
+                raw_rows, newest_first=True)[:min(want, self.CACHE_COMMENTS)])
+            if _reason in ("resource_pressure", "time_budget"):
+                raise UpstreamBusy("댓글 처리 여유가 부족합니다. 잠시 후 다시 시도해 주세요.")
+            return self._comment_source_links(rows, key)
 
         def do():
             fence = self.cache.fence()
@@ -2601,20 +2639,23 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     raise SessionExpired("Jira 댓글 응답이 익명 세션을 나타냅니다.")
                 if not isinstance(data, dict) or not isinstance(data.get("comments"), list):
                     raise CacheReadPolicyError("Requested comment preview could not be verified")
-            rows = [self._project_comment_row(c)
-                    for c in (data.get("comments") or [])[:self.CACHE_COMMENTS]]
+            rows, _reason = self._bounded_ui_comment_rows((data.get("comments") or [])[:self.CACHE_COMMENTS])
+            if _reason in ("resource_pressure", "time_budget"):
+                raise UpstreamBusy("댓글 처리 여유가 부족합니다. 잠시 후 다시 시도해 주세요.")
             total = data.get("total")
             ids = [row.get("id") for row in rows]
             if current_read_policy().explicit:
                 preview_complete = (type(total) is int and total >= 0 and data.get("startAt") == 0
                                     and len(rows) == min(total, self.CACHE_COMMENTS)
                                     and all(ids) and len(set(ids)) == len(ids)
+                                    and not any(row.get("bodyTooLarge") for row in rows)
                                     and not (data.get("error") or data.get("errors")
                                              or data.get("errorMessages") or data.get("partial")))
                 if not preview_complete:
                     raise CacheReadPolicyError("Requested comment preview was incomplete")
             complete = (type(total) is int and total >= 0 and data.get("startAt") == 0
-                        and total == len(rows) and all(ids) and len(set(ids)) == len(ids))
+                        and total == len(rows) and all(ids) and len(set(ids)) == len(ids)
+                        and not any(row.get("bodyTooLarge") for row in rows))
             coverage_key = f"comments:{self.env}:{key}:coverage"
             self.cache.set_if_fence(coverage_key,
                 {"total": total if type(total) is int and total >= 0 else None,
@@ -2633,7 +2674,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                                       min_fetched_at=fresh_after / 1000)
         else:
             rows = self.cache.get_or_set(cache_key, self.s.cache_ttl_seconds, do)[0]
-        return rows[:want]
+        rows, _reason = self._bounded_ui_comment_rows(rows[:want], projected=True)
+        if _reason in ("resource_pressure", "time_budget"):
+            raise UpstreamBusy("댓글 처리 여유가 부족합니다. 잠시 후 다시 시도해 주세요.")
+        return self._comment_source_links(rows, key)
 
     def comment_coverage(self, key, rows):
         from app.jira.comment_snapshot import cached_complete_comments, ordered_comments
@@ -2643,11 +2687,13 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             preview = [self._project_comment_row(row) for row in ordered_comments(
                 raw_rows, newest_first=True)[:self.CACHE_COMMENTS]]
             if _comment_signature(rows) == _comment_signature(preview):
-                return {"complete": len(raw_rows) <= self.CACHE_COMMENTS, "total": len(raw_rows)}
+                return {"complete": len(raw_rows) <= self.CACHE_COMMENTS
+                        and not any(row.get("bodyTooLarge") for row in rows), "total": len(raw_rows)}
         hit = self.cache.get_alive(f"comments:{self.env}:{key}:coverage", record=False)
         proof = hit[0] if hit and isinstance(hit[0], dict) else {}
         matches = proof.get("signature") == _comment_signature(rows)
-        return {"complete": bool(matches and proof.get("complete")),
+        return {"complete": bool(matches and proof.get("complete")
+                                 and not any(row.get("bodyTooLarge") for row in rows)),
                 "total": proof.get("total") if matches else None}
 
     def issue_comments_complete(self, key, *, fresh_after=None):
@@ -2656,7 +2702,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         shared = cached_complete_comments(self, key, fresh_after=fresh_after, for_ui=True)
         if shared is not None:
             raw_rows, sources = shared
-            rows = [self._project_comment_row(row) for row in ordered_comments(raw_rows, newest_first=True)]
+            rows, reason = self._bounded_ui_comment_rows(ordered_comments(raw_rows, newest_first=True))
+            if reason:
+                return self._incomplete_ui_comments(key, rows, len(raw_rows), reason)
             return {"key": key, "comments": self._comments_display_ownership(rows),
                     "total": len(rows), "returned": len(rows), "pages": 1,
                     "complete": True, "hasMore": False, "remaining": 0,
@@ -2670,7 +2718,9 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         if complete_base:
             for observed in base_sources:
                 note_read(observed)
-            rows = base[0]
+            rows, reason = self._bounded_ui_comment_rows(base[0], projected=True)
+            if reason:
+                return self._incomplete_ui_comments(key, rows, len(base[0]), reason)
             return {"key": key, "comments": self._comments_display_ownership(rows), "total": len(rows), "returned": len(rows),
                     "pages": 1, "complete": True, "hasMore": False, "remaining": 0,
                     "fetchedAt": source["fetchedAt"]}
@@ -2702,6 +2752,10 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             return {**exc.value, "partial": True, "fetchedAt": None}
         for observed in sources:
             note_read(observed)
+        # Older retained snapshots may predate the collector's admission bounds.
+        rows, reason = self._bounded_ui_comment_rows(snapshot["comments"], projected=True)
+        if reason:
+            return self._incomplete_ui_comments(key, rows, snapshot.get("total"), reason)
         # The row may already have been replaced by a newer request. Use the provenance
         # delivered with this flight's result, never that newer row's timestamp.
         source = min((row for row in sources if row.get("kind") == "comments"),
@@ -2712,6 +2766,87 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                     "incompleteReason": "changed_during_read"}
         return {**snapshot, "comments": self._comments_display_ownership(snapshot["comments"]),
                 "fetchedAt": source["fetchedAt"]}
+
+    def _incomplete_ui_comments(self, key, rows, total, reason):
+        return {"key": key, "comments": self._comments_display_ownership(self._comment_source_links(rows, key)),
+                "total": total, "returned": len(rows), "complete": False, "partial": True,
+                "hasMore": True, "remaining": max(0, total - len(rows)) if type(total) is int else None,
+                "nextStartAt": len(rows), "incompleteReason": reason, "fetchedAt": None}
+
+    def _bounded_ui_comment_rows(self, source, *, projected=False):
+        rows, used, started = [], 2, time.monotonic()
+        try:
+            for raw in source:
+                resource_pressure.check()
+                if time.monotonic() - started >= self.UI_COMMENT_SECONDS:
+                    return rows, "time_budget"
+                if len(rows) >= self.UI_COMMENT_CAP:
+                    return rows, "cap_exceeded"
+                if encoded_size(raw) > self.UI_COMMENT_MAX_ROW_BYTES:
+                    rows.append({**{field: raw.get(field) for field in (
+                        "id", "date", "updated", "author", "authorId")}, "html": "", "bodyTooLarge": True}
+                        if projected else self._oversized_comment(raw))
+                    return rows, "comment_too_large"
+                row = raw if projected else self._project_comment_row(raw)
+                size = encoded_size(row) + 1
+                if used + size > self.UI_COMMENT_MAX_BYTES:
+                    return rows, "byte_budget"
+                rows.append(row)
+                used += size
+                if row.get("bodyTooLarge"):
+                    return rows, "comment_too_large"
+        except ResourceBusy:
+            return rows, "resource_pressure"
+        return rows, ""
+
+    def issue_comments_page(self, key, *, start_at=0, max_results=20):
+        """One bounded rich page, newest first. Whole-thread coverage is never inferred from a slice."""
+        if type(start_at) is not int or start_at < 0 or type(max_results) is not int or not 1 <= max_results <= 20:
+            raise ValueError("Invalid comment page bounds")
+        resource_pressure.check()
+        started, fence = time.monotonic(), self.cache.fence()
+        data = self.provider.get_json(f"/rest/api/2/issue/{key}/comment", params={
+            "startAt": start_at, "maxResults": max_results, "orderBy": "-created", "expand": "renderedBody"})
+        if self._looks_anonymous(data):
+            raise SessionExpired("Jira 댓글 응답이 익명 세션을 나타냅니다.")
+        total = data.get("total") if isinstance(data, dict) else None
+        raw_rows = data.get("comments") if isinstance(data, dict) else None
+        valid = (type(total) is int and total >= 0 and type(data.get("startAt")) is int and data.get("startAt") == start_at
+                 and isinstance(raw_rows, list) and len(raw_rows) <= max_results
+                 and all(isinstance(row, dict) and row.get("id") for row in raw_rows)
+                 and len({str(row["id"]) for row in raw_rows}) == len(raw_rows)
+                 and (bool(raw_rows) or start_at >= total) and start_at + len(raw_rows) <= max(start_at, total)
+                 and not any(data.get(field) for field in ("error", "errors", "errorMessages", "partial")))
+        if not valid:
+            return {**self._incomplete_ui_comments(key, [], total, "invalid_page"),
+                    "startAt": start_at, "sourceReturned": 0, "pageComplete": False, "nextStartAt": None}
+        rows, skipped, used, reason = [], [], 2, ""
+        for raw in raw_rows:
+            resource_pressure.check()
+            if time.monotonic() - started >= self.UI_COMMENT_SECONDS:
+                reason = "time_budget"
+                break
+            row = self._project_comment_row(raw)
+            size = encoded_size(row) + 1
+            if used + size > self.UI_COMMENT_MAX_BYTES:
+                reason = "byte_budget"
+                break
+            rows.append(row)
+            used += size
+            if row.get("bodyTooLarge"):
+                reason = "comment_too_large"
+                skipped.append({"id": row["id"], "index": start_at + len(rows) - 1})
+        if fence != self.cache.fence():
+            reason = "changed_during_read"
+        next_start = start_at + len(rows)
+        more = next_start < total
+        page_complete = not reason and len(rows) == len(raw_rows)
+        return {"key": key, "comments": self._comments_display_ownership(self._comment_source_links(rows, key)), "total": total,
+                "startAt": start_at, "returned": len(rows), "sourceReturned": len(rows),
+                "pageComplete": page_complete, "complete": page_complete and start_at == 0 and not more,
+                "partial": not page_complete, "hasMore": more, "nextStartAt": next_start if more and rows else None,
+                "remaining": max(0, total - next_start), "incompleteReason": reason or None,
+                "skipped": skipped, "fetchedAt": None}
 
     def _comments_display_ownership(self, rows):
         # The normal comments request already resolved this identity. Full coverage must not
@@ -2736,7 +2871,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             if ((cap is not None and type(cap) is not int)
                     or (page_size is not None and type(page_size) is not int)):
                 raise ValueError("comment snapshot bounds must be integers")
-            maximum = None if _for_ui else min(
+            maximum = self.UI_COMMENT_CAP if _for_ui else min(
                 self.COMMENT_SNAPSHOT_CAP,
                 max(1, cap if cap is not None else self.COMMENT_SNAPSHOT_CAP),
             )
@@ -2759,9 +2894,16 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         pages = 0
         reason = ""
         error = ""
+        started = time.monotonic()
+        used_bytes = 2
         fence = self.cache.fence() if _for_ui else None
         try:
             while maximum is None or len(rows) < maximum:
+                if _for_ui:
+                    resource_pressure.check()
+                    if time.monotonic() - started >= self.UI_COMMENT_SECONDS:
+                        reason = "time_budget"
+                        break
                 data = self.provider.get_json(
                     f"/rest/api/2/issue/{key}/comment",
                     params={"startAt": start, "maxResults": min(size, maximum - len(rows)) if maximum is not None else size,
@@ -2793,16 +2935,33 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 pages += 1
                 duplicate = False
                 for comment in raw_page:
+                    if _for_ui:
+                        resource_pressure.check()
+                        if time.monotonic() - started >= self.UI_COMMENT_SECONDS:
+                            reason = "time_budget"
+                            break
                     comment_id = str(comment.get("id") or "")
                     if not comment_id or comment_id in seen_ids:
                         duplicate = True
                         break
                     seen_ids.add(comment_id)
-                    rows.append(self._project_comment_row(comment, proxy_media=_for_ui))
+                    row = self._project_comment_row(comment, proxy_media=_for_ui)
+                    if _for_ui:
+                        row_bytes = encoded_size(row) + 1
+                        if used_bytes + row_bytes > self.UI_COMMENT_MAX_BYTES:
+                            reason = "byte_budget"
+                            break
+                        used_bytes += row_bytes
+                    rows.append(row)
+                    if _for_ui and row.get("bodyTooLarge"):
+                        reason = "comment_too_large"
+                        break
                     if maximum is not None and len(rows) >= maximum:
                         break
                 if duplicate:
                     reason = "duplicate_page"
+                    break
+                if reason:
                     break
                 next_start = start + len(raw_page)
                 if next_start >= total:
@@ -2825,7 +2984,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 if not isinstance(exc, SessionExpired):
                     self.cache.forget_prefixes((f"comments:{self.env}:{key}",), fence=fence)
                 raise
-            reason = "provider_error"
+            reason = "resource_pressure" if isinstance(exc, ResourceBusy) else "provider_error"
             error = str(exc)[:300]
         complete = not reason and total is not None and len(rows) == total
         remaining = max(0, total - len(rows)) if type(total) is int else None
@@ -2837,7 +2996,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             "complete": complete,
             "hasMore": not complete,
             "remaining": remaining,
-            "comments": rows,
+            "comments": self._comment_source_links(rows, key) if _for_ui else rows,
+            **({"nextStartAt": len(rows)} if _for_ui and not complete else {}),
             **({"incompleteReason": reason} if reason else {}),
             **({"error": error} if error else {}),
         }
@@ -4990,6 +5150,14 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             raw = next((row for row in page.get("issues", []) if row.get("key") == key), None)
         if not raw:
             return None
+        description_too_large = wants_description and any(
+            encoded_size((raw.get(section) or {}).get("description")) > self.UI_DESCRIPTION_MAX_BYTES
+            for section in ("fields", "renderedFields"))
+        if description_too_large:
+            # Keep the canonical source untouched. The UI receives an explicit omission,
+            # before wiki conversion, sanitizer, sections, edit HTML or media expansion.
+            raw = {**raw, "fields": {**(raw.get("fields") or {}), "description": ""},
+                   "renderedFields": {**(raw.get("renderedFields") or {}), "description": ""}}
         if wants_description and (include_description is not None or include_comments):
             source_description = (raw.get("fields") or {}).get("description")
             if isinstance(source_description, str) and self._description_fmt() == "wiki" and not _looks_like_html(source_description):
@@ -5019,6 +5187,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                           "read" if detail == "summary" else detail)
         view = _build_ticket_view(raw, self.s.sp_field_id, self.s.jira_base,
                                   self.s.epic_link_field_id, self.s.epic_name_field_id, detail=representation)
+        if description_too_large:
+            view.update(descriptionTooLarge=True, descriptionUrl=view.get("url") or f"{self.s.jira_base}/browse/{key}")
         if include_comments:
             from app.jira.comment_snapshot import embedded_comment_rows, embedded_comment_coverage
             comment_value = (raw.get("fields") or {}).get("comment")
@@ -5054,8 +5224,18 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         # 섹션은 프록시 이전 HTML 에서 잘렸다 — 이미지가 든 섹션도 프록시를 타야 한다
         if wants_description and detail == "full":
             for sec in view.get("descriptionSections") or []:
-                sec["html"] = self._proxy_media(sec["html"])
+                sec["html"] = _lazy_read_images(self._proxy_media(sec["html"]))
             _log_sections(key, view)
+        if wants_description and "descriptionHtml" in view:
+            view["descriptionHtml"] = _lazy_read_images(view["descriptionHtml"])
+        if description_too_large:
+            # Empty source HTML can still produce a structural empty section.
+            # An omitted field has no editor body or display sections at all.
+            for name in ("descriptionHtml", "descriptionEditHtml"):
+                if name in view:
+                    view[name] = ""
+            if "descriptionSections" in view:
+                view["descriptionSections"] = []
         if field_context is not None:
             field_context.check()
         return view
@@ -5248,6 +5428,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
 
     CHILD_SCAN_LIMIT = 20        # 자손 상태변경 **스캔** 상한(타임라인 — 자식 1명당 changelog 1회, cold 비용 방어)
     CHILD_DISPLAY_LIMIT = 300    # 하위 목록 **표시** 상한. 검색이 경량(1회)+뱃지 배치라 넉넉히 보여도 싸다.
+    TIMELINE_CACHE_LIMIT = 1000  # Display history's largest public window; evidence paging is separate.
+    DISPLAY_CHANGELOG_MAX_BYTES = 4 * 1024 * 1024
 
     def prefetch_changelogs(self, keys):
         """여러 티켓의 이력을 **검색 한 번**으로 받아 changelog 캐시에 채운다.
@@ -5272,7 +5454,7 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 data = self._query_page(
                     "key in (%s)" % ",".join(chunk), "created,reporter",
                     start_at=None, max_results=len(chunk), expand="changelog")
-            except SessionExpired:
+            except (SessionExpired, UpstreamUnavailable):
                 raise
             except Exception:
                 return
@@ -5287,6 +5469,8 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
                 #   → 채우지 않고 개별 조회(_changelog)에 맡긴다.
                 if not k or raw.get("changelog") is None:
                     continue
+                if encoded_size(raw["changelog"]) > self.DISPLAY_CHANGELOG_MAX_BYTES:
+                    raise UpstreamBusy("이력이 커서 Jira에서 확인해야 합니다.")
                 f = raw.get("fields") or {}
                 self.cache.set(f"changelog:{env}:{k}", {
                     "created": f.get("created"), "reporter": f.get("reporter") or {},
@@ -5297,16 +5481,30 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         """티켓 원본 이력 {created, reporter, histories} — 티켓단위 캐시.
         본인 타임라인과 '부모의 자손 스캔'이 같은 캐시를 공유한다."""
         def do():
-            try:
-                raw = self.provider.get_json(
-                    f"/rest/api/2/issue/{key}",
-                    params={"expand": "changelog", "fields": "created,reporter"})
-            except Exception:
-                return {}
+            raw = self.provider.get_json(
+                f"/rest/api/2/issue/{key}",
+                params={"expand": "changelog", "fields": "created,reporter"})
+            if self._looks_anonymous(raw):
+                raise SessionExpired("Jira 이력 응답이 익명 세션을 나타냅니다.")
+            if not isinstance(raw, dict) or not isinstance(raw.get("changelog"), dict):
+                raise UpstreamUnavailable("Jira 이력 응답을 확인할 수 없습니다.")
+            if not isinstance(raw["changelog"].get("histories"), list):
+                raise UpstreamUnavailable("Jira 이력 응답을 확인할 수 없습니다.")
+            if encoded_size(raw["changelog"]) > self.DISPLAY_CHANGELOG_MAX_BYTES:
+                raise UpstreamBusy("이력이 커서 Jira에서 확인해야 합니다.")
             f = raw.get("fields") or {}
             return {"created": f.get("created"), "reporter": f.get("reporter") or {},
                     "histories": (raw.get("changelog") or {}).get("histories") or []}
-        return self.cache.get_or_set(f"changelog:{self.env}:{key}", self.s.cache_ttl_seconds, do)[0]
+        cache_key = f"changelog:{self.env}:{key}"
+        value = self.cache.get_or_set(cache_key, self.s.cache_ttl_seconds, do)[0]
+        if not isinstance(value, dict) or not isinstance(value.get("histories"), list):
+            # Earlier versions cached transport/auth failures as {}. They are not
+            # usable stale history and must not hide a new authentication failure.
+            self.cache.forget(cache_key)
+            return self.cache.refresh(cache_key, self.s.cache_ttl_seconds, do)
+        if encoded_size(value) > self.DISPLAY_CHANGELOG_MAX_BYTES:
+            raise UpstreamBusy("이력이 커서 Jira에서 확인해야 합니다.")
+        return value
 
     def confluence_search(self, cql, start=0, limit=50):
         """UI/Agent/MCP share Confluence query authentication and complete-result caching."""
@@ -5653,39 +5851,44 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
         def build_self():
             nonlocal cats
             cats = self._status_cats()
-            ev = []
             own = self._changelog(key)
             rep = own.get("reporter") or {}
-            if own.get("created"):
-                ev.append({"kind": "created", "date": own["created"],
+            def events():
+                if own.get("created"):
+                    yield {"kind": "created", "date": own["created"],
                            "author": real_name(rep.get("displayName") or rep.get("name")),
                            "authorId": rep.get("name"), "field": None,
-                           "from": None, "to": None, "srcKey": None})
-            for h in own.get("histories") or []:
-                ev.extend(ev_of(h, self.TIMELINE_FIELDS))
-            for c in self._issue_comments(key, limit=10):   # 코멘트는 기존 캐시 재사용
-                ev.append({"kind": "comment", "date": c.get("date"), "author": c.get("author"),
+                           "from": None, "to": None, "srcKey": None}
+                for index, h in enumerate(own.get("histories") or []):
+                    if index % 100 == 0:
+                        resource_pressure.check()
+                    yield from ev_of(h, self.TIMELINE_FIELDS)
+                for c in self._issue_comments(key, limit=10):
+                    yield {"kind": "comment", "date": c.get("date"), "author": c.get("author"),
                            "authorId": c.get("authorId"), "field": None,
-                           "from": None, "to": None, "srcKey": None})
-            ev.sort(key=lambda e: e.get("date") or "", reverse=True)
-            return ev
+                           "from": None, "to": None, "srcKey": None}
+            return heapq.nlargest(self.TIMELINE_CACHE_LIMIT, events(), key=lambda e: e.get("date") or "")
 
         def build_children():
             nonlocal cats
             cats = self._status_cats()
-            ev = []
             # 자손은 '상태 변경'만. 자식별 changelog는 캐시되어 재방문/자식 직접 열기에도 재사용.
             child_keys = self._child_keys(key)
             self.prefetch_changelogs(child_keys)      # 낱개 N 회 → 검색 1 회
-            for ck in child_keys:
-                for h in (self._changelog(ck).get("histories") or []):
-                    ev.extend(ev_of(h, {"status"}, src=ck))
-            return ev
+            def events():
+                for ck in child_keys:
+                    resource_pressure.check()
+                    for index, h in enumerate(self._changelog(ck).get("histories") or []):
+                        if index % 100 == 0:
+                            resource_pressure.check()
+                        yield from ev_of(h, {"status"}, src=ck)
+            return heapq.nlargest(self.TIMELINE_CACHE_LIMIT, events(), key=lambda e: e.get("date") or "")
 
         def merge(own, children):
-            ev = list(own or []) + list(children or [])
-            ev.sort(key=lambda e: e.get("date") or "", reverse=True)
-            return ev[:limit]
+            # Retained pre-upgrade tiers can still contain every historical event.
+            # Never concatenate/sort another full-sized copy on the read path.
+            return heapq.nlargest(min(limit, self.TIMELINE_CACHE_LIMIT), chain(own or [], children or []),
+                                  key=lambda e: e.get("date") or "")
 
         # key 앞부분을 기존 invalidate prefix와 맞춘다. 출력 계약이 바뀌었으므로 v2로 옛 캐시를 격리.
         self_key = f"timeline:{self.env}:{key}:self:v2"
@@ -5921,6 +6124,11 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             d = self.provider.get_json(
                 f"/rest/api/2/issue/{key}",
                 params={"fields": self._issue_fields(), "expand": "renderedFields"})
+            if encoded_size(d) > self.UI_ISSUE_SOURCE_MAX_BYTES:
+                # Avoid serializing the same huge raw source into issue and issueview.
+                # Carry the actual source to the UI omission guard; never cache a
+                # fabricated empty description in the shared evidence namespace.
+                raise _UncacheablePartial(d)
             # 이 응답은 **전체 필드**(issuelinks·attachment 포함)라, 같은 티켓의 전체 이슈 캐시도
             # 함께 데운다 → 다이얼로그의 관련(issuelinks)·첨부(attachment)·자식 조회가 재요청 없이
             # 이걸 재사용한다(경량 검색으로 issue:{key} 가 안 데워지는 걸 상쇄 + 기존 중복 제거).
@@ -5944,14 +6152,20 @@ class JiraClient(JiraIdentityMixin, JiraMediaMixin, JiraWorkloadMixin):
             # 평소 경로는 캐시를 먼저 주고 뒤에서 갱신한다 — 화면은 빨리 뜨지만 첫 응답이
             # 한 박자 늦다. 그 한 박자가 본문 편집에서는 '남의 수정을 덮어쓰기' 가 된다.
             fence = self.cache.fence()
-            data = fetch()
+            try:
+                data = fetch()
+            except _UncacheablePartial as exc:
+                return exc.value
             if not isinstance(data, dict) or not isinstance(data.get("fields"), dict):
                 return None
             if self.cache.set_if_fence(ck, data, self.s.cache_ttl_seconds, fence):
                 note_read(self.cache.metadata(ck))
             return data
         # SessionExpired(401/403/5xx) 는 전파돼 라우트가 needLogin(401) 처리. 404 는 에러 바디(dict) → None.
-        data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
+        try:
+            data, _ = self.cache.get_or_set(ck, self.s.cache_ttl_seconds, fetch)
+        except _UncacheablePartial as exc:
+            data = exc.value
         if not isinstance(data, dict) or "fields" not in data:
             return None       # 존재하지 않는 티켓(404 에러 바디)
         return data

@@ -64,6 +64,39 @@ def test_comments_real_rest_pages_have_no_ui_or_snapshot_cap(build_env):
     assert get_evidence_page(env.client, key, "comments", 0, 73)["total"] == 206
 
 
+@pytest.mark.parametrize("oversized", [False, True])
+def test_comment_preview_uses_actual_coverage_after_ui_projection_limits(build_env, monkeypatch, oversized):
+    env = build_env()
+    original_get = env.provider.get_json
+    rows = [{"id": str(index), "body": ("x" * (129 * 1024) if oversized and index == 0 else "normal comment"),
+             "created": f"2026-11-{28 - index:02d}T12:00:00.000+0900",
+             "author": {"name": "u01", "displayName": "User"}}
+            for index in range(10)]
+    def get(path, params=None, **kwargs):
+        if path == "/rest/api/2/issue/DL-1/comment":
+            return {"startAt": 0, "total": len(rows), "comments": rows[:(params or {}).get("maxResults", 20)]}
+        return original_get(path, params=params, **kwargs)
+    monkeypatch.setattr(env.provider, "get_json", get)
+
+    async def scenario():
+        async with Client(env.runtime.server) as mcp:
+            response = await mcp.call_tool("get_comments", {"key": "DL-1"})
+            assert not response.is_error, response.structured_content
+            payload = response.structured_content
+            data = payload["data"]
+            assert data["sourceTotal"] == 10 and data["sourceCoverageKnown"]
+            assert data["mayHaveMore"] is oversized
+            assert data["partial"] is oversized and payload["partial"] is oversized
+            assert data["returnedCount"] == (1 if oversized else 10)
+            if oversized:
+                assert data["comments"][0]["bodyTooLarge"]
+                assert data["nextCall"] == {"tool": "get_evidence_page", "arguments": {
+                    "key": "DL-1", "kind": "comments", "start_at": 0, "max_results": 100, "record_offset": 0}}
+            else:
+                assert data["nextCall"] is None
+    anyio.run(scenario)
+
+
 def test_history_preserves_exact_source_values_and_pages_one_shared_snapshot(evidence_client):
     client, calls = evidence_client, []
     original = [history(), history("2", {"displayName": "Display Only"})]

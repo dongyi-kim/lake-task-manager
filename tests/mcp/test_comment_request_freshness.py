@@ -20,6 +20,7 @@ def test_live_sdk_comments_and_ticket_accept_long_thread_preview(build_env):
             assert not preview.is_error, preview.structured_content
             data = preview.structured_content
             assert data["data"]["returnedCount"] == 20 and data["data"]["mayHaveMore"]
+            assert not data["partial"] and not data["data"]["partial"]
             assert data["cache"]["compliant"] and data["cache"]["upstreamValidated"]
             ticket = await mcp.call_tool("get_ticket", {"key": "DL-1", "cache_mode": "live"})
             assert not ticket.is_error and ticket.structured_content["cache"]["compliant"]

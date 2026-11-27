@@ -152,6 +152,10 @@ class Comments(OpenModel):
     limit: int
     sourceLimit: int
     mayHaveMore: bool
+    sourceTotal: int | None = None
+    sourceCoverageKnown: bool = False
+    partial: bool = False
+    nextCall: dict[str, JsonValue] | None = None
 
 
 class CommentSource(OpenModel):

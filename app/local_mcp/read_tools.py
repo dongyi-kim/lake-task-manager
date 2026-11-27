@@ -14,6 +14,7 @@ from app.jira.jql_budget import budgeted_query, current_budget
 from app.jira.comment_snapshot import embedded_comment_coverage, embedded_comment_rows
 from app.services.ticket_commands import CommandError
 from app.local_mcp.projections import issue_projection, ticket_projection
+from app.local_mcp.response_budget import ResponseTooLarge
 
 
 def register_reads(register, runtime):
@@ -52,7 +53,7 @@ def register_reads(register, runtime):
         Default ordering is key ASC; explicit ordering is preserved. These are current pages,
         so upstream edits between pages may change membership/order; they are not a frozen report.
         Do not supply a previous snapshot_id for a content search. If a page exceeds the byte
-        limit, reduce max_results (down to 1); one oversized body needs get_ticket(read), comments need
+        limit, reduce max_results (down to 1); one oversized body must be read in Jira, comments need
         get_evidence_page(kind=comments), which supports lossless continuation of long records.
         Metadata-only searches retain their 30-minute frozen snapshots. Preserve include_description,
         cache_mode, strategy and max_parts with that cursor; a continuation is not a new live validation.
@@ -134,7 +135,7 @@ def register_reads(register, runtime):
         fetches individual issues. Split larger key sets into batches of at most 100.
         The combined result is limited to 16 MiB. Larger bodies require fewer keys or
         search_issues(max_results=1, include_description=true) pagination; one oversized
-        body needs get_ticket(read); oversized discussion uses get_evidence_page(kind=comments).
+        body must be read in Jira; oversized discussion uses get_evidence_page(kind=comments).
         A size refusal is an error, never a truncated result.
         Cold batches of at most 10 known keys use one combined metadata/body search (subject to
         the server page cap); other body reads discover light metadata then hydrate cache misses.
@@ -202,6 +203,10 @@ def register_reads(register, runtime):
         Explicit content reads share the batched search caches, fetching only missing fields together.
         comments is a raw list with commentsCoverage (total, returned, complete, nextCall), not the
         20-comment UI preview. A partial/unknown discussion is not complete; follow nextCall when needed.
+        Every complete response is limited to 16 MiB, including descriptions without comments.
+        Rich ticket descriptions also have a 512 KiB display budget; use
+        get_tickets(include_description=true) for the raw source or open Jira if refused.
+        Oversized single descriptions must be read in Jira; no successful response is truncated.
         Comments plus body use the same 16 MiB bounded acquisition. For oversized discussion use
         get_evidence_page(kind=comments), preserving its nextCall arguments for lossless continuation.
         """
@@ -214,17 +219,28 @@ def register_reads(register, runtime):
         result = runtime.client.ticket_view(key, fresh=fresh, **options)
         if result is None:
             raise ValueError("티켓을 찾을 수 없거나 조회 권한이 없습니다.")
+        wants_description = detail != "summary" if include_description is None else include_description
+        if wants_description and result.get("descriptionTooLarge"):
+            limit = getattr(runtime.client, "UI_DESCRIPTION_MAX_BYTES", 512 * 1024)
+            raise ResponseTooLarge(
+                f"Rich ticket description exceeds {limit // 1024} KiB. "
+                "Use get_tickets(include_description=true) for the complete raw description "
+                "or open the original ticket in Jira. No empty or truncated description was returned.",
+                limit=limit)
         projected = ticket_projection(result, detail, include_description=include_description,
                                       include_comments=include_comments)
-        if include_comments and encoded_size(projected) > MAX_BODY_RESULT_BYTES:
-            raise ValueError(BODY_PAGE_LIMIT_MESSAGE)
+        if encoded_size(projected) > MAX_BODY_RESULT_BYTES:
+            raise ResponseTooLarge(limit=MAX_BODY_RESULT_BYTES)
         return projected
 
     def get_comments(key: str, limit: int = 100) -> dict:
         """Read recent discussion for one ticket, newest first; limit=1..1000.
         Pair with ticket metadata/description already obtained in batch or through get_ticket.
         The UI cache holds at most sourceLimit=20 comments even when a larger limit is requested.
-        Returns comments, returnedCount, limit, sourceLimit and conservative mayHaveMore.
+        Returns comments, returnedCount, limit, sourceLimit, sourceTotal and conservative mayHaveMore.
+        A display-budget omission or an unproven short preview sets partial=true. A fulfilled
+        preview mayHaveMore without being partial. nextCall starts raw evidence at zero so an
+        omitted oversized comment is not skipped.
         If this preview cannot answer the question, or a complete review is required, use
         get_evidence_page(kind=comments) for older discussion with real pagination. Do not infer
         that no cancellation/exclusion exists from a preview when mayHaveMore=true.
@@ -236,9 +252,18 @@ def register_reads(register, runtime):
         if not 1 <= limit <= 1000:
             raise ValueError("limit은 1~1000이어야 합니다.")
         rows = runtime.client.issue_comments(key, limit=limit)
+        coverage_fn = getattr(runtime.client, "comment_coverage", None)
+        proof = (coverage_fn(key, rows) if callable(coverage_fn) else None) or {}
+        complete = proof.get("complete") is True and not any(row.get("bodyTooLarge") for row in rows)
+        total = proof.get("total") if type(proof.get("total")) is int else None
+        partial = (any(row.get("bodyTooLarge") for row in rows)
+                   or (not complete and len(rows) < min(limit, runtime.client.CACHE_COMMENTS)))
+        next_call = None if complete else {"tool": "get_evidence_page", "arguments": {
+            "key": key, "kind": "comments", "start_at": 0, "max_results": 100, "record_offset": 0}}
         return {"comments": rows, "returnedCount": len(rows), "limit": limit,
                 "sourceLimit": runtime.client.CACHE_COMMENTS,
-                "mayHaveMore": len(rows) >= min(limit, runtime.client.CACHE_COMMENTS)}
+                "mayHaveMore": not complete, "partial": partial, "nextCall": next_call,
+                "sourceTotal": total, "sourceCoverageKnown": complete or total is not None}
 
     def get_comment_source(key: str, comment_id: str) -> dict:
         """Read one comment's current editor HTML and ID before editing it.
