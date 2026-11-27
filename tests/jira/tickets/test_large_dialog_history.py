@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.auth.base import SessionExpired, UpstreamBusy
+from app.auth.base import SessionExpired, UpstreamBusy, UpstreamUnavailable
 from app.infra.cache import Cache
 from app.infra.resource_pressure import ResourceBusy
 from app.infra.settings import get_settings
@@ -43,6 +43,72 @@ def test_timeline_limits_materialized_cache_but_preserves_newest_events(client, 
     stored = client.cache.get(f"timeline:{client.env}:DL-1:self:v2")
     assert len(stored) <= client.TIMELINE_CACHE_LIMIT
     assert len(client.ticket_timeline("DL-1", limit=1000, include_children=False)) == 1000
+
+
+@pytest.mark.parametrize("failure,expected", [
+    (SessionExpired("private upstream message"), SessionExpired),
+    (ConnectionError("private upstream message"), UpstreamUnavailable),
+])
+def test_deferred_failure_stops_polling_amplification_and_retries_after_cooldown(
+        client, monkeypatch, failure, expected):
+    clock, calls = [100], []
+    monkeypatch.setattr("app.jira.jira_client.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(client, "_status_cats", lambda: {})
+    monkeypatch.setattr(client, "_issue_comments", lambda *a, **kw: [])
+    def fetch(key):
+        calls.append(key)
+        raise failure
+    monkeypatch.setattr(client, "_changelog", fetch)
+    assert client.ticket_timeline("DL-1", defer=True, include_children=False) is None
+    client._bg_pool.shutdown(wait=True)
+    for _ in range(20):
+        with pytest.raises(expected, match="타임라인"):
+            client.ticket_timeline("DL-1", defer=True, include_children=False)
+    assert calls == ["DL-1"]
+    assert "private upstream message" not in repr(client._timeline_failures)
+    from concurrent.futures import ThreadPoolExecutor
+    client._bg_pool = ThreadPoolExecutor(max_workers=1)
+    clock[0] += 31
+    monkeypatch.setattr(client, "_changelog", lambda key: {"histories": []})
+    assert client.ticket_timeline("DL-1", defer=True, include_children=False) is None
+    client._bg_pool.shutdown(wait=True)
+    assert client.ticket_timeline("DL-1", defer=True, include_children=False) == []
+    assert not client._timeline_failures
+
+
+@pytest.mark.parametrize("recovery", ["new_provider", "silent_auth"])
+def test_deferred_failure_keeps_stale_display_and_new_login_can_retry(client, monkeypatch, recovery):
+    key = f"timeline:{client.env}:DL-1:self:v2"
+    stale = [{"date": "2026-11-01", "kind": "created"}]
+    client.cache.set(key, stale, -1)
+    monkeypatch.setattr(client, "_status_cats", lambda: {})
+    monkeypatch.setattr(client, "_changelog", lambda _: (_ for _ in ()).throw(SessionExpired("expired")))
+    assert client.ticket_timeline("DL-1", defer=True, include_children=False) == stale
+    client._bg_pool.shutdown(wait=True)
+    assert client.ticket_timeline("DL-1", defer=True, include_children=False) == stale
+    scheduled = []
+    monkeypatch.setattr(client, "_refresh_bg", lambda *args: scheduled.append(args))
+    if recovery == "new_provider":
+        client._provider_generation += 1
+    else:
+        client.mark_session_alive()
+    assert client.ticket_timeline("DL-1", defer=True, include_children=False) == stale
+    assert len(scheduled) == 1 and not client._timeline_failures
+
+
+def test_first_lazy_provider_failure_is_not_reissued_on_next_timeline_poll(client, monkeypatch):
+    client._provider, client._provider_built = None, False
+    calls = []
+    def fetch(*args, **kwargs):
+        calls.append(1)
+        raise ConnectionError("offline")
+    monkeypatch.setattr(client, "_make_provider", lambda: SimpleNamespace(get_json=fetch, close=lambda: None))
+    monkeypatch.setattr(client, "_status_cats", lambda: {})
+    assert client.ticket_timeline("DL-1", defer=True, include_children=False) is None
+    client._bg_pool.shutdown(wait=True)
+    with pytest.raises(UpstreamUnavailable):
+        client.ticket_timeline("DL-1", defer=True, include_children=False)
+    assert calls == [1]
 
 
 def test_oversized_display_changelog_is_not_copied_into_cache(client, monkeypatch):
@@ -133,6 +199,33 @@ def test_ui_collection_has_cooperative_time_budget(client, monkeypatch):
     result = client.comment_snapshot("DL-1", _for_ui=True)
     assert not result["complete"] and result["incompleteReason"] == "time_budget"
     assert result["returned"] <= 1
+
+
+@pytest.mark.parametrize("paged", [True, False])
+def test_slow_network_does_not_consume_comment_processing_budget(client, monkeypatch, paged):
+    clock = [0]
+    monkeypatch.setattr("app.jira.jira_client.time.monotonic", lambda: clock[0])
+    def slow_network(*args, **kwargs):
+        clock[0] += 90
+        return {"startAt": 0, "total": 1, "comments": [comment(1)]}
+    client._provider.get_json = slow_network
+    result = (client.issue_comments_page("DL-1") if paged
+              else client.comment_snapshot("DL-1", _for_ui=True))
+    assert result["complete"] and result["returned"] == 1
+
+
+def test_collection_deadline_stops_new_pages_without_discarding_received_rows(client, monkeypatch):
+    clock, calls = [0], []
+    monkeypatch.setattr("app.jira.jira_client.time.monotonic", lambda: clock[0])
+    def slow_page(*args, **kwargs):
+        calls.append(kwargs["params"]["startAt"])
+        clock[0] += 130
+        return {"startAt": calls[-1], "total": 3, "comments": [comment(len(calls))]}
+    client._provider.get_json = slow_page
+    result = client.comment_snapshot("DL-1", _for_ui=True)
+    assert calls == [0, 1]
+    assert result["returned"] == 2 and not result["complete"]
+    assert result["incompleteReason"] == "collection_deadline"
 
 
 def test_ui_comment_byte_budget_is_shared_across_rows_and_page_continuation(client, monkeypatch):
