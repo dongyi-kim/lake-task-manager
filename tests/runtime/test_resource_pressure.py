@@ -7,7 +7,37 @@ import time
 
 import pytest
 
-from app.infra.resource_pressure import ResourceBusy, ResourcePressure, sample_memory
+from app.infra.resource_pressure import (
+    MiB, ResourceBusy, ResourcePressure, memory_policy, sample_memory,
+)
+
+
+@pytest.mark.parametrize("ram_gib,hard_gib,soft_gib,reserve_mib", [
+    (8, 8 / 3, 2, 512), (16, 16 / 3, 4, 1024), (32, 8, 4, 2048),
+])
+def test_adaptive_headroom_admits_large_work_but_keeps_os_reserve(
+        ram_gib, hard_gib, soft_gib, reserve_mib):
+    policy = memory_policy(ram_gib * 1024 * MiB)
+    assert policy["hardLimitBytes"] == int(hard_gib * 1024 * MiB)
+    assert policy["softLimitBytes"] == soft_gib * 1024 * MiB
+    assert policy["reserveBytes"] == reserve_mib * MiB
+    value = {"totalBytes": ram_gib * 1024 * MiB, "processBytes": 1536 * MiB,
+             "availableBytes": 3 * 1024 * MiB, "jobBytes": 1536 * MiB,
+             "jobLimitBytes": policy["hardLimitBytes"]}
+    gate = ResourcePressure(sampler=lambda: dict(value), interval=0)
+    gate.check()
+    value["availableBytes"] = policy["reserveBytes"]
+    with pytest.raises(ResourceBusy):
+        gate.check()
+    value["availableBytes"] = int(policy["reserveBytes"] * 1.3)
+    gate.check()
+
+
+def test_memory_policy_keeps_small_machine_limits_bounded():
+    policy = memory_policy(2 * 1024 * MiB)
+    assert policy["hardLimitBytes"] == 2 * 1024 * MiB // 3
+    assert policy["softLimitBytes"] == 512 * MiB
+    assert policy["reserveBytes"] == 128 * MiB
 
 
 def test_memory_pressure_refuses_then_recovers_with_headroom():
