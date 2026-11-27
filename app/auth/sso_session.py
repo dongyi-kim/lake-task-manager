@@ -36,6 +36,8 @@ def _auth_log(msg):
     print(msg, file=sys.stderr, flush=True)
 import threading
 
+_owner_guard = threading.Lock()
+
 from .base import (AuthProvider, LoginRequired, PendingUpstreamOperation,
                    PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
                    WRITE_HEADERS, PRIO_BACKGROUND, PRIO_WRITE, upstream_priority)
@@ -85,6 +87,7 @@ class SsoSessionProvider(AuthProvider):
     START_TIMEOUT = 20
     JOB_TIMEOUT = 30
     MAX_QUEUED_JOBS = 32
+    MAX_LIVE_OWNERS = 2
 
     def __init__(self, base, store, user_agent=None):
         self.base = base.rstrip("/")
@@ -105,14 +108,41 @@ class SsoSessionProvider(AuthProvider):
         self._closed = threading.Event()
         self._broken_reason = ""
         self._start_error = None
-        self._thread = threading.Thread(target=self._loop, name="playwright-sso", daemon=True)
-        self._thread.start()
+        # One store belongs to one JiraClient and already combines Jira,
+        # Confluence and Bitbucket cookies in the same provider. Keep at most one
+        # replacement beside a stuck old owner, without coupling independent
+        # clients/stores. A constructor timeout must keep owning its slot too.
+        with _owner_guard:
+            owners = getattr(store, "_sso_provider_owners", None)
+            if owners is None:
+                owners = threading.BoundedSemaphore(self.MAX_LIVE_OWNERS)
+                store._sso_provider_owners = owners
+        if not owners.acquire(blocking=False):
+            raise UpstreamBusy("이전 SSO 연결이 아직 정리 중입니다. 잠시 후 다시 시도해 주세요.")
+        self._owner_permits = owners
+        self._thread = threading.Thread(target=self._owner, name="playwright-sso", daemon=True)
+        try:
+            self._thread.start()
+        except BaseException:
+            owners.release()
+            raise
         if not self._ready.wait(self.START_TIMEOUT):
             self._mark_broken("SSO 브라우저 기동 시간 초과")
             raise UpstreamUnavailable(
                 f"SSO 브라우저가 {self.START_TIMEOUT}초 안에 시작되지 않았습니다.")
         if self._start_error is not None:
             raise self._start_error
+
+    def _owner(self):
+        try:
+            self._loop()
+        finally:
+            try:
+                self._dispose()
+            finally:
+                # A retired/hung thread still retains its Chromium/driver tree.
+                # Only completed owner-thread cleanup makes room for another.
+                self._owner_permits.release()
 
     def _loop(self):
         """이 스레드가 Playwright 객체를 소유하고, 큐로 들어온 작업만 실행한다."""
@@ -127,7 +157,6 @@ class SsoSessionProvider(AuthProvider):
         except BaseException as e:   # noqa: BLE001 - 기동 실패를 __init__ 로 전달
             self._start_error = e
             self._ready.set()
-            self._dispose()
             return
         self._ready.set()
         while True:
@@ -144,7 +173,6 @@ class SsoSessionProvider(AuthProvider):
             except BaseException as e:   # noqa: BLE001 - 호출자 스레드로 재전달
                 box[1] = e
             done.set()
-        self._dispose()
 
     def _dispose(self):
         """Release partial startup and retired workers on their Playwright owner thread."""
