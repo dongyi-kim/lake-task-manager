@@ -45,6 +45,33 @@ def resource_pressure_sample(monkeypatch, resource_pressure_session):
     return sample
 
 
+@pytest.fixture
+def jira_client_factory():
+    """Real cache/session fences with injected local responses and deterministic cleanup."""
+    from types import SimpleNamespace
+    from app.infra.cache import Cache
+    from app.infra.settings import get_settings
+    from app.jira.jira_client import JiraClient
+
+    opened = []
+    def build(get_json, **overrides):
+        settings = SimpleNamespace(**vars(get_settings()))
+        settings.jira_env = "mock"
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        cache = Cache(":memory:")
+        client = JiraClient(settings, cache)
+        client.env = "mock"  # Stable namespace for explicit evidence-cache assertions.
+        client._provider = SimpleNamespace(get_json=get_json, close=lambda: None)
+        client._provider_built = True
+        opened.append(client)
+        return client
+    yield build
+    for client in reversed(opened):
+        client.close()
+        client.cache.close()
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Remove the bootstrap bytecode written before this conftest can disable it."""
     bootstrap_cache = TESTS_ROOT / "__pycache__"

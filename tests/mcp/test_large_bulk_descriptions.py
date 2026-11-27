@@ -168,7 +168,7 @@ def test_body_page_cache_separates_context_and_projection_and_preserves_explicit
 def test_one_oversized_description_is_an_explicit_error_not_cached_or_truncated(build_env):
     env = build_env()
     calls = install_source(env, total=1, body="z" * (16 * 1024 * 1024))
-    with pytest.raises(ValueError, match="get_ticket"):
+    with pytest.raises(ValueError, match="original ticket in Jira"):
         env.client.search_issues_page("project = DL", max_results=1, fields="description", light=False)
     assert len(calls) == 2 and calls[0]["maxResults"] == calls[1]["maxResults"] == 1
     with env.cache._lock:

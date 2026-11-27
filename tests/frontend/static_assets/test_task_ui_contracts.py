@@ -125,8 +125,8 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
 
     assert '"&deferred=1"' in api
     assert "myTasksStream: (opts, onEvent, signal)" in api
-    assert "myTasksEpicMeta: (keys)" in api
-    epic_api = api[api.index("myTasksEpicMeta: (keys)"):api.index("search: (q, scope, only)")]
+    assert "myTasksEpicMeta: (keys, revalidate = false)" in api
+    epic_api = api[api.index("myTasksEpicMeta: (keys, revalidate = false)"):api.index("search: (q, scope, only)")]
     assert "return req(" in epic_api
     assert "get(" not in epic_api
     assert ".filter(Boolean))).sort()" in epic_api
@@ -161,8 +161,9 @@ def test_mytasks_streams_leaf_models_and_hydrates_groups_without_stale_filter_ov
     assert "_epicMetaAttempts" in view
     assert "_settleMissingEpicMetadata(exhausted, cache)" in view
     assert "attempt <= TASK_RETRY_DELAYS.length" in view
-    assert "this._epicMetaKnown.delete(changedKey)" in view
-    assert "this._epicMetaKnown = new Map();" in view
+    assert "this._epicMetaKnown.delete(changedKey)" not in view
+    assert "(this._epicMetaPending || (this._epicMetaPending = new Set())).add(changedKey)" in view
+    assert "this._epicMetaKnown || (this._epicMetaKnown = new Map())" in view
     assert 'title: kind === "auth" ? "일부 Task를 인증 문제로 불러오지 못했습니다"' in view
     assert "Parent Task는 준비됨" not in view
     assert "mt-sub-sync-row" not in view
@@ -185,7 +186,8 @@ def test_mytasks_quiet_refresh_keeps_visible_dom_and_patches_only_changed_keys()
     view = task_view_source()
     model = (STATIC / "components" / "mytasks" / "taskModel.js").read_text(encoding="utf-8")
 
-    assert 'const preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);' in view
+    assert 'let preserveVisible = !!(opts.quiet && this.model && this._activeCacheKey === key);' in view
+    assert 'if (event.displayOnly)' in view and 'preserveVisible = true;' in view
     assert "else if (!preserveVisible) this.model = this._emptyTaskModel();" in view
     assert "else cache[key] = this.model;" in view
     assert "event.model && (!preserveVisible || finalUsable)" in view

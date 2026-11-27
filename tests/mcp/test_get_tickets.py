@@ -25,7 +25,8 @@ def test_batch_schema_and_three_bodies_in_one_actual_request(build_env):
             catalog = {tool.name: tool for tool in (await client.list_tools()).tools}
             assert 'get_tickets' in catalog
             schema = catalog['get_tickets'].input_schema
-            assert set(schema['properties']) == {'keys', 'include_description', 'cache_mode', 'strategy', 'max_parts'}
+            assert set(schema['properties']) == {'keys', 'include_description', 'include_comments', 'cache_mode', 'strategy', 'max_parts'}
+            assert schema['properties']['include_comments']['default'] is False
             result = await client.call_tool('get_tickets', {'keys': [keys[2], keys[0], keys[2], keys[1]],
                                                           'include_description': True})
             assert not result.is_error, result.structured_content

@@ -9,6 +9,7 @@ from mcp import Client
 import pytest
 
 from app.auth.base import PermissionDenied, SessionExpired, UpstreamError, UpstreamUnavailable
+from app.infra.cache_policy import read_scope
 
 
 class WizardFixture:
@@ -105,6 +106,11 @@ def test_sdk_conversion_reparent_reverse_replay_and_cache_invalidation(build_env
     epics = [seed(env, "Epic") for _ in range(2)]
     for target, epic in zip((parent, other), epics):
         env.store.issues[target]["epicKey"] = epic
+    def current_children(parent_key):
+        # Mutation assertions require current membership; default UI reads may
+        # retain the previous list while their independent SWR runs.
+        with read_scope(cache_mode="live"):
+            return env.client.ticket_children(parent_key)
     async def scenario():
         async with Client(env.runtime.server) as mcp:
             tools = {tool.name: tool for tool in (await mcp.list_tools()).tools}
@@ -134,8 +140,8 @@ def test_sdk_conversion_reparent_reverse_replay_and_cache_invalidation(build_env
             assert (await mcp.call_tool("change_ticket_hierarchy", changed)).is_error
             assert wizard.commits == 1 and env.client._jql_generation() == generation + 1
             assert env.client.get_issue(key)["fields"]["issuetype"]["subtask"] is True
-            assert key in [row["key"] for row in env.client.ticket_children(parent)]
-            assert not env.client.ticket_children(other)
+            assert key in [row["key"] for row in current_children(parent)]
+            assert not current_children(other)
             for prefix in ("workload", "wbs_build", "vit_build"):
                 env.cache.set(f"{prefix}:{env.client.env}:fixture", {"stale": True}, 600)
             for epic in epics:
@@ -147,8 +153,8 @@ def test_sdk_conversion_reparent_reverse_replay_and_cache_invalidation(build_env
             assert moved["previousParentKey"] == parent and moved["parentKey"] == other
             assert all(env.cache.get(f"{prefix}:{env.client.env}:fixture") is None for prefix in ("workload", "wbs_build", "vit_build"))
             assert all(env.cache.get(f"epic_children:{env.client.env}:{epic}") is None for epic in epics)
-            assert not env.client.ticket_children(parent)
-            assert key in [row["key"] for row in env.client.ticket_children(other)]
+            assert not current_children(parent)
+            assert key in [row["key"] for row in current_children(other)]
             body = {"action": "convert_to_task"}
             options = await call("get_hierarchy_options", {"key": key, "body": body})
             body["issue_type_id"] = options["inputs"][0]["options"][0]["id"]
@@ -157,7 +163,7 @@ def test_sdk_conversion_reparent_reverse_replay_and_cache_invalidation(build_env
                 "preview_hash": prepared["previewHash"], "client_mutation_id": "hierarchy:reverse:001"})
             assert converted["parentKey"] is None and converted["previousParentKey"] == other
             assert not env.client.get_issue(key)["fields"]["issuetype"]["subtask"]
-            assert not env.client.ticket_children(other) and wizard.commits == 3
+            assert not current_children(other) and wizard.commits == 3
     anyio.run(scenario)
 
 

@@ -170,12 +170,14 @@ def test_sdk_labels_components_edit_clear_and_vit_registration_preserves_other_l
             assert fields["labels"] == ["keep-this"] and [row["name"] for row in fields["components"]] == [component]
             await call("set_vit_tracking", {"key": key, "tracked": True, "client_mutation_id": "vit:track:0001"})
             assert set(env.client.get_issue(key)["fields"]["labels"]) == {"keep-this", "PMO_VIT"}
-            overview = await call("get_vit_overview", {})
+            overview = await call("get_vit_overview", {"cache_mode": "live"})
             assert key in {row["key"] for row in overview["visibleRoots"]}
             subtype = (await call("list_options", {"kind": "child_types", "key": key}))["options"][0]
             child = await call("create_subtask", {"parent_key": key, "body": {"type": subtype, "summary": "nested VIT",
                 "labels": ["PMO_VIT"], "clientMutationId": "vit:child:0001"}})
-            nested = await call("get_vit_overview", {})
+            # This assertion checks current registration after a mutation, not
+            # the default cache-first projection while its SWR completes.
+            nested = await call("get_vit_overview", {"cache_mode": "live"})
             assert {"key": child["key"], "hiddenBy": [key]} in nested["skipped"]
             await call("set_vit_tracking", {"key": key, "tracked": False, "client_mutation_id": "vit:untrack:0001"})
             assert env.client.get_issue(key)["fields"]["labels"] == ["keep-this"]

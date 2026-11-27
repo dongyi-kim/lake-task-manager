@@ -59,10 +59,11 @@ def test_retained_memo_invalidation_fences_late_reads_and_failed_refresh():
 
 def test_refresh_one_server_request_and_revision_baseline():
     run_js("""
-      const calls=[], events=[]; let release;
+      const calls=[], events=[]; let release, refreshStarted;
+      const refreshEntered = new Promise(resolve => refreshStarted = resolve);
       globalThis.fetch=async(path)=>{
         calls.push(path);
-        if(path==='/api/refresh') await new Promise(r=>release=r);
+        if(path==='/api/refresh') await new Promise(r=>{ release=r; refreshStarted(); });
         return new Response(JSON.stringify({name:'cached'}),{status:200});
       };
       const {api}=await import(BASE+'api.js');
@@ -77,7 +78,7 @@ def test_refresh_one_server_request_and_revision_baseline():
       const a=api.refresh(), b=api.refresh();
       assert.equal(a,b);
       assert.equal(api.cached('/api/wbs').name,'cached');
-      release(); await a;
+      await refreshEntered; release(); await a;
       assert.equal(calls.filter(p=>p==='/api/refresh').length,1);
       assert.equal(reads,1);
       assert.equal(api.cached('/api/wbs').name,'cached');

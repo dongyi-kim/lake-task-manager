@@ -47,7 +47,8 @@ def test_full_world_sdk_reads_share_ui_cache_and_reject_every_write(tmp_path):
         assert known <= set(fixture.store.issues)
         truth = fixture.ground_truth()
         assert truth["today"] == "2026-11-04" and truth["personId"] == "skcc.i2011"
-        assert len(truth["personOpenKeys"]) == 21
+        # Canonical fixed-date world includes the expanded assignment fixtures.
+        assert len(truth["personOpenKeys"]) == 91
         assert truth["currentUserId"] == "test.ui01" and truth["currentUserOpenKeys"]
         conformance = fixture.assert_conformance()
         assert conformance["parentJql"]["normal"]["keys"] == ["DL-9093", "DL-9094", "DL-9095"]

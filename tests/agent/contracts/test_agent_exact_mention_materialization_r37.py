@@ -44,9 +44,7 @@ def _detail(key: str) -> dict:
     }
 
 
-def _jira_client_with_pages(pages: dict[int, dict]):
-    from app.jira.jira_client import JiraClient
-
+def _jira_client_with_pages(factory, pages: dict[int, dict]):
     calls = []
 
     def get_json(_path, params=None, **_kwargs):
@@ -54,14 +52,12 @@ def _jira_client_with_pages(pages: dict[int, dict]):
         calls.append(params)
         return deepcopy(pages[int(params.get("startAt") or 0)])
 
-    client = object.__new__(JiraClient)
-    client._provider = SimpleNamespace(get_json=get_json)
-    client._provider_built = True
+    client = factory(get_json)
     return client, calls
 
 
-def test_paginated_comment_snapshot_preserves_total_and_proves_last_page():
-    client, calls = _jira_client_with_pages({
+def test_paginated_comment_snapshot_preserves_total_and_proves_last_page(jira_client_factory):
+    client, calls = _jira_client_with_pages(jira_client_factory, {
         0: {"startAt": 0, "maxResults": 2, "total": 3, "comments": [
             {"id": "1", "created": "2031-01-01", "body": "first"},
             {"id": "2", "created": "2031-01-02", "body": "second"},
@@ -96,8 +92,8 @@ def test_paginated_comment_snapshot_preserves_total_and_proves_last_page():
             "comments": [{"id": "1", "body": "first"}]},
     }, "non_advancing"),
 ])
-def test_comment_snapshot_fails_closed_on_cap_missing_total_or_nonadvancing(pages, reason):
-    client, _calls = _jira_client_with_pages(pages)
+def test_comment_snapshot_fails_closed_on_cap_missing_total_or_nonadvancing(pages, reason, jira_client_factory):
+    client, _calls = _jira_client_with_pages(jira_client_factory, pages)
 
     got = client.comment_snapshot("WK-101", cap=2, page_size=2 if reason != "non_advancing" else 1)
 
@@ -106,15 +102,15 @@ def test_comment_snapshot_fails_closed_on_cap_missing_total_or_nonadvancing(page
     assert got["hasMore"] is True
 
 
-def test_comment_snapshot_rejects_duplicate_ids_changed_total_and_invalid_bounds():
-    duplicate, _ = _jira_client_with_pages({
+def test_comment_snapshot_rejects_duplicate_ids_changed_total_and_invalid_bounds(jira_client_factory):
+    duplicate, _ = _jira_client_with_pages(jira_client_factory, {
         0: {"startAt": 0, "total": 2, "comments": [
             {"id": "same", "body": "one"}, {"id": "same", "body": "two"},
         ]},
     })
     assert duplicate.comment_snapshot("WK-101")["incompleteReason"] == "duplicate_page"
 
-    changed, _ = _jira_client_with_pages({
+    changed, _ = _jira_client_with_pages(jira_client_factory, {
         0: {"startAt": 0, "total": 2, "comments": [{"id": "1", "body": "one"}]},
         1: {"startAt": 1, "total": 3, "comments": [{"id": "2", "body": "two"}]},
     })

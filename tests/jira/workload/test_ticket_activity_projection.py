@@ -49,8 +49,7 @@ def test_real_mock_detail_and_comment_cache_support_metadata_with_provider_offli
         cache.close()
 
 
-def test_newer_detail_refreshes_only_old_comments_and_failure_keeps_source_age(monkeypatch):
-    cache = Cache(":memory:")
+def test_newer_detail_refreshes_only_old_comments_and_failure_keeps_source_age(monkeypatch, jira_client_factory):
     clock = [1000.0]
     monkeypatch.setattr("app.infra.cache.time.time", lambda: clock[0])
     calls = []
@@ -60,8 +59,9 @@ def test_newer_detail_refreshes_only_old_comments_and_failure_keeps_source_age(m
         entered.set()
         assert release.wait(2)
         return {"comments": [{"id": "1", "updated": "2026-11-05T09:30:00+0900"}]}
-    owner = SimpleNamespace(cache=cache, env="mock", CACHE_COMMENTS=20, s=SimpleNamespace(cache_ttl_seconds=600),
-                            provider=SimpleNamespace(get_json=fetch), _project_comment_row=lambda row: row)
+    owner = jira_client_factory(fetch)
+    owner._project_comment_row = lambda row: row
+    cache = owner.cache
     key = "comments:mock:DL-1"
     cache.set(key, [{"id": "1", "updated": "2026-11-05T09:00:00+0900"}], 600)
     cache.set("issue:mock:DL-1", {"fields": {"summary": "detail"}}, 600)

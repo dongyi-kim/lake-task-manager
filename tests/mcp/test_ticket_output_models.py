@@ -1,7 +1,6 @@
 """Ticket output contracts against actual mock services and partial provider variants."""
 
 from copy import deepcopy
-from types import SimpleNamespace
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -62,11 +61,8 @@ def test_all_ticket_reads_accept_real_service_outputs_and_preserve_fields(build_
     assert_contract("get_evidence_page", functions["get_evidence_page"](task, kind="history"))
 
 
-def evidence_client(payload):
-    return SimpleNamespace(env="mock", s=SimpleNamespace(cache_ttl_seconds=600),
-        cache=SimpleNamespace(get_or_set_strict=lambda key, ttl, producer: (producer(), False)),
-        provider=SimpleNamespace(get_json=lambda *args, **kwargs: deepcopy(payload)),
-        _looks_anonymous=lambda _: False)
+def evidence_client(factory, payload):
+    return factory(lambda *args, **kwargs: deepcopy(payload))
 
 
 @pytest.mark.parametrize("kind,payload", [
@@ -78,8 +74,8 @@ def evidence_client(payload):
     ("history", {"changelog": {"startAt": 0, "total": 1, "histories": [
         {"id": "1", "items": [{"field": "description", "toString": "long" * 10000}]}]}}),
 ])
-def test_partial_evidence_and_large_record_shapes_are_lossless(kind, payload):
-    page = get_evidence_page(evidence_client(payload), "DL-1", kind)
+def test_partial_evidence_and_large_record_shapes_are_lossless(kind, payload, jira_client_factory):
+    page = get_evidence_page(evidence_client(jira_client_factory, payload), "DL-1", kind)
     result = assert_contract("get_evidence_page", page)
     if page["items"] and "recordJson" in page["items"][0]:
         assert isinstance(result.items[0], EvidenceChunk)
