@@ -179,6 +179,48 @@ def test_execution_gets_its_own_budget_after_queue_wait(provider):
     assert result == {"value": "finished"}
 
 
+@pytest.mark.parametrize("wait", [None, 930], ids=["normal", "maximum-upload"])
+def test_default_queue_budget_does_not_grow_with_running_or_upload_budget(provider, monkeypatch, wait):
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(provider, "JOB_TIMEOUT", 2)
+    dispatched = []
+    def hold():
+        started.set()
+        assert release.wait(3)
+    owner_done, owner_result, _ = _call(lambda: provider._submit(hold))
+    try:
+        assert started.wait(1)
+        monkeypatch.setattr(provider, "QUEUE_TIMEOUT", .03)
+        queued_done, queued_result, _ = _call(lambda: provider._submit(
+            lambda: dispatched.append("late write"), wait=wait, may_commit=True))
+        assert queued_done.wait(.5), "the queue budget must expire before the much longer running budget"
+        assert isinstance(queued_result.get("error"), UpstreamBusy)
+        assert not hasattr(queued_result["error"], "pending_operation")
+        assert not provider.broken and not owner_done.is_set()
+    finally:
+        release.set()
+    assert owner_done.wait(1) and owner_result == {"value": None}
+    assert dispatched == []
+
+
+def test_default_running_job_can_outlive_its_short_queue_budget(provider, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(provider, "QUEUE_TIMEOUT", .25)
+    monkeypatch.setattr(provider, "JOB_TIMEOUT", 2)
+    def work():
+        started.set()
+        assert release.wait(2)
+        return "completed"
+    done, result, _ = _call(lambda: provider._submit(work, may_commit=True))
+    try:
+        assert started.wait(1)
+        assert not done.wait(.35)
+        assert not provider.broken
+    finally:
+        release.set()
+    assert done.wait(1) and result == {"value": "completed"}
+
+
 @pytest.mark.parametrize("may_commit", [False, True])
 def test_running_timeout_retires_provider_and_preserves_only_write_outcome(provider, may_commit):
     started, release, completed = threading.Event(), threading.Event(), threading.Event()

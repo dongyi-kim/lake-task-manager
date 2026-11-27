@@ -3,7 +3,7 @@ import { ymd } from "../../lib/fmt.js";
 
 export const FOLD_AT = 5;
 export const TIMELINE_POLL_MS = 800;
-export const TIMELINE_WAIT_MS = 15 * 1000;
+export const TIMELINE_WAIT_MS = 240 * 1000;
 
 export const KID_SORTS = [
   { k: "due", label: "마감", hint: "마감일 → 우선순위" },
