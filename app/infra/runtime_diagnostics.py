@@ -163,6 +163,15 @@ def record_failure(component, error, *, directory=None, traceback_value=None, na
         log.close()
 
 
+def record_browser_recovery(event, **fields):
+    from app.infra.settings import CACHE_DIR
+    log = RuntimeLog(CACHE_DIR / "logs" / "runtime", "browser")
+    try:
+        log.record(event, **fields, resources=resource_context())
+    finally:
+        log.close()
+
+
 def install_exception_hooks(directory, *, fatal=True, role="worker"):
     """Install once per process; chain original behavior and retain no exceptions."""
     global _exception_cleanup

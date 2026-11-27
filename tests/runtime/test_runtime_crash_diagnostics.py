@@ -162,3 +162,25 @@ def test_missing_directory_is_empty_and_symlink_is_never_downloaded(tmp_path):
         return  # Windows without link permission still exercises missing-directory behavior.
     with _client(tmp_path) as client:
         assert client.get("/api/app/diagnostics/worker.jsonl/download").status_code == 404
+
+
+def test_browser_recovery_stream_is_listed_and_sanitized_for_download(tmp_path):
+    log = diagnostics.RuntimeLog(tmp_path, "browser")
+    log.record("browser_recovery_started", reason="renderer_crash", restartCount=2, delaySeconds=2,
+               resources={"processBytes": 123, "jobBytes": 456}, message="private-cookie")
+    log.record("browser_recovery_completed", restartCount=2)
+    log.close()
+    # Old/corrupt extra fields must be filtered on export too, not just on write.
+    with (tmp_path / "browser.jsonl").open("a", encoding="utf-8") as output:
+        output.write(json.dumps({"event": "browser_recovery_failed", "message": "private-cookie",
+            "frames": [{"file": "C:/Users/private/repo/app/main.py", "line": 42, "function": "handler"}]}) + "\n")
+    with _client(tmp_path) as client:
+        state = client.get("/api/app/diagnostics")
+        assert {row["name"] for row in state.json()["files"]} == {"browser.jsonl"}
+        assert len(state.json()["records"]) == 3 and "private" not in state.text
+        download = client.get("/api/app/diagnostics/browser.jsonl/download")
+        assert download.status_code == 200 and "attachment" in download.headers["content-disposition"]
+        records = [json.loads(line) for line in download.text.splitlines()]
+        assert records[0]["resources"] == {"processBytes": 123, "jobBytes": 456}
+        assert records[0]["restartCount"] == 2 and records[1]["event"] == "browser_recovery_completed"
+        assert records[2]["frames"][0]["file"] == "app/main.py" and "private" not in download.text
