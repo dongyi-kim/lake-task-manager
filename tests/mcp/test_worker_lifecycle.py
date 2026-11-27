@@ -197,6 +197,94 @@ def test_repeated_worker_failure_stops_at_recovery_limit_without_secret_payload(
     asyncio.run(scenario())
 
 
+def test_recovery_drains_admitted_work_beyond_transport_shutdown_budget():
+    lane = ToolLane(1)
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def slow_write():
+        entered.set()
+        assert release.wait(3)
+        calls.append("committed")
+    worker = WorkerLifecycle([], factory=lambda: [FastAPI()], quiescent=lambda: lane.quiescent)
+    worker.monitor_interval, worker.shutdown_timeout, worker.drain_timeout = .01, .02, 2
+    generation = Generation(1)
+    generation.finished.set_result(None)
+    generation.thread = SimpleNamespace(is_alive=lambda: False)
+    worker.current, worker._closing = generation, False
+
+    async def scenario():
+        operation = asyncio.create_task(lane.run(slow_write))
+        recovery = None
+        try:
+            await until(entered.is_set)
+            recovery = asyncio.create_task(worker._recover("worker_exited"))
+            await asyncio.sleep(.08)
+            assert worker.state == "recovering" and not recovery.done()
+            assert worker.current is generation and not lane.quiescent
+            release.set()
+            await operation
+            await recovery
+            assert worker.state == "healthy" and worker.current.number == 2
+            assert calls == ["committed"]
+        finally:
+            release.set()
+            if recovery is not None:
+                await recovery
+            worker._closing = True
+            await worker._stop(worker.current)
+    asyncio.run(scenario())
+
+
+def test_recovery_still_bounds_a_permanently_stuck_sync_worker():
+    worker = WorkerLifecycle([], quiescent=lambda: False)
+    worker.monitor_interval, worker.shutdown_timeout, worker.drain_timeout = .005, .01, .03
+    generation = Generation(1)
+    generation.finished.set_result(None)
+    generation.thread = SimpleNamespace(is_alive=lambda: False)
+    worker.current, worker._closing = generation, False
+    asyncio.run(worker._recover("worker_exited"))
+    assert worker.state == "recovery_failed" and worker.current is generation
+    assert worker.last_reason == "shutdown_timeout"
+
+
+def test_failed_recovery_retries_only_after_old_work_really_finishes():
+    lane = ToolLane(1)
+    entered, release = threading.Event(), threading.Event()
+    worker = WorkerLifecycle([], factory=lambda: [FastAPI()], quiescent=lambda: lane.quiescent)
+    worker.monitor_interval, worker.shutdown_timeout, worker.drain_timeout = .005, .01, .03
+    generation = Generation(1)
+    generation.finished.set_result(None)
+    generation.thread = SimpleNamespace(is_alive=lambda: False)
+    worker.current, worker._closing = generation, False
+    def held():
+        entered.set()
+        assert release.wait(3)
+
+    async def scenario():
+        operation = asyncio.create_task(lane.run(held))
+        monitor = None
+        try:
+            await until(entered.is_set)
+            await worker._recover("worker_exited")
+            assert worker.state == "recovery_failed"
+            monitor = asyncio.create_task(worker._monitor())
+            await asyncio.sleep(.04)
+            assert worker.current is generation and worker.restart_count == 1
+            release.set()
+            await operation
+            await until(lambda: worker.state == "healthy" and worker.current.number == 2)
+            assert worker.restart_count == 2
+        finally:
+            release.set()
+            worker._closing = True
+            if monitor is not None:
+                monitor.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await monitor
+            await worker._stop(worker.current)
+    asyncio.run(scenario())
+
+
 def test_app_shutdown_cancels_an_acknowledged_restart_without_resurrecting_worker():
     worker = WorkerLifecycle([FastAPI()], factory=lambda: [FastAPI()])
     worker.monitor_interval = .1

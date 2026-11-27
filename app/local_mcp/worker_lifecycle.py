@@ -38,12 +38,17 @@ class Generation:
 
 
 class WorkerLifecycle:
-    def __init__(self, applications, *, factory=None, quiescent=lambda: True):
+    def __init__(self, applications, *, factory=None, quiescent=lambda: True, diagnostics_directory=None):
         self.applications, self.factory, self.quiescent = applications, factory, quiescent
+        self.diagnostics_directory = diagnostics_directory
         self.current = None
         self.monitor_interval, self.probe_timeout = 1.0, .5
         self.misses_allowed, self.restart_limit, self.restart_window = 3, 3, 600
         self.shutdown_timeout, self.startup_timeout = 10.0, 10.0
+        # SSO attachment jobs allow up to 15 minutes plus 30 seconds each
+        # for queueing and execution. Recovery must retain their actual leases
+        # without treating that legitimate wait as a dead transport in ten seconds.
+        self.drain_timeout = 2 * (15 * 60 + 30) + self.shutdown_timeout
         self.state, self.failures, self.restart_count = "stopped", 0, 0
         self.last_reason = None
         self._restarts = deque()
@@ -61,6 +66,7 @@ class WorkerLifecycle:
             state = "unresponsive"
         return {"state": state, "generation": generation.number if generation else 0,
             "workerAlive": alive, "automaticRecovery": not self._closing,
+            "drainingWork": self.state == "recovering" and not self.quiescent(),
             "consecutiveFailures": self.failures, "restartCount": self.restart_count,
             "restartLimit": self.restart_limit, "lastRecoveryReason": self.last_reason,
             "lastHeartbeatAgeSeconds": round(max(0, time.monotonic() - generation.last_heartbeat), 3)
@@ -120,10 +126,14 @@ class WorkerLifecycle:
         generation = Generation(previous.number + 1 if previous else 1)
         self.current = generation
 
-        async def serve():
+        async def serve(diagnostics_directory):
             generation.loop = asyncio.get_running_loop()
             applications = self.factory() if previous and self.factory else self.applications
             async with AsyncExitStack() as stack:
+                from app.infra.runtime_diagnostics import install_async_exception_handler
+                # Restored after application teardown, including startup failures.
+                # Installation itself does not read settings or touch the disk.
+                stack.callback(install_async_exception_handler(generation.loop, directory=diagnostics_directory))
                 for app in applications:
                     await stack.enter_async_context(app.router.lifespan_context(app))
                 generation.accepting = True
@@ -140,11 +150,23 @@ class WorkerLifecycle:
                     for task in tuple(generation.requests):
                         task.cancel()
                     if generation.requests:
-                        await asyncio.gather(*generation.requests, return_exceptions=True)
+                        draining = asyncio.gather(*generation.requests, return_exceptions=True)
+                        while not draining.done():
+                            # Preserve proof of event-loop progress while normal
+                            # cancellation cleanup waits for admitted sync work.
+                            generation.last_heartbeat = time.monotonic()
+                            await asyncio.wait((draining,), timeout=self.monitor_interval)
+                        await draining
 
         def owner():
             try:
-                asyncio.run(serve())
+                directory = self.diagnostics_directory
+                if directory is None:
+                    # Resolve the fallback on this owner thread before its loop
+                    # starts; explicit test/runtime directories need no settings I/O.
+                    from app.infra.settings import CACHE_DIR
+                    directory = CACHE_DIR / "logs" / "runtime"
+                asyncio.run(serve(directory))
             except BaseException as exc:
                 generation.failure_type = type(exc).__name__
                 generation.failure_frames = [{"file": frame.filename, "line": frame.lineno,
@@ -174,8 +196,18 @@ class WorkerLifecycle:
             lease.disconnected.set()
         if generation.stop is not None:
             generation.stop.set()  # Never wake a possibly hung loop from the UI thread.
-        deadline = time.monotonic() + self.shutdown_timeout
+        started = time.monotonic()
+        deadline = started + self.shutdown_timeout
         while (not generation.finished.done() or generation.thread.is_alive() or not self.quiescent()):
+            # The larger allowance applies only to admitted synchronous work,
+            # never to an idle hung SDK loop. Explicit app shutdown stays bounded
+            # by shutdown_timeout; the process supervisor owns final teardown.
+            responsive = (generation.finished.done() or
+                time.monotonic() - generation.last_heartbeat <= max(self.probe_timeout, 2 * self.monitor_interval))
+            if not self._closing and not self.quiescent() and responsive:
+                deadline = started + self.drain_timeout
+            elif not self._closing:
+                deadline = min(deadline, time.monotonic() + self.shutdown_timeout)
             if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(min(.05, self.monitor_interval))
@@ -224,6 +256,18 @@ class WorkerLifecycle:
         while True:
             await asyncio.sleep(self.monitor_interval)
             if self.state == "recovery_failed":
+                generation = self.current
+                # Never overlap a hung generation or its admitted writes. Once
+                # both really finish, recovery is safe again without replacing
+                # the usable UI process. Repeated startup failures still observe
+                # the existing rolling recovery limit/cooldown.
+                if (not self.quiescent() or not generation.finished.done()
+                        or generation.thread.is_alive()):
+                    continue
+                if (len(self._restarts) >= self.restart_limit and self._restarts
+                        and time.monotonic() - self._restarts[0] < self.restart_window):
+                    continue
+                await self._recover("work_drained")
                 continue
             generation = self.current
             if self._restart_generation == generation.number:

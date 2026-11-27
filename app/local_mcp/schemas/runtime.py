@@ -9,6 +9,7 @@ class McpHealth(OpenModel):
     generation: int = Field(ge=0)
     workerAlive: bool
     automaticRecovery: bool
+    drainingWork: bool = Field(default=False, description="Recovery is waiting for already admitted work to finish; requests are never replayed.")
     consecutiveFailures: int = Field(ge=0)
     restartCount: int = Field(ge=0)
     restartLimit: int = Field(ge=0)
