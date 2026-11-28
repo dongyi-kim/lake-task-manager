@@ -244,7 +244,7 @@ def test_recovery_still_bounds_a_permanently_stuck_sync_worker():
     worker.current, worker._closing = generation, False
     asyncio.run(worker._recover("worker_exited"))
     assert worker.state == "recovery_failed" and worker.current is generation
-    assert worker.last_reason == "shutdown_timeout"
+    assert worker.last_reason == "drain_timeout"
 
 
 def test_failed_recovery_retries_only_after_old_work_really_finishes():
@@ -269,11 +269,11 @@ def test_failed_recovery_retries_only_after_old_work_really_finishes():
             assert worker.state == "recovery_failed"
             monitor = asyncio.create_task(worker._monitor())
             await asyncio.sleep(.04)
-            assert worker.current is generation and worker.restart_count == 1
+            assert worker.current is generation and worker.restart_count == 0
             release.set()
             await operation
             await until(lambda: worker.state == "healthy" and worker.current.number == 2)
-            assert worker.restart_count == 2
+            assert worker.restart_count == 1
         finally:
             release.set()
             worker._closing = True

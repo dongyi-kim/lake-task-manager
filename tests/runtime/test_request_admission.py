@@ -25,10 +25,12 @@ def test_business_flood_is_not_queued_and_lightweight_controls_remain_available(
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b"ok"})
 
-        gate = RequestAdmissionMiddleware(app, capacity=1)
+        activity = {}
+        gate = RequestAdmissionMiddleware(app, capacity=1, activity=activity)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gate), base_url="http://test") as client:
             active = asyncio.create_task(client.get("/api/work"))
             await entered.wait()
+            assert activity == {"http": 1}
             try:
                 with anyio.fail_after(2):
                     rejected = await asyncio.gather(*(client.post("/api/write", json={"i": i}) for i in range(100)))
@@ -38,9 +40,11 @@ def test_business_flood_is_not_queued_and_lightweight_controls_remain_available(
                     assert (await client.post("/api/app/open")).status_code == 200
                     assert (await client.post("/api/app/quit")).status_code == 200
                 assert calls == ["/api/work", "/api/health/live", "/api/app/open", "/api/app/quit"]
+                assert activity == {"http": 1}
             finally:
                 release.set()
                 await active
+            assert activity == {"http": 0}
             assert (await client.post("/api/write")).status_code == 200
 
     asyncio.run(scenario())
@@ -368,6 +372,7 @@ def test_raw_caller_cancellation_keeps_permit_until_sync_handler_really_finishes
         app = FastAPI()
         entered, release = threading.Event(), threading.Event()
         calls = []
+        activity = {"http": 0}
 
         @app.post("/api/write")
         def write():
@@ -376,7 +381,7 @@ def test_raw_caller_cancellation_keeps_permit_until_sync_handler_really_finishes
             assert release.wait(5)
             return {"ok": True}
 
-        gate = RequestAdmissionMiddleware(app, capacity=1)
+        gate = RequestAdmissionMiddleware(app, capacity=1, activity=activity)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gate), base_url="http://test") as client:
             first = asyncio.create_task(client.post("/api/write"))
             with anyio.fail_after(2):
@@ -385,6 +390,7 @@ def test_raw_caller_cancellation_keeps_permit_until_sync_handler_really_finishes
             first.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await first
+            assert activity == {"http": 1}
             try:
                 refused = await client.post("/api/write")
                 assert refused.status_code == 429
@@ -395,8 +401,10 @@ def test_raw_caller_cancellation_keeps_permit_until_sync_handler_really_finishes
                 with anyio.fail_after(2):
                     while gate._business:
                         await anyio.sleep(.001)
+            assert activity == {"http": 0}
             assert (await client.post("/api/write")).status_code == 200
             assert calls == ["started", "started"]
+            assert activity == {"http": 0}
 
     asyncio.run(scenario())
 

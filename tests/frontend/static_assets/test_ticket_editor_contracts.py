@@ -50,7 +50,7 @@ def test_frontend_requests_time_out_without_turning_transport_stalls_into_login(
     assert "new AbortController()" in api and "ctl.abort()" in api
     # Login now returns immediately and follows the attempt through status polling.
     # tests/frontend/shell/test_login_recovery_ui.py covers cancel/retry/completion behavior.
-    assert "timeoutMs: 16 * 60 * 1000" in api  # 대용량 첨부도 일반 조회 상한을 쓰지 않음
+    assert "timeoutMs: 18 * 60 * 1000" in api  # 대용량 첨부도 일반 조회 상한을 쓰지 않음
     assert 'this.mode === "degraded"' in banner
     assert 'st.mode === "degraded"' in refresh
     assert "api.recoverAuth()" in refresh       # refresh silently repairs; only a login button opens SSO

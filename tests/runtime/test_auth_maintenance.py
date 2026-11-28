@@ -126,6 +126,7 @@ def test_new_idp_login_fences_old_jira_snapshot(tmp_path):
 def test_queued_background_timeout_does_not_retire_busy_provider():
     p = object.__new__(SsoSessionProvider)
     p._broken, p._closed = threading.Event(), threading.Event()
+    p._suspect, p._settling_timer = threading.Event(), None
     p._thread = SimpleNamespace(is_alive=lambda: True)
     p._jobs, p._seq = queue.PriorityQueue(), itertools.count()
     ran = []
@@ -140,10 +141,11 @@ def test_queued_background_timeout_does_not_retire_busy_provider():
 def test_silent_renewal_respects_background_priority():
     p = object.__new__(SsoSessionProvider)
     captured = []
-    p._submit = lambda fn, priority: captured.append(priority)
+    p._submit = lambda fn, priority, *, wait: captured.append((priority, wait))
     with background_upstream():
         p.renew_silent([])
-    assert captured == [PRIO_BACKGROUND]
+    assert captured == [(PRIO_BACKGROUND, p.RENEW_TIMEOUT)]
+    assert 0 < p.RENEW_TIMEOUT < p.JOB_TIMEOUT
 
 
 @pytest.mark.parametrize("expired", [False, True])

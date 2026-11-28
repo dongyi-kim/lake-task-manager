@@ -5,11 +5,14 @@ import time
 
 
 _window_runtime = ("closed", 0.0)
+NATIVE_RECOVERY_GRACE_SECONDS = 120
 
 
 def window_phase(phase, timeout=0):
     global _window_runtime
     # Replace the snapshot atomically; the liveness endpoint never waits for a browser lock.
+    if phase == "failed" and _window_runtime[0] == "failed":
+        return  # Repeated failure reports are not owner progress.
     _window_runtime = (phase, time.monotonic() + timeout)
 
 
@@ -23,13 +26,33 @@ def window_healthy():
 def runtime_status(tray_probe=None):
     phase, deadline = _window_runtime
     now = time.monotonic()
+    tray_probe = dict(tray_probe) if tray_probe is not None else None
     tray_age = max(0, now - tray_probe["at"]) if tray_probe is not None else 0
-    window_ok = window_healthy()
+    window_ok = phase == "closed" or (phase != "failed" and now <= deadline)
     tray_ok = tray_probe is None or tray_probe["healthy"] and tray_age < 15
+    window_overdue = max(0, now - deadline) if phase != "closed" else 0
+    tray_since = None
+    if not tray_ok:
+        tray_since = tray_probe.get("unhealthySince")
+        if tray_since is None:
+            tray_since = tray_probe["at"] + (15 if tray_probe["healthy"] else 0)
+    tray_overdue = max(0, now - tray_since) if tray_since is not None else 0
+    restart = ((not window_ok and window_overdue >= NATIVE_RECOVERY_GRACE_SECONDS)
+               or (not tray_ok and tray_overdue >= NATIVE_RECOVERY_GRACE_SECONDS))
     return {"healthy": window_ok and tray_ok, "windowPhase": phase,
-            "windowHealthy": window_ok, "windowOverdueSeconds": round(max(0, now - deadline), 2)
-            if phase != "closed" else 0, "windowRecovering": phase == "recovering",
-            **({"trayHealthy": tray_ok, "trayProbeAgeSeconds": round(tray_age, 2)} if tray_probe is not None else {})}
+            "windowHealthy": window_ok, "windowOverdueSeconds": round(window_overdue, 2),
+            "windowRecovering": phase == "recovering", "restartRecommended": restart,
+            **({"trayHealthy": tray_ok, "trayProbeAgeSeconds": round(tray_age, 2),
+                "trayUnhealthySeconds": round(tray_overdue, 2)} if tray_probe is not None else {})}
+
+
+def update_tray_probe(probe, healthy):
+    """Keep the first unhealthy observation until the native owner makes progress."""
+    now = time.monotonic()
+    since = None if healthy else probe.get("unhealthySince")
+    if not healthy and since is None:
+        since = now
+    probe.update(healthy=healthy, at=now, unhealthySince=since)
 
 
 def probe_tray_pump(icon):

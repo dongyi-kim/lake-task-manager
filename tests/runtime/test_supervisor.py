@@ -80,7 +80,7 @@ def test_startup_grace_and_three_misses_then_normal_quit(tmp_path):
     result = supervisor.run_supervisor(["worker"], cwd=str(tmp_path), env={}, base_url="http://unused",
         worker_factory=factory, clock=clock, sleep=clock.sleep, probe=lambda *_: False, report=lambda _: None,
         on_failure=lambda: failure_notices.append(True))
-    assert result == 0 and clock.now == 70
+    assert result == 0 and clock.now == 300
     assert [worker.closed for worker in workers] == [[False], [True]]
     assert failure_notices == []
 
@@ -96,7 +96,7 @@ def test_health_resets_misses_and_removes_startup_grace_after_ready(tmp_path):
 
     assert supervisor.run_supervisor(["worker"], cwd=str(tmp_path), env={}, base_url="http://unused",
         worker_factory=factory, clock=clock, sleep=clock.sleep, probe=lambda *_: next(checks),
-        on_ready=lambda: ready.append(clock.now), report=lambda _: None) == 0
+        on_ready=lambda: ready.append(clock.now), report=lambda _: None, unresponsive_grace=0) == 0
     assert clock.now == 30 and ready == [0]
 
 
@@ -217,7 +217,7 @@ def test_owned_tree_cleanup_includes_descendants_after_hang_or_crash(tmp_path, c
         assert supervisor.run_supervisor(
             [sys.executable, "-B", "-c", parent, child, str(ready), str(release), str(finished)],
             cwd=str(tmp_path), env=dict(os.environ), base_url="http://unused", probe=probe,
-            interval=0.01, startup_grace=5, restart_limit=0, report=lambda _: None) == 1
+            interval=0.01, startup_grace=5, restart_limit=0, unresponsive_grace=0, report=lambda _: None) == 1
         assert ready.exists()
         release.write_text("finish if still alive")
         time.sleep(0.2)

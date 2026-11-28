@@ -29,6 +29,11 @@ class ToolLane:
         with self._ownership_lock:
             return self._owned == 0
 
+    @property
+    def active_count(self):
+        # A small observational counter; health must not wait for worker locks.
+        return self._owned
+
     def _release(self):
         with self._ownership_lock:
             self._owned -= 1

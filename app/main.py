@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from app.auth.base import (MutationOutcomeUnknown, PermissionDenied, QueryStateChanged, SessionExpired, UpstreamBusy,
                            UpstreamUnavailable)
+from app.auth.sso_session import active_sso_executions
 from app.infra.cache import Cache, CacheReadPolicyError
 from app.infra.cache_policy import CachePolicy, CacheHeadersMiddleware
 from app.infra.request_admission import RequestAdmissionMiddleware
@@ -53,7 +54,8 @@ _cache.configure(_settings.cache_policy, _settings.policy_revision)
 app.add_middleware(CacheHeadersMiddleware, cache=_cache)
 # Starlette installs the most recently added middleware outside earlier ones:
 # refuse overload before query/body parsing, cache policy or sync worker queues.
-app.add_middleware(RequestAdmissionMiddleware, pressure_check=resource_pressure.check)
+_http_activity = {"http": 0}
+app.add_middleware(RequestAdmissionMiddleware, pressure_check=resource_pressure.check, activity=_http_activity)
 _cache.purge()      # 시작 시 1회 — 지난 실행에서 쌓인 죽은 캐시 행·오래된 스냅샷 정리(디스크 안정화)
 _client = JiraClient(_settings, _cache)
 _client._wire_cache()      # 캐시에 재검증 규칙·회로차단기 연결(호출부는 그대로)
@@ -868,18 +870,35 @@ async def live_health():
         components = _runtime_health_hook() if _runtime_health_hook else True
         healthy = components.get("healthy", False) if isinstance(components, dict) else components
     except Exception:
-        components = {"reason": "health_hook_error"}
+        components = {"healthy": False, "reason": "health_hook_error"}
         healthy = False
+    # Component health is strict, but a responsive process retains its identity
+    # throughout local recovery. Only an explicit native-owner grace expiry can
+    # recommend replacement; pressure, Jira and MCP cannot request it here.
+    restart_recommended = (not healthy and isinstance(components, dict)
+                           and components.get("restartRecommended") is True)
+    degraded = not healthy
     if _local_mcp.started:
-        mcp_health = _local_mcp.transport_host.health_snapshot()
-        if mcp_health["state"] == "recovery_failed":
-            components = {**(components if isinstance(components, dict) else {}), "mcp": mcp_health}
-            # MCP owns its recovery. Replacing a responsive desktop process here
-            # closes the user's window and abandons unrelated UI/Jira work.
-    return JSONResponse(status_code=200 if healthy else 503,
-                        content={"status": "ok" if healthy else "unresponsive", "pid": os.getpid(),
+        try:
+            mcp_health = _local_mcp.transport_host.health_snapshot()
+        except Exception:
+            mcp_health = {"state": "unknown", "reason": "health_snapshot_error"}
+        if mcp_health.get("state") != "healthy":
+            components = {**(components if isinstance(components, dict) else {}),
+                          "healthy": False, "mcp": mcp_health}
+            degraded = True
+    resources = resource_pressure.snapshot()
+    activity = {**_http_activity,
+                "mcp": sum(getattr(getattr(_local_mcp, name, None), "active_count", 0)
+                           for name in ("_work_lane", "_control_lane")),
+                "sso": active_sso_executions()}
+    return JSONResponse(status_code=200,
+                        content={"status": "ok", "processAlive": True,
+                                 "degraded": degraded or bool(resources.get("busy")),
+                                 "restartRecommended": restart_recommended, "pid": os.getpid(),
                                  "instance": os.environ.get("LAKE_SUPERVISED_WORKER", ""),
-                                 "resources": resource_pressure.snapshot(),
+                                 "resources": resources,
+                                 "activeWork": activity,
                                  **({"components": components} if isinstance(components, dict) else {})})
 
 

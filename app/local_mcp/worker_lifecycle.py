@@ -44,6 +44,7 @@ class WorkerLifecycle:
         self.current = None
         self.monitor_interval, self.probe_timeout = 1.0, .5
         self.misses_allowed, self.restart_limit, self.restart_window = 3, 3, 600
+        self.recovery_grace = 60.0
         self.shutdown_timeout, self.startup_timeout = 10.0, 10.0
         # SSO attachment jobs allow up to 15 minutes plus 30 seconds each
         # for queueing and execution. Recovery must retain their actual leases
@@ -55,6 +56,8 @@ class WorkerLifecycle:
         self._pending = set()
         self._events = deque(maxlen=20)
         self._restart_generation = None
+        self._suspect_since = None
+        self._waiting_reason = None
         self._lock = threading.Lock()
         self._closing = True
 
@@ -66,7 +69,12 @@ class WorkerLifecycle:
             state = "unresponsive"
         return {"state": state, "generation": generation.number if generation else 0,
             "workerAlive": alive, "automaticRecovery": not self._closing,
-            "drainingWork": self.state == "recovering" and not self.quiescent(),
+            "drainingWork": self.state in {"recovering", "recovery_failed"} and generation is not None
+                and not self._work_drained(generation),
+            "admissionPaused": bool(generation and not generation.accepting
+                                    and self.state not in {"starting", "stopped"}),
+            "recoveryGraceRemainingSeconds": round(max(0, self.recovery_grace -
+                (time.monotonic() - self._suspect_since)), 3) if self._suspect_since is not None else 0,
             "consecutiveFailures": self.failures, "restartCount": self.restart_count,
             "restartLimit": self.restart_limit, "lastRecoveryReason": self.last_reason,
             "lastHeartbeatAgeSeconds": round(max(0, time.monotonic() - generation.last_heartbeat), 3)
@@ -188,6 +196,7 @@ class WorkerLifecycle:
             await asyncio.sleep(.01)
         generation.ready.result()
         self.state, self.failures = "healthy", 0
+        self._suspect_since = self._waiting_reason = None
         self._record("mcp_worker_started", generation=generation.number)
 
     async def _stop(self, generation):
@@ -217,8 +226,51 @@ class WorkerLifecycle:
     async def _probe(self, generation):
         # The worker advances this pulse only while its own loop services tasks.
         # Sampling never enqueues an RPC or cross-loop wakeup from the UI loop.
-        return (not generation.finished.done() and generation.accepting
+        # A paused admission gate is not evidence that the owner loop is dead.
+        # Its real pulse must be able to reopen the same generation after a delay.
+        return (generation is self.current and not self._closing
+            and generation.thread is not None and generation.thread.is_alive()
+            and not generation.finished.done() and not generation.stop.is_set()
             and time.monotonic() - generation.last_heartbeat <= max(self.probe_timeout, 2 * self.monitor_interval))
+
+    def _work_drained(self, generation):
+        if not self.quiescent():
+            return False
+        # An exited loop cannot send more responses. Its actual synchronous tools
+        # still own their lanes, but obsolete asyncio lease sets need not block a replacement.
+        exited = generation.finished.done() and (generation.thread is None or not generation.thread.is_alive())
+        return exited or not (generation.requests or generation.leases)
+
+    def _resume(self, generation):
+        generation.accepting = True
+        self.state, self.failures = "healthy", 0
+        self._suspect_since = self._waiting_reason = None
+        self._record("mcp_admission_resumed", generation=generation.number, reason="heartbeat_progress")
+
+    async def _drain_before_recovery(self, generation, reason):
+        if reason == "heartbeat_timeout" and await self._probe(generation):
+            self._resume(generation)
+            return False
+        if self._work_drained(generation):
+            return True
+        self._record("mcp_recovery_waiting", generation=generation.number, reason=reason)
+        deadline = time.monotonic() + self.drain_timeout
+        while not self._work_drained(generation):
+            if self._closing:
+                return False
+            if reason == "heartbeat_timeout" and await self._probe(generation):
+                self._resume(generation)
+                return False
+            if time.monotonic() >= deadline:
+                self.state, self.last_reason = "recovery_failed", "drain_timeout"
+                self._record("mcp_recovery_failed", generation=generation.number, reason=self.last_reason)
+                return False
+            await asyncio.sleep(min(.05, self.monitor_interval))
+        # The pulse may have returned just as the last response completed.
+        if reason == "heartbeat_timeout" and await self._probe(generation):
+            self._resume(generation)
+            return False
+        return not self._closing
 
     async def _recover(self, reason):
         now = time.monotonic()
@@ -226,13 +278,20 @@ class WorkerLifecycle:
             self._restarts.popleft()
         self.last_reason = reason
         generation = self.current
+        generation.accepting = False
+        self._waiting_reason = reason
         if len(self._restarts) >= self.restart_limit:
             self.state, self.last_reason = "recovery_failed", "recovery_limit"
             self._record("mcp_recovery_failed", generation=generation.number, reason=self.last_reason)
             return
-        self._restarts.append(now)
-        self.restart_count += 1
         self.state = "recovering"
+        # Preserve accepted writes and their responses before signalling stop or
+        # disconnecting any lease. Long work is not a reason to tear down the SDK.
+        if not await self._drain_before_recovery(generation, reason):
+            return
+        self._waiting_reason = None
+        self._restarts.append(time.monotonic())
+        self.restart_count += 1
         self._record("mcp_recovery_started", generation=generation.number, reason=reason,
             errorType=generation.failure_type, frames=generation.failure_frames)
         if not await self._stop(generation):
@@ -252,35 +311,54 @@ class WorkerLifecycle:
             self.state, self.last_reason = "unresponsive", "startup_failed"
             self._record("mcp_recovery_failed", generation=self.current.number, reason=self.last_reason)
 
-    async def _monitor(self):
-        while True:
-            await asyncio.sleep(self.monitor_interval)
-            if self.state == "recovery_failed":
-                generation = self.current
+    async def _monitor_once(self):
+        generation = self.current
+        if self.state == "recovery_failed":
+            if self._waiting_reason is not None:
+                # A drain timeout never relinquishes the owner or cancels work.
+                # Real loop progress can still recover a suspected heartbeat gap.
+                if self._waiting_reason == "heartbeat_timeout" and await self._probe(generation):
+                    self._resume(generation)
+                    return
+                if not self._work_drained(generation):
+                    return
+            else:
                 # Never overlap a hung generation or its admitted writes. Once
                 # both really finish, recovery is safe again without replacing
                 # the usable UI process. Repeated startup failures still observe
                 # the existing rolling recovery limit/cooldown.
-                if (not self.quiescent() or not generation.finished.done()
+                if (not self._work_drained(generation) or not generation.finished.done()
                         or generation.thread.is_alive()):
-                    continue
-                if (len(self._restarts) >= self.restart_limit and self._restarts
-                        and time.monotonic() - self._restarts[0] < self.restart_window):
-                    continue
-                await self._recover("work_drained")
-                continue
-            generation = self.current
-            if self._restart_generation == generation.number:
-                await self._recover("manual_request")
-            elif generation.finished.done():
-                await self._recover("worker_exited")
-            elif await self._probe(generation):
-                self.state, self.failures = "healthy", 0
+                    return
+            if (len(self._restarts) >= self.restart_limit and self._restarts
+                    and time.monotonic() - self._restarts[0] < self.restart_window):
+                return
+            await self._recover(self._waiting_reason or "work_drained")
+            return
+        if self._restart_generation == generation.number:
+            await self._recover("manual_request")
+        elif generation.finished.done() or not generation.thread.is_alive():
+            await self._recover("worker_exited")
+        elif await self._probe(generation):
+            if self._suspect_since is not None:
+                self._resume(generation)
             else:
-                self.state = "unresponsive"
-                self.failures += 1
-                if self.failures >= self.misses_allowed:
+                self.state, self.failures = "healthy", 0
+        else:
+            self.state = "unresponsive"
+            self.failures += 1
+            if self.failures >= self.misses_allowed:
+                if self._suspect_since is None:
+                    self._suspect_since = time.monotonic()
+                    generation.accepting = False
+                    self._record("mcp_admission_paused", generation=generation.number, reason="heartbeat_timeout")
+                if time.monotonic() - self._suspect_since >= self.recovery_grace:
                     await self._recover("heartbeat_timeout")
+
+    async def _monitor(self):
+        while True:
+            await asyncio.sleep(self.monitor_interval)
+            await self._monitor_once()
 
     @asynccontextmanager
     async def lifespan(self):

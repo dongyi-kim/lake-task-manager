@@ -501,9 +501,9 @@ def test_auth_exception_does_not_turn_an_unknown_probe_into_login(monkeypatch):
     assert marked
 
 
-def test_sso_running_timeout_breaks_provider_and_future_calls_fail_fast():
-    """Playwright worker 한 번이 굳어도 큐의 모든 후속 요청이 180초씩 기다리면 안 된다."""
-    from app.auth.base import UpstreamUnavailable
+def test_sso_running_timeout_waits_for_owner_without_restarting_or_replaying_write():
+    """A caller can stop waiting while the owner settles; new work must not queue behind it."""
+    from app.auth.base import UpstreamBusy, UpstreamUnavailable
     from app.auth.sso_session import SsoSessionProvider
 
     p = object.__new__(SsoSessionProvider)
@@ -511,32 +511,60 @@ def test_sso_running_timeout_breaks_provider_and_future_calls_fail_fast():
     p._seq = itertools.count()
     p._broken = threading.Event()
     p._closed = threading.Event()
+    p._suspect, p._settling_timer = threading.Event(), None
     p._broken_reason = ""
 
     p._browser = SimpleNamespace(is_connected=lambda: True)
 
-    release = threading.Event()
+    release, ready, entered = threading.Event(), threading.Event(), threading.Event()
+    writes = []
+
+    def write():
+        entered.set()
+        assert release.wait(4)
+        writes.append("committed")
+        return "settled"
 
     def owner():
-        _priority, _sequence, (fn, done, box) = p._jobs.get(timeout=1)
-        try:
-            box[0] = fn()
-        finally:
-            done.set()
+        ready.set()
+        while True:
+            _priority, _sequence, job = p._jobs.get(timeout=3)
+            if job is None:
+                return
+            fn, done, box = job
+            try:
+                box[0] = fn()
+            except BaseException as error:
+                box[1] = error
+            finally:
+                done.set()
 
     p._thread = threading.Thread(target=owner, daemon=True)
     p._thread.start()
-    started = time.monotonic()
     try:
-        with pytest.raises(UpstreamUnavailable, match="계속 실행"):
-            p._submit(lambda: release.wait(1), wait=0.04)
-        assert p.broken is True
-        with pytest.raises(UpstreamUnavailable):
-            p._submit(lambda: None, wait=10)
-        assert time.monotonic() - started < 0.5
+        assert ready.wait(1)
+        with pytest.raises(UpstreamUnavailable) as waiting:
+            p._submit(write, wait=1, may_commit=True)
+        assert entered.is_set() and p.settling and not p.broken
+        operation = waiting.value.pending_operation
+        assert not operation.done and writes == []
+        with pytest.raises(UpstreamBusy):
+            p._submit(lambda: pytest.fail("a pending write was dispatched again"), wait=1)
+        release.set()
+        deadline = time.monotonic() + 1
+        while not operation.done:
+            assert time.monotonic() < deadline
+            time.sleep(.001)
+        assert operation.result_now() == "settled" and writes == ["committed"]
+        assert not p.settling and not p.broken
+        assert p._submit(lambda: "same owner", wait=1) == "same owner"
     finally:
         release.set()
+        p._jobs.put((-999, next(p._seq), None))
         p._thread.join(timeout=1)
+        if p._settling_timer is not None:
+            p._settling_timer.cancel()
+    assert not p._thread.is_alive()
 
 
 def test_broken_provider_rebuild_waits_for_circuit_breaker():
