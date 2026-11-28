@@ -21,6 +21,7 @@ import queue
 import re
 import sys
 import time as _time
+import weakref
 from contextlib import ExitStack, contextmanager
 from urllib.parse import urlsplit
 
@@ -37,6 +38,26 @@ def _auth_log(msg):
 import threading
 
 _owner_guard = threading.Lock()
+_active_guard = threading.Lock()
+_active_executions = 0
+
+
+def active_sso_executions():
+    """Process-wide live executions, including timed-out callers and retired owners."""
+    with _active_guard:
+        return _active_executions
+
+
+def _execution_started():
+    global _active_executions
+    with _active_guard:
+        _active_executions += 1
+
+
+def _execution_finished():
+    global _active_executions
+    with _active_guard:
+        _active_executions -= 1
 
 from .base import (AuthProvider, LoginRequired, PendingUpstreamOperation,
                    PermissionDenied, SessionExpired, UpstreamBusy, UpstreamError, UpstreamUnavailable,
@@ -47,7 +68,7 @@ from .sso_navigation import login_state, observe_login_page
 def _launch(p, headless):
     """Playwright 번들 Chromium 으로 실행. 없으면 'playwright install chromium' 안내."""
     try:
-        return p.chromium.launch(headless=headless)
+        return p.chromium.launch(headless=headless, timeout=30_000)
     except Exception as e:
         raise RuntimeError(
             "Chromium 을 실행하지 못했습니다. 'playwright install chromium' 이 필요합니다. "
@@ -85,10 +106,11 @@ class SsoSessionProvider(AuthProvider):
     # and actual execution have independent finite budgets.
     REQUEST_TIMEOUT_MS = 120_000
     AUTH_PROBE_TIMEOUT_MS = 20_000
-    START_TIMEOUT = 20
+    START_TIMEOUT = 60  # Covers Chromium's native 30-second launch budget and context setup.
     QUEUE_TIMEOUT = 60
     JOB_TIMEOUT = 150
     RENEW_TIMEOUT = 30
+    SETTLE_GRACE_SECONDS = 60
     MAX_QUEUED_JOBS = 32
     MAX_LIVE_OWNERS = 2
 
@@ -109,6 +131,8 @@ class SsoSessionProvider(AuthProvider):
         self._ready = threading.Event()
         self._broken = threading.Event()
         self._closed = threading.Event()
+        self._suspect = threading.Event()
+        self._settling_timer = None
         self._broken_reason = ""
         self._start_error = None
         # One store belongs to one JiraClient and already combines Jira,
@@ -207,6 +231,10 @@ class SsoSessionProvider(AuthProvider):
     def broken(self):
         return self._broken.is_set() or self._closed.is_set()
 
+    @property
+    def settling(self):
+        return self._suspect.is_set()
+
     def _mark_broken(self, reason):
         """이 provider 를 격리하고 아직 실행 전인 대기 작업을 즉시 깨운다.
 
@@ -216,6 +244,9 @@ class SsoSessionProvider(AuthProvider):
         """
         self._broken_reason = str(reason or "SSO provider 응답 없음")[:200]
         self._broken.set()
+        timer = self._settling_timer
+        if timer is not None:
+            timer.cancel()
         while True:
             try:
                 _prio, _seq, job = self._jobs.get_nowait()
@@ -235,12 +266,28 @@ class SsoSessionProvider(AuthProvider):
 
     @staticmethod
     def _is_transport_error(exc):
-        name = type(exc).__name__.lower()
-        msg = str(exc).lower()
-        return ("timeout" in name or "timeout" in msg or "timed out" in msg
-                or "target page, context or browser has been closed" in msg
-                or "browser has been closed" in msg or "connection closed" in msg
-                or "socket hang up" in msg or "econn" in msg)
+        # Jira response bodies can contain words such as "timeout". They are
+        # business/auth errors, never evidence that this browser owner died.
+        if isinstance(exc, SessionExpired):
+            return False
+        from .web_forms import FormTransportUnavailable
+        if isinstance(exc, FormTransportUnavailable):
+            return exc.diagnostic.get("reason") in {"transport_timeout", "transport_failure"}
+        if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+            return True
+        try:
+            from playwright._impl._errors import Error
+        except ImportError:
+            return False
+        return isinstance(exc, Error)
+
+    @staticmethod
+    def _is_target_closed_error(exc):
+        try:
+            from playwright._impl._errors import TargetClosedError
+        except ImportError:
+            return False
+        return isinstance(exc, TargetClosedError)
 
     def _submit(self, fn, priority=0, wait=None, *, may_commit=False):
         """fn 을 Playwright 전용 스레드에서 실행하고 결과/예외를 호출자 스레드로 반환.
@@ -251,6 +298,8 @@ class SsoSessionProvider(AuthProvider):
         """
         if self.broken:
             raise UpstreamUnavailable(self._broken_reason or "SSO provider 가 격리되었습니다.")
+        if self.settling:
+            raise UpstreamBusy("이전 Jira 요청의 완료를 확인 중입니다. 잠시 후 다시 시도해 주세요.")
         if not self._thread.is_alive():
             self._mark_broken("SSO provider 스레드가 종료되었습니다.")
             raise UpstreamUnavailable(self._broken_reason)
@@ -262,7 +311,8 @@ class SsoSessionProvider(AuthProvider):
         # not expand how long an unstarted write can wait behind another job.
         queue_limit = min(limit, self.QUEUE_TIMEOUT)
         queue_deadline = _time.monotonic() + queue_limit
-        job_state = {"started": False, "started_at": None, "cancelled": False, "dispatched": False}
+        job_state = {"started": False, "started_at": None, "cancelled": False, "dispatched": False,
+                     "finished": False, "settling_timer": None}
 
         def execute():
             with job_lock:
@@ -273,15 +323,56 @@ class SsoSessionProvider(AuthProvider):
                     raise UpstreamBusy("Jira 요청이 밀려 대기 시간이 지났습니다. 잠시 후 다시 시도해 주세요.")
                 job_state["started"] = True
                 job_state["started_at"] = _time.monotonic()
-            # Recovery belongs to the running budget too. A stuck relaunch must retire its
-            # owner, not look like every later request is merely waiting in a healthy queue.
-            if not self._browser.is_connected():
-                self._relaunch()
+            _execution_started()
+            try:
+                # Relaunch also belongs to the actual running budget. If its
+                # caller leaves before dispatch, it must never start a late write.
+                if not self._browser.is_connected():
+                    self._relaunch()
+                with job_lock:
+                    if job_state["cancelled"] or self.broken:
+                        raise UpstreamUnavailable("SSO 연결 복구가 중단되었습니다.")
+                    job_state["dispatched"] = True
+                value = fn()
+                box[0] = value
+                return value
+            except BaseException as exc:
+                box[1] = exc
+                # Browser inspection stays on its owner thread. A completed
+                # request timeout with a connected browser does not retire it.
+                if self._is_target_closed_error(exc):
+                    self._mark_broken("SSO 브라우저 컨텍스트가 종료되었습니다.")
+                elif self._is_transport_error(exc):
+                    try:
+                        connected = self._browser.is_connected()
+                    except Exception:
+                        connected = None
+                    if connected is False:
+                        self._mark_broken("SSO 브라우저 연결이 종료되었습니다.")
+                raise
+            finally:
+                with job_lock:
+                    job_state["finished"] = True
+                    timer = job_state["settling_timer"]
+                    if timer is not None:
+                        timer.cancel()
+                        if self._settling_timer is timer:
+                            self._settling_timer = None
+                    self._suspect.clear()
+                _execution_finished()
+
+        owner_ref = weakref.ref(self)
+
+        def retire_unfinished():
+            owner = owner_ref()
+            if owner is None:
+                return
             with job_lock:
-                if job_state["cancelled"] or self.broken:
-                    raise UpstreamUnavailable("SSO 연결 복구가 중단되었습니다.")
-                job_state["dispatched"] = True
-            return fn()
+                if job_state["finished"] or owner.broken:
+                    return
+                # A caller deadline is suspicion; only an unfinished owner at
+                # the end of the extra settling grace is retired automatically.
+                owner._mark_broken("Jira 요청이 완료되지 않아 SSO 연결을 격리했습니다.")
 
         operation = PendingUpstreamOperation(done, box)
         try:
@@ -304,21 +395,33 @@ class SsoSessionProvider(AuthProvider):
             # starting just before its queue deadline would immediately retire a healthy worker.
             if not done.wait(remaining):
                 with job_lock:
-                    job_state["cancelled"] = True
+                    expired = not job_state["finished"]
                     dispatched = job_state["dispatched"]
-                self._mark_broken("Jira/SSO 응답 시간 초과(%ds)" % int(limit))
-                error = UpstreamUnavailable(
-                    "Jira 응답이 없습니다(%ds 초과). 앱은 계속 실행되며 잠시 후 자동 재시도합니다."
-                    % int(limit))
-                # Only an actually started mutation can still commit on the retired owner thread.
-                if may_commit and dispatched:
-                    error.pending_operation = operation
-                raise error
+                    if expired:
+                        job_state["cancelled"] = True
+                        self._suspect.set()
+                        timer = threading.Timer(self.SETTLE_GRACE_SECONDS, retire_unfinished)
+                        timer.daemon = True
+                        self._settling_timer = job_state["settling_timer"] = timer
+                        try:
+                            timer.start()
+                        except RuntimeError:
+                            # Resource pressure may prevent another observer
+                            # thread. Keep admission paused and preserve the
+                            # pending write handle until the real owner settles.
+                            self._settling_timer = job_state["settling_timer"] = None
+                if expired:
+                    error = UpstreamUnavailable(
+                        "Jira 요청의 완료를 기다리고 있습니다(%ds 초과). 입력을 보존하고 잠시 후 확인해 주세요."
+                        % int(limit))
+                    # Only an actually dispatched mutation can still commit.
+                    if may_commit and dispatched:
+                        error.pending_operation = operation
+                    raise error
         if box[1] is not None:
             if self._is_transport_error(box[1]):
-                self._mark_broken(box[1])
                 raise UpstreamUnavailable(
-                    "Jira/SSO 연결이 응답하지 않습니다. 앱은 계속 실행되며 잠시 후 자동 재시도합니다.")
+                    "Jira/SSO 요청을 완료하지 못했습니다. 입력을 보존하고 잠시 후 확인해 주세요.")
             raise box[1]
         return box[0]
 
@@ -672,6 +775,8 @@ class SsoSessionProvider(AuthProvider):
                 raise
             except Exception as exc:
                 # _submit logs/retire decisions must never contain a form URL/token/body.
+                if self._is_target_closed_error(exc):
+                    self._mark_broken("SSO 브라우저 컨텍스트가 종료되었습니다.")
                 raise FormTransportUnavailable(timeout=self._is_transport_error(exc)) from None
 
         return self._submit(do, PRIO_WRITE if body is not None else upstream_priority(),
