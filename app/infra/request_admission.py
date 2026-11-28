@@ -27,7 +27,7 @@ _LIGHTWEIGHT = {("GET", "/api/health/live"), ("POST", "/api/app/open"), ("POST",
 
 class RequestAdmissionMiddleware:
     def __init__(self, app, *, capacity=8, control_capacity=2, max_body_bytes=16 * 1024 * 1024,
-                 max_upload_bytes=65 * 1024 * 1024, body_timeout=30, pressure_check=None):
+                 max_upload_bytes=65 * 1024 * 1024, body_timeout=30, pressure_check=None, activity=None):
         self.app = app
         self.capacity, self.control_capacity = capacity, control_capacity
         self.max_body_bytes, self.max_upload_bytes = max_body_bytes, max_upload_bytes
@@ -36,6 +36,7 @@ class RequestAdmissionMiddleware:
         self._business = self._control = self._uploads = 0
         self._file_limiter = anyio.CapacityLimiter(2)
         self._requests = set()
+        self.activity = activity if activity is not None else {}
 
     def _acquire(self, control, upload):
         with self._lock:
@@ -48,6 +49,7 @@ class RequestAdmissionMiddleware:
                     return False
                 self._business += 1
                 self._uploads += int(upload)
+            self.activity["http"] = self._business + self._control
             return True
 
     def _release(self, control, upload):
@@ -57,6 +59,7 @@ class RequestAdmissionMiddleware:
             else:
                 self._business -= 1
                 self._uploads -= int(upload)
+            self.activity["http"] = self._business + self._control
 
     @staticmethod
     async def _reject(scope, receive, send, status, code, message):

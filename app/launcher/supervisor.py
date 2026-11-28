@@ -1,6 +1,7 @@
 """Own one desktop worker and recover boundedly from process crashes or lost liveness."""
 
 from collections import deque
+from dataclasses import dataclass
 from http.client import HTTPException
 import json
 import os
@@ -130,32 +131,56 @@ class OwnedWorker:
             win32api.CloseHandle(self._job)
 
 
-def probe_worker(base_url, worker, instance, timeout=2):
+@dataclass(frozen=True)
+class WorkerHealth:
+    alive: bool
+    degraded: bool = False
+    restart_recommended: bool = False
+    active_work: bool = False
+
+
+def probe_worker_health(base_url, worker, instance, timeout=2):
     """Only this child generation can satisfy liveness, without system HTTP proxies."""
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(base_url.rstrip("/") + "/api/health/live", timeout=timeout) as response:
             if response.status != 200:
-                return False
+                return WorkerHealth(False)
             payload = json.loads(response.read(4097))
-        return (payload.get("status") == "ok" and payload.get("instance") == instance
-                and worker.owns_pid(payload.get("pid")))
+        alive = (payload.get("status") == "ok" and payload.get("instance") == instance
+                 and worker.owns_pid(payload.get("pid")))
+        if not alive:
+            return WorkerHealth(False)
+        activity = payload.get("activeWork")
+        busy = isinstance(activity, dict) and any(type(value) is int and value > 0 for value in activity.values())
+        return WorkerHealth(True, payload.get("degraded") is True,
+                            payload.get("restartRecommended") is True, busy)
     except (OSError, HTTPException, ValueError, TypeError, AttributeError):
-        return False
+        return WorkerHealth(False)
+
+
+def probe_worker(base_url, worker, instance, timeout=2):
+    """Backward-compatible boolean process check for tray and external callers."""
+    return probe_worker_health(base_url, worker, instance, timeout).alive
 
 
 def run_supervisor(argv, *, cwd, env, base_url, on_ready=None, on_failure=None, worker_factory=OwnedWorker,
-                   probe=probe_worker, clock=time.monotonic, sleep=time.sleep,
-                   startup_grace=60, interval=5, misses_allowed=3, restart_limit=3,
+                   probe=None, clock=time.monotonic, sleep=time.sleep,
+                   startup_grace=180, interval=5, misses_allowed=3, restart_limit=3,
                    restart_window=600, report=print, record=lambda *args, **kwargs: None,
-                   persistent_recovery=False, recovery_control=None, cooldown_initial=30, cooldown_max=300):
+                   persistent_recovery=False, recovery_control=None, cooldown_initial=30, cooldown_max=300,
+                   unresponsive_grace=120, busy_unresponsive_grace=1870):
     """Return 0 on intentional quit, preserving finite recovery unless opted in.
 
     Each replacement gets identical executable/arguments/cwd/environment except for
     a fresh identity nonce. No updater, configuration changes or request replay occurs.
     Production keeps the parent alive after repeated faults, with capped backoff and
     independent Retry/Quit controls. Injected callers retain the finite retry policy.
+    An alive but degraded desktop never loses its server/work just because a
+    native component asks for restart. Unreachable core health must persist for
+    an elapsed grace, extended if the last owned response reported active work.
     """
+    probe = probe or probe_worker_health
     restarts = deque()
     ready_notified = False
     cooldown_delay = cooldown_initial
@@ -227,6 +252,7 @@ def run_supervisor(argv, *, cwd, env, base_url, on_ready=None, on_failure=None, 
                 notify_failure(f"Lake Task Manager could not start: {exc}")
                 return 1
             started, misses, healthy = clock(), 0, False
+            unresponsive_since, last_busy, degraded = None, False, False
             clean_exit = intentional_stop = False
             reason = "supervisor interrupted"
             code = None
@@ -244,16 +270,33 @@ def run_supervisor(argv, *, cwd, env, base_url, on_ready=None, on_failure=None, 
                             return 0
                         reason = f"worker exited with code {code}"
                         break
-                    if probe(base_url, worker, instance):
+                    observation = probe(base_url, worker, instance)
+                    if isinstance(observation, bool):
+                        observation = WorkerHealth(observation)
+                    if observation.alive:
                         if not healthy and recovery_control is not None:
                             observe(recovery_control.hide)
+                        if unresponsive_since is not None:
+                            emit("worker_responsive", workerPid=worker.pid,
+                                 delaySeconds=round(clock() - unresponsive_since, 2))
+                        if observation.degraded != degraded:
+                            emit("worker_degraded" if observation.degraded else "worker_components_recovered",
+                                 workerPid=worker.pid)
+                        degraded = observation.degraded
+                        last_busy = observation.active_work
+                        unresponsive_since = None
                         misses, healthy = 0, True
                         if not ready_notified and on_ready:
                             observe(on_ready)
                         ready_notified = True
                     elif healthy or clock() - started >= startup_grace:
                         misses += 1
-                        if misses >= misses_allowed:
+                        if unresponsive_since is None:
+                            unresponsive_since = clock()
+                            emit("worker_waiting", workerPid=worker.pid, reason="health_unreachable",
+                                 delaySeconds=busy_unresponsive_grace if last_busy else unresponsive_grace)
+                        grace = max(unresponsive_grace, busy_unresponsive_grace) if last_busy else unresponsive_grace
+                        if misses >= misses_allowed and clock() - unresponsive_since >= grace:
                             reason = "worker stopped responding"
                             break
                     wait_for(interval)

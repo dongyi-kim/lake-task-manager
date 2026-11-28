@@ -171,23 +171,36 @@ def test_real_rest_dispatch_is_retained_before_response_completion(tmp_path):
     import threading
     from tools.codex_mcp_eval.fixture import EvaluationFixture
     with EvaluationFixture(tmp_path / "dispatch", port=0, today="2026-11-09") as fixture:
-        entered, release = threading.Event(), threading.Event()
+        entered, release, errors = threading.Event(), threading.Event(), []
         def slow_request():
             entered.set()
-            assert release.wait(timeout=2)
+            assert release.wait(timeout=15)
             return {"ok": True}
         fixture.provider._client.app.add_api_route("/rest/api/2/eval-delay", slow_request)
-        worker = threading.Thread(target=lambda: fixture.provider.get_json("/rest/api/2/eval-delay"))
+        def request():
+            try:
+                fixture.provider.get_json("/rest/api/2/eval-delay")
+            except BaseException as error:
+                errors.append(error)
+        worker = threading.Thread(target=request)
         worker.start()
         try:
-            assert entered.wait(timeout=1)
+            # An event proves actual handler entry; a scheduling deadline is
+            # only a deadlock guard, not a one-second CI performance contract.
+            entered_in_time = entered.wait(timeout=10)
+            if not entered_in_time and errors:
+                raise errors[0]
+            assert entered_in_time
             assert len(fixture.upstream_calls) == 1
             request = fixture.upstream_calls[0]
             assert request["dispatchAttempt"] is True and request["complete"] is False
             assert request["serverReceived"] is None
         finally:
             release.set()
-            worker.join(timeout=2)
+            worker.join(timeout=10)
+        assert not worker.is_alive()
+        if errors:
+            raise errors[0]
         request = fixture.upstream_calls[0]
         assert request["complete"] is True and request["serverReceived"] is True
         assert request["status"] == 200 and request["responseBytes"] > 0

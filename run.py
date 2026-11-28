@@ -33,6 +33,7 @@ from app.launcher.runtime_health import (
     probe_tray_pump as _probe_tray_pump,
     window_phase as _window_phase,
     runtime_status as _runtime_status,
+    update_tray_probe as _update_tray_probe,
 )
 from app.launcher.instance import (
     port_is_listening as _port_is_listening,
@@ -1546,7 +1547,7 @@ def _run_tray(s):
     print(f"Lake Task Manager - 트레이 상주 (env={s.jira_env}). 창을 닫아도 백엔드는 유지됩니다.")
     open_window(initial=True)                          # 시작 시 창 1개 오픈
     runtime_failure = []
-    tray_probe = {"healthy": True, "at": time.monotonic()}
+    tray_probe = {"healthy": True, "at": time.monotonic(), "unhealthySince": None}
     _appmain.set_runtime_health_hook(lambda: _runtime_status(tray_probe))
 
     def monitor_tray():
@@ -1554,7 +1555,7 @@ def _run_tray(s):
         while not server.should_exit:
             answer = _probe_tray_pump(icon)
             failures = failures + 1 if answer is False else 0
-            tray_probe.update(healthy=failures < 3, at=time.monotonic())
+            _update_tray_probe(tray_probe, failures < 3)
             if server._ltm_stopped.wait(2):
                 return
 

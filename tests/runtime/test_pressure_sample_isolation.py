@@ -10,7 +10,7 @@ import textwrap
 import httpx
 
 from app.infra.request_admission import RequestAdmissionMiddleware
-from app.infra.resource_pressure import MiB, resource_pressure
+from app.infra.resource_pressure import MiB, memory_policy, resource_pressure
 
 
 def test_deterministic_memory_sample_still_refuses_and_recovers_http_work(resource_pressure_sample):
@@ -27,7 +27,8 @@ def test_deterministic_memory_sample_still_refuses_and_recovers_http_work(resour
             assert (await client.get("/api/work")).status_code == 200
             assert executed == ["/api/work"]
 
-            resource_pressure_sample["processBytes"] = 2048 * MiB
+            soft_limit = memory_policy(resource_pressure_sample["totalBytes"])["softLimitBytes"]
+            resource_pressure_sample["processBytes"] = soft_limit
             resource_pressure._next = 0  # Advance sampling without a wall-clock sleep.
             refused = await client.post("/api/write", json={"value": "must not execute"})
             assert refused.status_code == 429
@@ -37,7 +38,7 @@ def test_deterministic_memory_sample_still_refuses_and_recovers_http_work(resour
             assert executed == ["/api/work"]
 
             # The real 85% hysteresis must keep refusing below the soft limit.
-            resource_pressure_sample["processBytes"] = 950 * MiB
+            resource_pressure_sample["processBytes"] = int(soft_limit * .95)
             resource_pressure._next = 0
             assert (await client.get("/api/work")).status_code == 429
             assert executed == ["/api/work"]
