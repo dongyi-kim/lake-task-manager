@@ -168,6 +168,7 @@ def test_blocked_mcp_loop_keeps_app_responsive_and_never_starts_over_old_worker(
     host = env.runtime.transport_host
     host.monitor_interval, host.probe_timeout = .01, .05
     host._worker.shutdown_timeout = .1
+    host._worker.recovery_grace = .05
     entered, release = threading.Event(), threading.Event()
     def block_loop():
         entered.set()
